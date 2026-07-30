@@ -1,0 +1,103 @@
+{
+	"name": "@orkestrel/tool",
+	"version": "0.0.6",
+	"description": "Concrete LLM-callable tools for the @orkestrel line — workflow authoring, workspace editing, and sub-agent delegation, over the agent tool runtime, with pluggable stores. Part of the @orkestrel line.",
+	"keywords": [
+		"agent",
+		"llm",
+		"tool",
+		"typescript",
+		"workflow",
+		"workspace"
+	],
+	"homepage": "https://github.com/orkestrel/tool#readme",
+	"bugs": "https://github.com/orkestrel/tool/issues",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/orkestrel/tool.git"
+	},
+	"files": [
+		"dist/src",
+		"README.md"
+	],
+	"type": "module",
+	"sideEffects": false,
+	"main": "./dist/src/core/index.cjs",
+	"module": "./dist/src/core/index.js",
+	"exports": {
+		".": {
+			"import": {
+				"types": "./dist/src/core/index.d.ts",
+				"default": "./dist/src/core/index.js"
+			},
+			"require": {
+				"types": "./dist/src/core/index.d.cts",
+				"default": "./dist/src/core/index.cjs"
+			}
+		},
+		"./server": {
+			"import": {
+				"types": "./dist/src/server/index.d.ts",
+				"default": "./dist/src/server/index.js"
+			},
+			"require": {
+				"types": "./dist/src/server/index.d.cts",
+				"default": "./dist/src/server/index.cjs"
+			}
+		},
+		"./package.json": "./package.json"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"scripts": {
+		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+		"copy": "node -e \"const fs=require('node:fs'),p=require('node:path'),a=process.argv[1],b=process.argv[2];fs.mkdirSync(p.dirname(b),{recursive:true});fs.cpSync(a,b,{force:true});console.log('Copied: '+a+' to '+b)\"",
+		"scaffold": "scaffold",
+		"lint": "oxlint --config .oxlintrc.json --fix --deny-warnings .",
+		"check": "tsc --noEmit --project tsconfig.json && npm run check:src",
+		"check:src": "npm run check:src:core && npm run check:src:server",
+		"check:src:core": "tsc --noEmit -p configs/src/tsconfig.core.json",
+		"check:src:server": "tsc --noEmit -p configs/src/tsconfig.server.json",
+		"format": "oxfmt --config .oxfmtrc.json --write .",
+		"format:check": "oxfmt --config .oxfmtrc.json --check .",
+		"lint:check": "oxlint --config .oxlintrc.json --deny-warnings .",
+		"test": "npm run test:src && npm run test:policy && npm run test:guides",
+		"test:src": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:core --project src:server",
+		"test:src:core": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:core",
+		"test:src:server": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:server",
+		"test:policy": "vitest run --config vite.config.ts --no-cache --reporter=dot --project policy",
+		"test:guides": "vitest run --config vite.config.ts --reporter=dot --project guides",
+		"build": "npm run clean && npm run build:src",
+		"build:src": "npm run build:src:core && npm run build:src:server",
+		"build:src:core": "vite build --config configs/src/vite.core.config.ts && npm run copy dist/src/core/index.d.ts dist/src/core/index.d.cts",
+		"build:src:server": "vite build --config configs/src/vite.server.config.ts && npm run copy dist/src/server/index.d.ts dist/src/server/index.d.cts",
+		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run build && npm test"
+	},
+	"dependencies": {
+		"@orkestrel/agent": "^0.0.11",
+		"@orkestrel/contract": "^0.0.8",
+		"@orkestrel/database": "^0.0.6",
+		"@orkestrel/relation": "^0.0.6",
+		"@orkestrel/server": "^0.0.7",
+		"@orkestrel/terminal": "^0.0.5",
+		"@orkestrel/workflow": "^0.0.7"
+	},
+	"devDependencies": {
+		"@microsoft/api-extractor": "^7.58.12",
+		"@orkestrel/guide": "^0.0.7",
+		"@orkestrel/scaffold": "^0.0.11",
+		"@types/node": "^26.1.2",
+		"@vitest/browser-playwright": "^4.1.10",
+		"oxfmt": "^0.61.0",
+		"oxlint": "^1.76.0",
+		"typescript": "^6.0.3",
+		"vite": "^8.1.5",
+		"vite-plugin-dts": "^5.0.3",
+		"vitest": "^4.1.10"
+	},
+	"engines": {
+		"node": ">=22.12.0"
+	}
+}
