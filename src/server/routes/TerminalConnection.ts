@@ -13,7 +13,7 @@ import { HEADER_TOKEN, serializeExpire, serializePending } from '@orkestrel/term
  *
  * @example
  * ```ts
- * import { TerminalConnection } from '@orkestrel/tool/server'
+ * import { TerminalConnection } from '@orkestrel/toolbox/server'
  *
  * const connection = new TerminalConnection(manager, name, request, stream, accepts, timer, 15_000)
  * const response = connection.open()

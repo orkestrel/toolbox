@@ -12,7 +12,7 @@ import type { Condition, Connector, Criteria, Direction, TableSchema } from '@or
 import type { ColumnSchema } from '@orkestrel/database'
 import type { ContractShape } from '@orkestrel/contract'
 import type {
-	AgentToolErrorCode,
+	ToolboxErrorCode,
 	ColumnKind,
 	ColumnSpec,
 	DatabaseDefinition,
@@ -22,7 +22,7 @@ import type { PhaseDraft, TaskDraft, WorkflowDraft, WorkflowSteps } from './type
 import { isTerminalError } from '@orkestrel/terminal'
 import { isDatabaseError, shapeToColumnType } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
-import { AgentToolError } from './errors.js'
+import { ToolboxError } from './errors.js'
 import {
 	booleanShape,
 	integerShape,
@@ -34,7 +34,7 @@ import {
 	stringShape,
 } from '@orkestrel/contract'
 
-// Tool-package helpers — OWNED here now, ported byte-faithfully from `@orkestrel/workflow` ahead
+// Toolbox helpers — OWNED here now, ported byte-faithfully from `@orkestrel/workflow` ahead
 // of the upstream cleanup that drops the authoring surface from that package (this package
 // becomes the defining home for the workflow tool's lenient-authoring pipeline and its ancestry
 // tagging).
@@ -79,7 +79,7 @@ export function agentTag(name: string): string {
  * The summary is LEAN: the workflow's terminal `status` and the COUNT of settled task results —
  * enough for a caller / model to react without serializing the whole live tree. (It carries no
  * synthetic `id` / `name`: a tool handler has no call id; the `ToolManagerInterface`
- * (`@orkestrel/agent`) supplies the canonical envelope's identity.)
+ * (`@orkestrel/tool`) supplies the canonical envelope's identity.)
  *
  * @param result - The terminal `WorkflowResult` (`@orkestrel/workflow`) the run produced
  * @returns The plain success summary — `{ status, count }`
@@ -253,7 +253,7 @@ export function coerceAnswer(
 }
 
 /**
- * Map a caught error to the {@link AgentToolErrorCode} the terminal-tool factory should throw
+ * Map a caught error to the {@link ToolboxErrorCode} the terminal-tool factory should throw
  * with — the pure classification step of that factory's error handling.
  *
  * @remarks
@@ -265,9 +265,9 @@ export function coerceAnswer(
  * classifies — the factory performs the actual throw.
  *
  * @param error - The value caught from a terminal-manager operation (`ask` / `answer` / …)
- * @returns The mapped {@link AgentToolErrorCode}, or `undefined` if `error` is not a `TerminalError`
+ * @returns The mapped {@link ToolboxErrorCode}, or `undefined` if `error` is not a `TerminalError`
  */
-export function terminalToolCode(error: unknown): AgentToolErrorCode | undefined {
+export function terminalToolCode(error: unknown): ToolboxErrorCode | undefined {
 	if (!isTerminalError(error)) return undefined
 	if (error.code === 'DEADLOCK') return 'DEADLOCK'
 	if (error.code === 'EXPIRE') return 'EXPIRE'
@@ -356,7 +356,7 @@ export function isDatabaseDefinition(value: unknown): value is DatabaseDefinitio
 }
 
 /**
- * Map a caught error to the {@link AgentToolErrorCode} the upcoming database tool should throw
+ * Map a caught error to the {@link ToolboxErrorCode} the upcoming database tool should throw
  * with — the pure classification step of that factory's error handling, mirroring
  * {@link terminalToolCode}'s idiom for `@orkestrel/database`.
  *
@@ -368,7 +368,7 @@ export function databaseToolCode(error: unknown): DatabaseErrorCode | undefined 
 }
 
 /**
- * Map a caught error to the {@link AgentToolErrorCode} the upcoming relation tool should throw
+ * Map a caught error to the {@link ToolboxErrorCode} the upcoming relation tool should throw
  * with — the pure classification step of that factory's error handling, mirroring
  * {@link terminalToolCode}'s idiom for `@orkestrel/relation`.
  *
@@ -389,7 +389,7 @@ export function relationToolCode(error: unknown): RelationErrorCode | undefined 
  * `Include` object with a leaf `true`. A longer path SUBSUMES a shorter sibling's bare `true` —
  * `'contacts'` followed by `'contacts.account'` yields `{ contacts: { account: true } }`, never
  * overwriting the deeper chain. An EMPTY segment (`''`, from a leading/trailing/doubled `.`) or a
- * path whose segment count exceeds `depth` throws a typed `TOOL` {@link AgentToolError}.
+ * path whose segment count exceeds `depth` throws a typed `TOOL` {@link ToolboxError}.
  *
  * @param paths - The flat dot-path `include` list (or `undefined` — yields `{}`)
  * @param depth - The max segment count a single path may reach
@@ -408,7 +408,7 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
 	for (const path of paths ?? []) {
 		const segments = path.split('.')
 		if (segments.length > depth || segments.some((segment) => segment.length === 0)) {
-			throw new AgentToolError('TOOL', `malformed include path '${path}'`, { path, depth })
+			throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
 		}
 		const ancestors: Include[] = []
 		let branch = include
@@ -416,7 +416,7 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
 		for (let index = 0; index < last; index++) {
 			const segment = segments[index]
 			if (segment === undefined) {
-				throw new AgentToolError('TOOL', `malformed include path '${path}'`, { path, depth })
+				throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
 			}
 			ancestors.push(branch)
 			const existing = branch[segment]
@@ -424,7 +424,7 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
 		}
 		const leaf = segments[last]
 		if (leaf === undefined) {
-			throw new AgentToolError('TOOL', `malformed include path '${path}'`, { path, depth })
+			throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
 		}
 		const existing = branch[leaf]
 		let merged: Include = {
@@ -435,7 +435,7 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
 			const ancestor = ancestors[index]
 			const segment = segments[index]
 			if (ancestor === undefined || segment === undefined) {
-				throw new AgentToolError('TOOL', `malformed include path '${path}'`, { path, depth })
+				throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
 			}
 			merged = { ...ancestor, [segment]: merged }
 		}
@@ -451,7 +451,7 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
  *
  * @remarks
  * An explicit `name` must match a key of `managers` (a miss throws a typed `TOOL`
- * {@link AgentToolError} naming the registered managers). An OMITTED `name` resolves to the sole
+ * {@link ToolboxError} naming the registered managers). An OMITTED `name` resolves to the sole
  * registered manager when exactly one is registered, else throws the same typed error.
  *
  * @param managers - The tool's registered `RelationManagerInterface` map
@@ -465,7 +465,7 @@ export function relationManagerOf(
 	if (name !== undefined) {
 		const manager = managers[name]
 		if (manager === undefined) {
-			throw new AgentToolError('TOOL', `unknown relation manager '${name}'`, {
+			throw new ToolboxError('TOOL', `unknown relation manager '${name}'`, {
 				manager: name,
 				managers: Object.keys(managers),
 			})
@@ -478,7 +478,7 @@ export function relationManagerOf(
 		const manager = managers[single]
 		if (manager !== undefined) return manager
 	}
-	throw new AgentToolError('TOOL', 'no relation manager resolved for the call', {
+	throw new ToolboxError('TOOL', 'no relation manager resolved for the call', {
 		managers: names,
 	})
 }
@@ -494,7 +494,7 @@ export function relationManagerOf(
  */
 export function relationModelOf(manager: RelationManagerInterface, name: string): ModelInterface {
 	if (!manager.has(name)) {
-		throw new AgentToolError('TOOL', `unknown model '${name}'`, {
+		throw new ToolboxError('TOOL', `unknown model '${name}'`, {
 			model: name,
 			models: manager.models(),
 		})

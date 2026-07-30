@@ -1,7 +1,7 @@
 import type { WorkflowDefinition } from '@orkestrel/workflow'
 import type { WorkflowSteps, WorkspaceOperation } from './types.js'
 
-// Tool-package constants — UPPER_SNAKE, `Object.freeze`d, every member exported (AGENTS §5).
+// Toolbox constants — UPPER_SNAKE, `Object.freeze`d, every member exported (AGENTS §5).
 // The workflow tool's name/description/examples/depth-bound and the workspace tool's
 // name/description are OWNED here now — ported byte-faithfully from `@orkestrel/workflow` /
 // `@orkestrel/agent` ahead of the upstream cleanup that drops the authoring surface from those
@@ -10,7 +10,7 @@ import type { WorkflowSteps, WorkspaceOperation } from './types.js'
 
 /**
  * The name {@link import('./factories.js').createAgentTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  */
 export const AGENT_TOOL_NAME = 'agent'
 
@@ -38,7 +38,7 @@ export const AGENT_TOOL_DEPTH = 8
  * `system` overrides.
  */
 /**
- * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createAgentTool}
+ * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createAgentTool}
  * advertises in place of {@link AGENT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
@@ -78,7 +78,7 @@ export const MAX_WORKFLOW_DEPTH = 8
 
 /**
  * The name {@link import('./factories.js').createWorkflowTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under, and the name
+ * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under, and the name
  * {@link import('./factories.js').createAgentFunction} binds the depth/cycle-aware workflow tool
  * under onto a wrapped agent's `context.tools`.
  *
@@ -146,7 +146,7 @@ export const WORKFLOW_TOOL_NESTED_EXAMPLE: WorkflowDefinition = Object.freeze({
  * both).
  */
 /**
- * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createWorkflowTool}
+ * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createWorkflowTool}
  * advertises in place of {@link WORKFLOW_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
@@ -172,7 +172,7 @@ export const WORKFLOW_TOOL_DESCRIPTION = [
 
 /**
  * The name {@link import('./factories.js').createWorkspaceTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  *
  * @remarks
  * OWNED here now (ported from `@orkestrel/agent`).
@@ -206,7 +206,7 @@ export const WORKSPACE_TOOL_EXAMPLE: WorkspaceOperation = Object.freeze({
  * {@link WORKSPACE_TOOL_EXAMPLE} verbatim.
  */
 /**
- * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createWorkspaceTool}
+ * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createWorkspaceTool}
  * advertises in place of {@link WORKSPACE_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
@@ -242,7 +242,7 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
 
 /**
  * The name {@link import('./factories.js').createDescribeTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  *
  * @remarks
  * Net-new: pairs with the other three tools' lean {@link AGENT_TOOL_SUMMARY} /
@@ -253,7 +253,7 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
 export const DESCRIBE_TOOL_NAME = 'describe'
 
 /**
- * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createDescribeTool}
+ * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createDescribeTool}
  * advertises — this tool needs no teaching of its own, so its summary and description are both
  * short.
  */
@@ -271,12 +271,12 @@ export const DESCRIBE_TOOL_DESCRIPTION =
 
 /**
  * The name {@link import('./factories.js').createPromptTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  */
 export const PROMPT_TOOL_NAME = 'ask'
 
 /**
- * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createPromptTool}
+ * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createPromptTool}
  * advertises in place of {@link PROMPT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
@@ -301,12 +301,12 @@ export const PROMPT_TOOL_DESCRIPTION = [
 
 /**
  * The name {@link import('./factories.js').createAnswerTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  */
 export const ANSWER_TOOL_NAME = 'answer'
 
 /**
- * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createAnswerTool}
+ * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createAnswerTool}
  * advertises in place of {@link ANSWER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
@@ -329,7 +329,7 @@ export const ANSWER_TOOL_DESCRIPTION = [
 
 /**
  * The name the upcoming `createDatabaseTool` factory will advertise by default — the key a model
- * calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ * calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  *
  * @remarks
  * SRC-1 of a 3-unit spine: this unit lands the persistence + schema foundation
@@ -339,7 +339,7 @@ export const ANSWER_TOOL_DESCRIPTION = [
 export const DATABASE_TOOL_NAME = 'database'
 
 /**
- * The lean {@link import('@orkestrel/agent').ToolInterface.summary} the upcoming database tool
+ * The lean {@link import('@orkestrel/tool').ToolInterface.summary} the upcoming database tool
  * will advertise in place of {@link DATABASE_TOOL_DESCRIPTION}.
  */
 export const DATABASE_TOOL_SUMMARY =
@@ -414,12 +414,12 @@ export const DATABASE_TOOL_MUTATIONS = new Set([
 
 /**
  * The name `createRelationTool` advertises by default — the key a model calls and the
- * `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ * `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  */
 export const RELATION_TOOL_NAME = 'relation'
 
 /**
- * The lean {@link import('@orkestrel/agent').ToolInterface.summary} the relation tool advertises
+ * The lean {@link import('@orkestrel/tool').ToolInterface.summary} the relation tool advertises
  * in place of {@link RELATION_TOOL_DESCRIPTION}.
  */
 export const RELATION_TOOL_SUMMARY =
@@ -456,12 +456,12 @@ export const RELATION_TOOL_DEPTH = 3
 
 /**
  * The name {@link import('./factories.js').createInferTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/agent`) registers under.
+ * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  */
 export const INFER_TOOL_NAME = 'infer'
 
 /**
- * The lean {@link import('@orkestrel/agent').ToolInterface.summary} {@link import('./factories.js').createInferTool}
+ * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createInferTool}
  * advertises in place of {@link INFER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via

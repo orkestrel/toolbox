@@ -142,7 +142,7 @@ export const answerToolShape = unionShape(
 	}),
 )
 
-// Tool-package shapes — the shape VALUE each `create*Tool` factory (factories.ts) compiles into
+// Toolbox shapes — the shape VALUE each `create*Tool` factory (factories.ts) compiles into
 // the lockstep guard + parser + JSON Schema outputs (AGENTS §14). `agentToolShape` MUST agree
 // with the hand-written `AgentToolArguments` (types.ts), which is the source of truth.
 // `workflowStepsShape` / `workflowDraftShape` / `workspaceToolShape` are OWNED here now — ported
@@ -772,7 +772,7 @@ export const relationToolShape = unionShape(
  *
  * @remarks
  * `samples` requires at least one element (`min: 1`) — an empty array parses to `undefined`,
- * surfaced by the handler as a typed `TOOL` {@link import('./errors.js').AgentToolError}. When
+ * surfaced by the handler as a typed `TOOL` {@link import('./errors.js').ToolboxError}. When
  * `candidates` is present (any array, including empty), the handler compiles a contract from the
  * freshly inferred schema and checks each candidate against it with a STRICT guard (`.is`, no
  * coercion) — the opposite of {@link import('./factories.js').createEndpointTool}'s NORMALIZING

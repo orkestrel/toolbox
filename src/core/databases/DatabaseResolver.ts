@@ -1,7 +1,7 @@
 import type { DatabaseInterface, DriverInterface, KeyFunction } from '@orkestrel/database'
 import type { DefinitionStoreInterface } from '../types.js'
 import { createDatabase } from '@orkestrel/database'
-import { AgentToolError } from '../errors.js'
+import { ToolboxError } from '../errors.js'
 import { expandTables } from '../helpers.js'
 
 /**
@@ -9,7 +9,7 @@ import { expandTables } from '../helpers.js'
  *
  * @example
  * ```ts
- * import { DatabaseResolver } from '@orkestrel/tool'
+ * import { DatabaseResolver } from '@orkestrel/toolbox'
  *
  * const resolver = new DatabaseResolver(handles, drivers, key, store)
  * const database = await resolver.resolve('shop')
@@ -96,7 +96,7 @@ export class DatabaseResolver {
 			if (definition !== undefined) {
 				const factory = this.#drivers[definition.driver]
 				if (factory === undefined) {
-					throw new AgentToolError('TOOL', `unknown driver '${definition.driver}'`, {
+					throw new ToolboxError('TOOL', `unknown driver '${definition.driver}'`, {
 						id,
 						driver: definition.driver,
 					})
@@ -111,6 +111,6 @@ export class DatabaseResolver {
 				return handle
 			}
 		}
-		throw new AgentToolError('TOOL', `unknown database '${id}'`, { id })
+		throw new ToolboxError('TOOL', `unknown database '${id}'`, { id })
 	}
 }

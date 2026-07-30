@@ -1,5 +1,5 @@
 // The consumer-side guides-parity drop-in (PROPOSAL §6): runs `@orkestrel/guide`'s
-// checks against this repo's own `guides/README.md` manifest — one row (Tool)
+// checks against this repo's own `guides/README.md` manifest — one row (Toolbox)
 // spanning the core/server faces as a multi-dir `GuideModule` (AGENTS §22 —
 // one guide per package).
 
@@ -22,7 +22,7 @@ import {
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const WALK_DIRS = ['src', 'guides', 'tests']
-const SELF_SPECIFIERS = ['@orkestrel/tool', '@src/core', '@src/server']
+const SELF_SPECIFIERS = ['@orkestrel/toolbox', '@src/core', '@src/server']
 
 function walk(dir: string, acc: Record<string, string>): void {
 	for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
@@ -53,7 +53,7 @@ const manifest = parseManifest(readText('guides/README.md'), 'guides')
 // check resolves each specifier to ITS OWN face's exports rather than only the current
 // manifest entry's, per the specifier → module map below.
 const SPECIFIER_MODULES: Readonly<Record<string, string>> = {
-	'@orkestrel/tool': 'src/core',
+	'@orkestrel/toolbox': 'src/core',
 	'@src/core': 'src/core',
 	'@src/server': 'src/server',
 }

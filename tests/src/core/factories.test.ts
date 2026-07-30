@@ -1,5 +1,5 @@
 import type { AgentToolArguments } from '@src/core'
-import type { ToolResult } from '@orkestrel/agent'
+import type { ToolResult } from '@orkestrel/tool'
 import type { WorkflowDraft } from '@src/core'
 import type { DatabaseInterface } from '@orkestrel/database'
 import type { TaskContext, TaskControllerInterface, WorkflowDefinition } from '@orkestrel/workflow'
@@ -11,10 +11,9 @@ import {
 	createAgentRegistry,
 	createMemoryConversationStore,
 	createMemoryWorkspaceStore,
-	createTool,
-	createToolManager,
 	createWorkspaceManager,
 } from '@orkestrel/agent'
+import { createTool, createToolManager } from '@orkestrel/tool'
 import { booleanShape, isRecord, numberShape, stringShape } from '@orkestrel/contract'
 import {
 	createMemoryWorkflowStore,
@@ -42,7 +41,7 @@ import {
 	DATABASE_TOOL_NAME,
 	DESCRIBE_TOOL_NAME,
 	INFER_TOOL_NAME,
-	isAgentToolError,
+	isToolboxError,
 	MAX_WORKFLOW_DEPTH,
 	PROMPT_TOOL_NAME,
 	RELATION_TOOL_NAME,
@@ -536,17 +535,17 @@ describe('createWorkspaceTool — precedence: manager wins when BOTH manager and
 // ── createAgentTool — sub-agent delegation ────────────────────────────────────
 
 describe('createAgentTool — schema accept/reject via agentToolShape', () => {
-	it('a malformed call (missing/empty task) THROWS a typed TOOL AgentToolError', async () => {
+	it('a malformed call (missing/empty task) THROWS a typed TOOL ToolboxError', async () => {
 		const registry = createAgentRegistry({
 			providers: { main: createScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
 		const error = await rejectionOf(tool.execute({}))
-		expect(isAgentToolError(error)).toBe(true)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error)).toBe(true)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 
 		const emptyTask = await rejectionOf(tool.execute({ task: '' }))
-		expect(isAgentToolError(emptyTask) ? emptyTask.code : undefined).toBe('TOOL')
+		expect(isToolboxError(emptyTask) ? emptyTask.code : undefined).toBe('TOOL')
 	})
 
 	it('a well-formed call with every optional field is accepted by the contract', () => {
@@ -559,41 +558,41 @@ describe('createAgentTool — schema accept/reject via agentToolShape', () => {
 		expect(call.task).toBe('summarize')
 	})
 
-	it('a malformed tools/system field on the call THROWS a typed TOOL AgentToolError', async () => {
+	it('a malformed tools/system field on the call THROWS a typed TOOL ToolboxError', async () => {
 		const registry = createAgentRegistry({
 			providers: { main: createScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
 		const error = await rejectionOf(tool.execute({ task: 'x', tools: 'not-an-array' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
-	it('no resolvable provider (neither call nor tool default) THROWS a typed TOOL AgentToolError', async () => {
+	it('no resolvable provider (neither call nor tool default) THROWS a typed TOOL ToolboxError', async () => {
 		const registry = createAgentRegistry({
 			providers: { main: createScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry) // no default provider configured
 		const error = await rejectionOf(tool.execute({ task: 'do it' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 })
 
 describe('createAgentTool — depth / cycle guard', () => {
-	it('depth at the ceiling THROWS a typed DEPTH AgentToolError', async () => {
+	it('depth at the ceiling THROWS a typed DEPTH ToolboxError', async () => {
 		const provider = createScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', depth: AGENT_TOOL_DEPTH })
 		const error = await rejectionOf(tool.execute({ task: 'do it' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
 
-	it('a cyclic ancestry (provider already present) THROWS a typed DEPTH AgentToolError', async () => {
+	it('a cyclic ancestry (provider already present) THROWS a typed DEPTH ToolboxError', async () => {
 		const provider = createScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', ancestry: ['agent:main'] })
 		const error = await rejectionOf(tool.execute({ task: 'do it' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
 })
@@ -783,7 +782,7 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 		expect(await describeTool.execute({ name: 'agent' })).toBe(agentTool.description)
 	})
 
-	it('an unknown tool name THROWS a typed TOOL AgentToolError via the manager`s error envelope', async () => {
+	it('an unknown tool name THROWS a typed TOOL ToolboxError via the manager`s error envelope', async () => {
 		const manager = createToolManager()
 		const describeTool = createDescribeTool(manager)
 		manager.add(describeTool)
@@ -796,16 +795,16 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 		expect(result.error).toContain('nonexistent')
 
 		const direct = await rejectionOf(describeTool.execute({ name: 'nonexistent' }))
-		expect(isAgentToolError(direct) ? direct.code : undefined).toBe('TOOL')
+		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
 	})
 
-	it('malformed args (missing/empty name) are REJECTED with a typed TOOL AgentToolError', async () => {
+	it('malformed args (missing/empty name) are REJECTED with a typed TOOL ToolboxError', async () => {
 		const manager = createToolManager()
 		const describeTool = createDescribeTool(manager)
 		const missing = await rejectionOf(describeTool.execute({}))
-		expect(isAgentToolError(missing) ? missing.code : undefined).toBe('TOOL')
+		expect(isToolboxError(missing) ? missing.code : undefined).toBe('TOOL')
 		const empty = await rejectionOf(describeTool.execute({ name: '' }))
-		expect(isAgentToolError(empty) ? empty.code : undefined).toBe('TOOL')
+		expect(isToolboxError(empty) ? empty.code : undefined).toBe('TOOL')
 	})
 })
 
@@ -863,7 +862,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		expect(await pending).toBe(true)
 	})
 
-	it('DEADLOCK: a prompt cycle maps to a typed DEADLOCK AgentToolError', async () => {
+	it('DEADLOCK: a prompt cycle maps to a typed DEADLOCK ToolboxError', async () => {
 		const manager = createTerminalManager()
 		manager.add('a')
 		manager.add('b')
@@ -875,22 +874,22 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		await waitForDelay(0)
 
 		const error = await rejectionOf(askFromB.execute({ to: 'a', form: 'confirm', message: 'ok?' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('DEADLOCK')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEADLOCK')
 	})
 
-	it('unknown target maps to a typed TOOL AgentToolError listing known terminals', async () => {
+	it('unknown target maps to a typed TOOL ToolboxError listing known terminals', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
 			askTool.execute({ to: 'ghost', form: 'input', message: 'name?' }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
-		const known = isAgentToolError(error) ? error.context?.known : undefined
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		const known = isToolboxError(error) ? error.context?.known : undefined
 		expect(known).toEqual(['agent'])
 	})
 
-	it('EXPIRE: an injected-timer expiry maps to a typed EXPIRE AgentToolError', async () => {
+	it('EXPIRE: an injected-timer expiry maps to a typed EXPIRE ToolboxError', async () => {
 		const manager = createTerminalManager()
 		const fake = createFakeTimer()
 		manager.add('agent')
@@ -903,7 +902,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		await waitForDelay(0)
 		fake.fire(0)
 		const error = await pending
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('EXPIRE')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('EXPIRE')
 	})
 
 	it("answer tool 'pending' lists addressed prompts with from attribution", async () => {
@@ -947,15 +946,15 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		expect(await pending).toBe(true)
 	})
 
-	it('unknown id maps to a typed ANSWER AgentToolError', async () => {
+	it('unknown id maps to a typed ANSWER ToolboxError', async () => {
 		const manager = createTerminalManager()
 		manager.add('reviewer')
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 		const error = await rejectionOf(
 			answerTool.execute({ operation: 'answer', id: 'ghost-id', value: true }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('ANSWER')
-		expect(isAgentToolError(error) ? error.context?.reason : undefined).toBe('unknown')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('ANSWER')
+		expect(isToolboxError(error) ? error.context?.reason : undefined).toBe('unknown')
 	})
 
 	it('from/to cannot be overridden by args — construction-fixed identity', async () => {
@@ -985,7 +984,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		await answerTool.execute({ operation: 'answer', id, value: true })
 	})
 
-	it('empty choices (select) THROWS a typed TOOL AgentToolError naming the choices requirement, without parking', async () => {
+	it('empty choices (select) THROWS a typed TOOL ToolboxError naming the choices requirement, without parking', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
@@ -993,12 +992,12 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const error = await rejectionOf(
 			askTool.execute({ to: 'reviewer', form: 'select', message: 'pick one', choices: [] }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(error instanceof Error ? error.message : '').toContain('choice')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
-	it('empty choices (checkbox, choices omitted) THROWS a typed TOOL AgentToolError, without parking', async () => {
+	it('empty choices (checkbox, choices omitted) THROWS a typed TOOL ToolboxError, without parking', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
@@ -1006,7 +1005,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const error = await rejectionOf(
 			askTool.execute({ to: 'reviewer', form: 'checkbox', message: 'pick some' }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(error instanceof Error ? error.message : '').toContain('choice')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
@@ -1044,7 +1043,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		}
 		const askTool = createPromptTool({ manager: stub, from: 'a' })
 		const error = await rejectionOf(askTool.execute({ to: 'b', form: 'input', message: 'name?' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		const message = error instanceof Error ? error.message : ''
 		expect(message).toContain('failed')
 		expect(message).not.toContain('unknown terminal')
@@ -1060,7 +1059,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(askTool.execute({ form: 'input', message: 'hi' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
@@ -1070,7 +1069,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(askTool.execute({ to: 'reviewer', message: 'hi' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
@@ -1080,7 +1079,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(askTool.execute({ to: 'reviewer', form: 'input' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
@@ -1092,7 +1091,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		const error = await rejectionOf(
 			askTool.execute({ to: 'reviewer', form: 'wizard', message: 'hi' }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
@@ -1125,7 +1124,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(askTool.execute({ to: 'reviewer', form: 'input', message: {} }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
@@ -1137,7 +1136,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		const error = await rejectionOf(
 			askTool.execute({ to: 'reviewer', form: 'input', message: 'hi', timeout: -5 }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
@@ -1149,7 +1148,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		const error = await rejectionOf(
 			askTool.execute({ to: 'reviewer', form: 'select', message: 'pick one', choices: 'a,b' }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 })
@@ -1271,8 +1270,8 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		await waitForDelay(0)
 
 		const error = await rejectionOf(askB.execute({ to: 't0', form: 'confirm', message: 'ok?' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('DEADLOCK')
-		const context = isAgentToolError(error) ? error.context : undefined
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEADLOCK')
+		const context = isToolboxError(error) ? error.context : undefined
 		const path = context !== undefined && 'path' in context ? context.path : undefined
 		expect(Array.isArray(path) ? path : []).toEqual(expect.arrayContaining(['t0', 't1']))
 	})
@@ -1297,7 +1296,7 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		await waitForDelay(0)
 		fake.fire(0)
 		const error = await expiring
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('EXPIRE')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('EXPIRE')
 
 		// The unrelated pending ask is untouched — still parked, not settled.
 		expect(manager.pending('t2')).toHaveLength(1)
@@ -1505,8 +1504,8 @@ describe('createDatabaseTool — add', () => {
 		const error = await rejectionOf(
 			tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('DATABASE')
-		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('CONFLICT')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('CONFLICT')
 	})
 })
 
@@ -1576,8 +1575,8 @@ describe('createDatabaseTool — update', () => {
 				changes: { price: 'not-a-number' },
 			}),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('DATABASE')
-		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('VALIDATION')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('VALIDATION')
 	})
 })
 
@@ -1674,9 +1673,9 @@ describe('createDatabaseTool — destroy', () => {
 		expect(result).toEqual({ id: 'shop', destroyed: true })
 
 		const error = await rejectionOf(tool.execute({ operation: 'tables', id: 'shop' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(
-			isAgentToolError(error) && typeof error.message === 'string'
+			isToolboxError(error) && typeof error.message === 'string'
 				? error.message.includes('unknown database')
 				: false,
 		).toBe(true)
@@ -1687,7 +1686,7 @@ describe('createDatabaseTool — error paths', () => {
 	it('an unknown id (no cached handle, no store) throws a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
 		const error = await rejectionOf(tool.execute({ operation: 'tables', id: 'missing' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
 	it('an unknown driver name on create throws a typed TOOL error', async () => {
@@ -1695,7 +1694,7 @@ describe('createDatabaseTool — error paths', () => {
 		const error = await rejectionOf(
 			tool.execute({ operation: 'create', id: 'shop', tables: itemsTables(), driver: 'nope' }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
 	it('a duplicate create (same id twice) throws a typed TOOL error', async () => {
@@ -1704,16 +1703,16 @@ describe('createDatabaseTool — error paths', () => {
 		const error = await rejectionOf(
 			tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
 	it('malformed args (missing required fields) throw a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
 		const error = await rejectionOf(tool.execute({ operation: 'create' }))
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 
 		const badOperation = await rejectionOf(tool.execute({ operation: 'nope', id: 'shop' }))
-		expect(isAgentToolError(badOperation) ? badOperation.code : undefined).toBe('TOOL')
+		expect(isToolboxError(badOperation) ? badOperation.code : undefined).toBe('TOOL')
 	})
 
 	it('a row that fails validation on add re-surfaces as a typed DATABASE error with context.code VALIDATION', async () => {
@@ -1727,8 +1726,8 @@ describe('createDatabaseTool — error paths', () => {
 				row: { id: 'a', name: 'x', price: 1, active: 'not-a-boolean' },
 			}),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('DATABASE')
-		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('VALIDATION')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('VALIDATION')
 	})
 })
 
@@ -1749,7 +1748,7 @@ describe('createDatabaseTool — readonly gates mutations, leaves reads open', (
 		]
 		for (const call of mutations) {
 			const error = await rejectionOf(tool.execute(call))
-			expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		}
 
 		expect(await tool.execute({ operation: 'tables', id: 'shop' })).toEqual({
@@ -2051,8 +2050,8 @@ describe('createRelationTool — manager resolution', () => {
 				include: [],
 			}),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
-		expect(isAgentToolError(error) ? error.context?.managers : undefined).toEqual(['shop'])
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.context?.managers : undefined).toEqual(['shop'])
 	})
 
 	it('two registered managers with an omitted `manager` throws a typed TOOL ambiguous error', async () => {
@@ -2062,8 +2061,8 @@ describe('createRelationTool — manager resolution', () => {
 		const error = await rejectionOf(
 			tool.execute({ operation: 'load', model: 'accounts', key: 'a1', include: [] }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
-		expect(isAgentToolError(error) ? error.context?.managers : undefined).toEqual(['shop', 'other'])
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.context?.managers : undefined).toEqual(['shop', 'other'])
 	})
 })
 
@@ -2074,8 +2073,8 @@ describe('createRelationTool — model resolution', () => {
 		const error = await rejectionOf(
 			tool.execute({ operation: 'load', model: 'ghost', key: 'a1', include: [] }),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
-		const models = isAgentToolError(error) ? error.context?.models : undefined
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		const models = isToolboxError(error) ? error.context?.models : undefined
 		expect(Array.isArray(models) ? [...models].sort() : []).toEqual([
 			'accounts',
 			'contacts',
@@ -2264,7 +2263,7 @@ describe('createRelationTool — depth cap', () => {
 				include: ['contacts.account'],
 			}),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 })
 
@@ -2283,8 +2282,8 @@ describe('createRelationTool — error mapping (RelationError → typed RELATION
 				target: 'c1',
 			}),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('RELATION')
-		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('NOT_THROUGH')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('RELATION')
+		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('NOT_THROUGH')
 	})
 
 	it('an unknown relation name surfaces context.code UNKNOWN_RELATION', async () => {
@@ -2300,8 +2299,8 @@ describe('createRelationTool — error mapping (RelationError → typed RELATION
 				target: 'x',
 			}),
 		)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('RELATION')
-		expect(isAgentToolError(error) ? error.context?.code : undefined).toBe('UNKNOWN_RELATION')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('RELATION')
+		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('UNKNOWN_RELATION')
 	})
 })
 
@@ -2454,7 +2453,7 @@ describe('createInferTool', () => {
 		})
 	})
 
-	it('zero samples THROWS a typed TOOL AgentToolError, surfaced through the manager error envelope', async () => {
+	it('zero samples THROWS a typed TOOL ToolboxError, surfaced through the manager error envelope', async () => {
 		const tool = createInferTool()
 		const manager = createToolManager()
 		manager.add(tool)
@@ -2467,16 +2466,16 @@ describe('createInferTool', () => {
 		expect(result.error).toBeDefined()
 
 		const direct = await rejectionOf(tool.execute({ samples: [] }))
-		expect(isAgentToolError(direct) ? direct.code : undefined).toBe('TOOL')
+		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
 	})
 
-	it('malformed args (missing samples) THROW a typed TOOL AgentToolError', async () => {
+	it('malformed args (missing samples) THROW a typed TOOL ToolboxError', async () => {
 		const tool = createInferTool()
 		const missing = await rejectionOf(tool.execute({}))
-		expect(isAgentToolError(missing) ? missing.code : undefined).toBe('TOOL')
+		expect(isToolboxError(missing) ? missing.code : undefined).toBe('TOOL')
 
 		const wrongType = await rejectionOf(tool.execute({ samples: 'not-an-array' }))
-		expect(isAgentToolError(wrongType) ? wrongType.code : undefined).toBe('TOOL')
+		expect(isToolboxError(wrongType) ? wrongType.code : undefined).toBe('TOOL')
 	})
 
 	it('name/description overrides are advertised on the returned ToolInterface', () => {
@@ -2707,7 +2706,7 @@ describe('createInferTool', () => {
 		expect(result.error).toBeDefined()
 
 		const direct = await rejectionOf(tool.execute({ samples: [{ id: 1 }], candidates: 'nope' }))
-		expect(isAgentToolError(direct) ? direct.code : undefined).toBe('TOOL')
+		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
 	})
 })
 
@@ -2769,7 +2768,7 @@ describe('createEndpointTool', () => {
 		expect(received).toEqual({ id: '7', name: 'x' })
 	})
 
-	it('a nonconforming call THROWS a typed TOOL AgentToolError carrying non-empty explain faults', async () => {
+	it('a nonconforming call THROWS a typed TOOL ToolboxError carrying non-empty explain faults', async () => {
 		const tool = createEndpointTool({
 			name: 'lookupUser',
 			description: 'Look up a user by id.',
@@ -2782,9 +2781,9 @@ describe('createEndpointTool', () => {
 		const error = await rejectionOf(
 			Promise.resolve().then(() => tool.execute({ id: true, name: 'Ada' })),
 		)
-		expect(isAgentToolError(error)).toBe(true)
-		expect(isAgentToolError(error) ? error.code : undefined).toBe('TOOL')
-		const faults = isAgentToolError(error) ? error.context?.faults : undefined
+		expect(isToolboxError(error)).toBe(true)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		const faults = isToolboxError(error) ? error.context?.faults : undefined
 		expect(Array.isArray(faults)).toBe(true)
 		expect(Array.isArray(faults) ? faults.length : 0).toBeGreaterThan(0)
 	})
@@ -2862,7 +2861,7 @@ describe('createEndpointTool', () => {
 		expect(result.error?.split('async endpoint failure').length).toBe(2)
 	})
 
-	it('empty samples THROWS a typed TOOL AgentToolError at construction', () => {
+	it('empty samples THROWS a typed TOOL ToolboxError at construction', () => {
 		let caught: unknown
 		try {
 			createEndpointTool({
@@ -2874,8 +2873,8 @@ describe('createEndpointTool', () => {
 		} catch (error) {
 			caught = error
 		}
-		expect(isAgentToolError(caught)).toBe(true)
-		expect(isAgentToolError(caught) ? caught.code : undefined).toBe('TOOL')
+		expect(isToolboxError(caught)).toBe(true)
+		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
 	})
 
 	it('format/enum options change the advertised parameters', () => {
@@ -3011,8 +3010,8 @@ describe('createEndpointTool', () => {
 		} catch (error) {
 			caught = error
 		}
-		expect(isAgentToolError(caught)).toBe(true)
-		expect(isAgentToolError(caught) ? caught.code : undefined).toBe('TOOL')
+		expect(isToolboxError(caught)).toBe(true)
+		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
 
 		let strictReceived: unknown
 		const strictWithRecorder = createEndpointTool({
@@ -3063,7 +3062,7 @@ describe('createEndpointTool', () => {
 		} catch (error) {
 			caught = error
 		}
-		expect(isAgentToolError(caught)).toBe(true)
+		expect(isToolboxError(caught)).toBe(true)
 	})
 
 	it('(v5) format is NOT enforced: a { format: true } endpoint over email-shaped samples still accepts a non-email string', async () => {
@@ -3104,7 +3103,7 @@ describe('createEndpointTool', () => {
 		} catch (error) {
 			caught = error
 		}
-		expect(isAgentToolError(caught)).toBe(true)
+		expect(isToolboxError(caught)).toBe(true)
 	})
 
 	it("(v7) hostile args: a __proto__-carrying JSON.parse'd object flows through parse without polluting, and a throwing-getter Proxy yields the canonical TOOL error, never an unhandled throw", async () => {

@@ -1,6 +1,6 @@
-# PROPOSAL — The next tools for @orkestrel/tool
+# PROPOSAL — The next tools for @orkestrel/toolbox
 
-Status: proposal for review — nothing in here is implemented. `@orkestrel/tool` 0.0.1
+Status: proposal for review — nothing in here is implemented. `@orkestrel/toolbox` 0.0.1
 (workflow, workspace, agent, describe) is gated and ready; this document evaluates the
 candidates for the tools that come next, ranks them, and sketches each design far enough
 that a build round can start from it.
@@ -18,7 +18,7 @@ Every candidate was evaluated against the conventions this package already estab
 - **Store slots** — stateful tools accept an optional store following the line-wide 10-rule
   standard (`get(id)`/`set(snapshot)`/`delete(id)`, upsert by `snapshot.id`, memory + database
   twins), persisting on settle, never blocking the hot path.
-- **Typed errors** — tools throw `AgentToolError`; the `ToolManager` isolates the throw into
+- **Typed errors** — tools throw `ToolboxError`; the `ToolManager` isolates the throw into
   a tool-result error the model can read and recover from.
 - **Guards where recursion or contention lives** — the depth/ancestry pattern
   (`AGENT_TOOL_DEPTH`, `agentTag`/`workflowTag`) extends to any tool that can wait on
@@ -42,7 +42,7 @@ All five candidates are published, plus the supporting packages they lean on:
 | `@orkestrel/sse`      | 0.0.1   | The event-stream parser the terminal client uses                                          |
 | `@orkestrel/console`  | 0.0.1   | Styler the terminal renders through                                                       |
 
-Tool's dependency set today is `agent` + `workflow` + `contract` only — every adopted
+Toolbox's dependency set today is `agent` + `workflow` + `contract` only — every adopted
 candidate is a deliberate new dependency, which is one more reason to phase them.
 
 ---
@@ -140,7 +140,7 @@ export function createPromptTool(hub: PromptHubInterface, options: PromptToolOpt
 The handler calls `hub.ask(options.name, args.to, args.form, args.message, ...)` and
 **the tool call itself blocks until the other agent answers**. No polling, no self-scheduling,
 no wake-up cron — the park-as-Promise does all of it. On expiry the tool throws
-`AgentToolError` with the expire context, which the ToolManager surfaces as a readable
+`ToolboxError` with the expire context, which the ToolManager surfaces as a readable
 tool-result error ("prompt expired unanswered after 120000ms").
 
 **The answer tool** — the receiving side, an operation union like the workspace tool:
@@ -160,7 +160,7 @@ told and can retry, which is precisely the broker's own contract.
 ### 3.3 The scenario, end to end (in-process)
 
 ```ts
-import { createPromptHub, createPromptTool, createAnswerTool } from '@orkestrel/tool'
+import { createPromptHub, createPromptTool, createAnswerTool } from '@orkestrel/toolbox'
 
 const hub = createPromptHub({ timeout: 120_000 })
 hub.add('planner')
@@ -192,7 +192,7 @@ The hub's server mount is a `/server`-barrel helper that returns routes for the
 ```ts
 import { createServer, discoverPort, openStream } from '@orkestrel/server'
 import { createDispatcher } from '@orkestrel/router'
-import { createPromptHub, promptRoutes } from '@orkestrel/tool/server'
+import { createPromptHub, promptRoutes } from '@orkestrel/toolbox/server'
 
 const hub = createPromptHub()
 hub.add('reviewer')
@@ -228,7 +228,7 @@ path — the only difference is what answers: an answer tool or a keyboard.
 Agent runtimes block on tool calls. If A parks an ask on B while B parks an ask on A,
 both are blocked until the timeout backstop fires. The hub can do better than the
 backstop: on `ask(from, to)`, if `pending(from)` already holds a prompt _from_ `to`,
-fail fast with `AgentToolError` — "reciprocal prompt <id> from '<to>' is parked; answer
+fail fast with `ToolboxError` — "reciprocal prompt <id> from '<to>' is parked; answer
 it first". This is the depth/ancestry guard philosophy applied to waiting instead of
 recursion: turn a silent deadlock into an immediate, actionable error. Timeouts remain
 the backstop for everything else (an agent that died mid-conversation, a human who
@@ -336,7 +336,7 @@ const agent = createAgent({ provider, tools: [database] })
 // database { operation: 'migrate', id: 'crm', tables: { contacts: { columns: { ...previous, email: { type: 'string', optional: true } } } } }
 ```
 
-Errors: catch `isDatabaseError(error)` and rethrow `AgentToolError` carrying the code
+Errors: catch `isDatabaseError(error)` and rethrow `ToolboxError` carrying the code
 (`VALIDATION` / `CONFLICT` / `NOT_FOUND` / `MIGRATION` …) in context — the model reads
 "row failed validation: age expects integer" and self-corrects.
 
@@ -510,10 +510,10 @@ shipping the other four first hurts it.
 
 ## 8. Cross-cutting decisions
 
-**Environment split — add a `/server` barrel.** Tool today is a single `core` barrel and
+**Environment split — add a `/server` barrel.** Toolbox today is a single `core` barrel and
 environment-agnostic. The hub, prompt/answer/reason/database tools (over memory or
 injected drivers) stay in core. Node-coupled pieces — `promptRoutes`, the server tool,
-SQLite/JSON driver wiring — go under a new `@orkestrel/tool/server` barrel, following the
+SQLite/JSON driver wiring — go under a new `@orkestrel/toolbox/server` barrel, following the
 database and terminal packages' own core/server precedent. Core never imports node.
 
 **Dependencies are phased, not bundled.** Each round adds only its own: terminal round →
@@ -521,9 +521,9 @@ database and terminal packages' own core/server precedent. Core never imports no
 `@orkestrel/database`; server round → `@orkestrel/server` + `@orkestrel/router`; reason →
 `@orkestrel/reason`. Nothing speculative lands early (AGENTS §21).
 
-**One error, richer context.** `AgentToolError` stays the package error. Underlying typed
+**One error, richer context.** `ToolboxError` stays the package error. Underlying typed
 errors (`TerminalError`, `DatabaseError`, `HTTPError`, `ReasonError`) are caught, and
-their code + message travel in `AgentToolError`'s context so the model reads the real
+their code + message travel in `ToolboxError`'s context so the model reads the real
 reason. New codes only where a new _kind_ of failure exists — the reciprocal-prompt
 guard is the one candidate ('CYCLE' fits the existing depth/ancestry family).
 
@@ -542,7 +542,7 @@ handles_ — is the single sentence that answers every statefulness question abo
 
 ## 9. Recommended roadmap
 
-1. **Publish `@orkestrel/tool` 0.0.1 now.** It is gated, reviewed, and its four tools are
+1. **Publish `@orkestrel/toolbox` 0.0.1 now.** It is gated, reviewed, and its four tools are
    complete. Holding a verified release hostage to future tools inverts §21 — ship what
    exists, add what's next.
 2. **0.0.2 — terminal round**: `createPromptHub`, `createPromptTool`, `createAnswerTool`,

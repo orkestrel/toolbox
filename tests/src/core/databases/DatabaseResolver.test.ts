@@ -1,6 +1,6 @@
 import type { DatabaseInterface } from '@orkestrel/database'
 import { createMemoryDriver, generateUUID } from '@orkestrel/database'
-import { createMemoryDefinitionStore, DatabaseResolver, isAgentToolError } from '@src/core'
+import { createMemoryDefinitionStore, DatabaseResolver, isToolboxError } from '@src/core'
 import { createTestDatabase } from '../../../setup.js'
 import { describe, expect, it } from 'vitest'
 
@@ -51,7 +51,7 @@ describe('DatabaseResolver', () => {
 		} catch (error) {
 			caught = error
 		}
-		expect(isAgentToolError(caught)).toBe(true)
-		expect(isAgentToolError(caught) ? caught.code : undefined).toBe('TOOL')
+		expect(isToolboxError(caught)).toBe(true)
+		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
 	})
 })

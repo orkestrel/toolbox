@@ -1,49 +1,52 @@
-# @orkestrel/tool
+# @orkestrel/toolbox
 
-Concrete, LLM-callable **tools** for the `@orkestrel` line — built over
-[`@orkestrel/agent`](https://github.com/orkestrel/agent)'s `ToolInterface` /
-`createTool` runtime, with pluggable stores. Part of the `@orkestrel` line.
+Concrete, LLM-callable tools for the `@orkestrel` line. Toolbox supplies workflow
+authoring, workspace editing, sub-agent delegation, terminal prompts, database and
+relation operations, and schema inference over the
+[`@orkestrel/tool`](https://github.com/orkestrel/tool) runtime.
 
-- **`createWorkflowTool`** — authors and runs an
-  [`@orkestrel/workflow`](https://github.com/orkestrel/workflow) definition in
-  one call (flat steps / lenient draft / full definition, depth + cycle
-  guarded), with an optional pluggable `WorkflowStoreInterface` that persists
-  each executed run's snapshot on settle.
-- **`createWorkspaceTool`** — a 13-operation workspace-editing tool driving
-  `@orkestrel/agent`'s workspace runtime, either against a caller-supplied
-  manager or a fresh one built over a pluggable `WorkspaceStoreInterface`.
-- **`createAgentTool`** — net-new sub-agent delegation: resolves and runs one
-  seeded agent via an `AgentRegistryInterface`, depth + cycle guarded,
-  deliberately storeless (persistence, if any, rides the registry's own
-  configuration).
-- **Adapters** — `createToolFunction` / `createAgentFunction` compose a
-  registered tool or a live agent into a workflow's `functions` registry, plus
-  the authoring umbrella (`WorkflowSteps` / `WorkflowDraft`,
-  `createWorkflowDraftContract`, `workflowToolSummary`, `MAX_WORKFLOW_DEPTH`).
-
-**Status: v0.0.1 pending publish**, once the upstream `@orkestrel/workflow` /
-`@orkestrel/agent` cleanups that drop their authoring surfaces (this package
-becomes the defining home) land.
+The runtime envelope and registry (`ToolInterface`, `ToolCall`, `ToolResult`,
+`createTool`, and `createToolManager`) live in `@orkestrel/tool`. This package supplies
+the concrete handlers that plug into that runtime.
 
 ## Install
 
 ```sh
-npm install @orkestrel/tool
+npm install @orkestrel/toolbox
 ```
+
+## Example
+
+```ts
+import { createToolManager } from '@orkestrel/tool'
+import { createWorkspaceTool } from '@orkestrel/toolbox'
+
+const tools = createToolManager()
+tools.add(createWorkspaceTool())
+
+const result = await tools.execute({
+	id: 'write-1',
+	name: 'workspace',
+	arguments: {
+		operation: 'write',
+		path: 'notes.txt',
+		content: 'hello',
+	},
+})
+```
+
+Core tools are published from `@orkestrel/toolbox`; terminal route integration is
+published from `@orkestrel/toolbox/server`.
 
 ## Requirements
 
 - Node.js >= 22
-- Dual ESM + CommonJS builds (`import` and `require` both supported)
+- Dual ESM and CommonJS builds
 
 ## Guide
 
-See [`guides/src/tool.md`](guides/src/tool.md).
-
-## Package
-
-Published as a single typed entry point per the `exports` field in
-`package.json`.
+See [`guides/src/toolbox.md`](guides/src/toolbox.md). The vendored
+[`guides/src/tool.md`](guides/src/tool.md) documents the runtime dependency.
 
 ## License
 

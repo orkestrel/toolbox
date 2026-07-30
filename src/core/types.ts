@@ -8,7 +8,7 @@ import type { WorkflowRunnerInterface, WorkflowStoreInterface } from '@orkestrel
 import type { DatabaseInterface, DriverInterface, KeyFunction } from '@orkestrel/database'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 
-// Tool-package types — one interface per `create*Tool` / `create*Function` factory (AGENTS §5:
+// Toolbox types — one interface per `create*Tool` / `create*Function` factory (AGENTS §5:
 // types are the SOURCE OF TRUTH; implementation conforms to them, never the reverse). The
 // workflow-authoring family (WorkflowSteps/WorkflowStep/WorkflowDraft/PhaseDraft/TaskDraft) and
 // AgentFunctionOptions are OWNED here now — ported byte-faithfully from `@orkestrel/workflow`
@@ -141,7 +141,7 @@ export interface AgentFunctionOptions {
  *
  * @remarks
  * This is the PROPAGATION carrier across the agent/tool boundary. A `Tool`'s handler receives
- * ONLY the model-supplied `args` (no ambient context, no signal — see `@orkestrel/agent`'s
+ * ONLY the model-supplied `args` (no ambient context, no signal — see `@orkestrel/tool`'s
  * `ToolOptions`), so the run's position in the workflow→agent→workflow chain CANNOT be threaded
  * through a tool call at runtime. Instead {@link import('./factories.js').createAgentFunction}
  * CLOSES `depth` / `ancestry` over the tool at BIND time. Both are OPTIONAL: a workflow tool
@@ -284,7 +284,7 @@ export type WorkspaceOperation =
  *   {@link import('./constants.js').AGENT_TOOL_NAME} / {@link import('./constants.js').AGENT_TOOL_DESCRIPTION}.
  * - `provider` — the DEFAULT registry provider key used when a call omits `provider`; a call
  *   that supplies its own `provider` overrides this. One of `provider` (here or per-call) MUST
- *   resolve, or the handler throws a typed `TOOL` {@link import('./errors.js').AgentToolError}.
+ *   resolve, or the handler throws a typed `TOOL` {@link import('./errors.js').ToolboxError}.
  * - `tools` — the DEFAULT registry tool-name list loaded into the delegated sub-agent; a
  *   per-call `tools` list overrides (never merges with) this default.
  * - `system` — the DEFAULT system prompt seeding the sub-agent's context; a per-call `system`
@@ -294,7 +294,7 @@ export type WorkspaceOperation =
  *   {@link import('./constants.js').AGENT_TOOL_DEPTH}.
  * - `ancestry` — the sub-agent identifiers already in this delegation chain (default empty); a
  *   cycle (the resolved agent already present) is rejected with a typed `DEPTH`
- *   {@link import('./errors.js').AgentToolError}.
+ *   {@link import('./errors.js').ToolboxError}.
  * - `store` — this package's ADDITION: when supplied, the handler persists the delegated
  *   sub-agent's active conversation snapshot (`store.set(agent.context.conversations.active.snapshot())`)
  *   once `agent.generate()` settles successfully, before returning — one snapshot per delegation
@@ -336,7 +336,7 @@ export interface AgentToolArguments {
 }
 
 /**
- * The error CODE a thrown {@link import('./errors.js').AgentToolError} carries — the SAME
+ * The error CODE a thrown {@link import('./errors.js').ToolboxError} carries — the SAME
  * two-code shape `@orkestrel/workflow`'s `WorkflowError` uses for its own tool guard, kept
  * distinct per package (AGENTS §14: a thrown, typed, code-bearing error, never a `{ error }`
  * return).
@@ -357,7 +357,7 @@ export interface AgentToolArguments {
  * `RELATION` — a typed `@orkestrel/relation` failure (`RelationError`), re-surfaced with the
  * granular {@link import('@orkestrel/relation').RelationErrorCode} carried in `context`.
  */
-export type AgentToolErrorCode =
+export type ToolboxErrorCode =
 	| 'TOOL'
 	| 'DEPTH'
 	| 'DEADLOCK'
@@ -371,7 +371,7 @@ export type AgentToolErrorCode =
  * tool `name` whose full `description` a model wants back.
  *
  * @remarks
- * `name` must match a tool registered on the {@link import('@orkestrel/agent').ToolManagerInterface}
+ * `name` must match a tool registered on the {@link import('@orkestrel/tool').ToolManagerInterface}
  * the describe tool was built over — it is looked up via `tools.tool(name)`.
  */
 export interface DescribeToolArguments {
@@ -387,7 +387,7 @@ export interface DescribeToolArguments {
  * - `manager` — the terminal manager whose `ask(from, to, form, options)` the tool's handler
  *   calls; BLOCKS the calling agent turn until the addressed terminal answers (or the ask
  *   rejects — a cycle throws `TerminalError('DEADLOCK')`, re-surfaced as a typed `DEADLOCK`
- *   {@link import('./errors.js').AgentToolError}; an expired prompt re-surfaces as `EXPIRE`).
+ *   {@link import('./errors.js').ToolboxError}; an expired prompt re-surfaces as `EXPIRE`).
  * - `from` — the terminal identity this tool asks AS; the model supplies the `to` target and the
  *   prompt form per call.
  * - `name` / `description` — advertised tool overrides; default to
@@ -409,7 +409,7 @@ export interface PromptToolOptions {
  * - `manager` — the terminal manager whose `pending(to)` / `answer(to, id, value)` the tool's
  *   handler calls — `pending` lists the prompts currently addressed to `to`, `answer` resolves
  *   one by `id`. A failed `answer` (`TerminalAnswerResult.error`) re-surfaces as a typed
- *   `ANSWER` {@link import('./errors.js').AgentToolError}.
+ *   `ANSWER` {@link import('./errors.js').ToolboxError}.
  * - `to` — the terminal identity this tool lists / answers prompts FOR.
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').ANSWER_TOOL_NAME} / {@link import('./constants.js').ANSWER_TOOL_DESCRIPTION}.
@@ -501,7 +501,7 @@ export interface DefinitionStoreInterface {
  *   a fresh `AbortSignal.timeout(timeout)` per tool call.
  * - `readonly` — when `true`, every mutating operation (`'create'` / `'add'` / `'set'` /
  *   `'update'` / `'remove'` / `'migrate'` / `'destroy'`) throws a typed `TOOL`
- *   {@link import('./errors.js').AgentToolError} before doing anything.
+ *   {@link import('./errors.js').ToolboxError} before doing anything.
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').DATABASE_TOOL_NAME} / {@link import('./constants.js').DATABASE_TOOL_DESCRIPTION}.
  */
@@ -527,7 +527,7 @@ export interface DatabaseToolOptions {
  *   resolved handles, a relation manager's relations are declared up front and cannot be minted
  *   on demand from a tool call). A call that omits `manager` resolves to the SOLE registered
  *   manager when exactly one is registered, else throws a typed `TOOL`
- *   {@link import('./errors.js').AgentToolError} naming the registered manager keys.
+ *   {@link import('./errors.js').ToolboxError} naming the registered manager keys.
  * - `limit` — the row cap `'find'` / `'links'` enforce when a call's `limit` is omitted or
  *   exceeds it. Defaults to {@link import('./constants.js').RELATION_TOOL_LIMIT}.
  * - `depth` — the max dot-path segment count `'load'` / `'find'`'s `include` paths may reach
@@ -570,7 +570,7 @@ export interface InferToolOptions {
 
 /**
  * The handler {@link import('./types.js').EndpointDefinition.invoke} implements — mirrors
- * `@orkestrel/agent`'s `ToolOptions.execute` signature EXACTLY (same `Readonly<Record<string,
+ * `@orkestrel/tool`'s `ToolOptions.execute` signature EXACTLY (same `Readonly<Record<string,
  * unknown>>` argument, same `Promise<unknown> | unknown` return) so
  * `execute: (args) => definition.invoke(args)` typechecks with zero assertions in
  * {@link import('./factories.js').createEndpointTool}.
@@ -586,7 +586,7 @@ export type EndpointHandler = (
  *
  * @remarks
  * `samples` MUST be non-empty — {@link import('./factories.js').createEndpointTool} throws a
- * typed `TOOL` {@link import('./errors.js').AgentToolError} at CONSTRUCTION when it is empty,
+ * typed `TOOL` {@link import('./errors.js').ToolboxError} at CONSTRUCTION when it is empty,
  * since an empty sample set cannot infer a schema. By DEFAULT ({@link EndpointToolOptions.validate}
  * `true`) `invoke` receives the PARSED, NORMALIZED args record — a copy of the model-supplied
  * `args` with each scalar coerced to its inferred type (e.g. a number sent for a string slot
@@ -596,7 +596,7 @@ export type EndpointHandler = (
  * `validate: false`, `invoke` receives the model-supplied `args` VERBATIM (raw passthrough, never
  * checked against the inferred schema). Either way `invoke`'s return flows back as the tool
  * call's result; a throw PROPAGATES uncaught, isolated by the `ToolManagerInterface`
- * (`@orkestrel/agent`) into the canonical error envelope. When `samples` are non-object values,
+ * (`@orkestrel/tool`) into the canonical error envelope. When `samples` are non-object values,
  * the advertised schema wraps them under a single required `value` property, so `invoke` receives
  * an `args` record of the shape `{ value: ... }` — never the bare value.
  */
@@ -622,7 +622,7 @@ export interface EndpointDefinition {
  * to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/`'false'`/`1`/`0`), so `invoke`
  * receives the COERCED values (e.g. `7` sent for a string slot arrives at `invoke` as `'7'`), not
  * the raw call args. A call whose `args` fails to parse — a required key missing, or a value not
- * coercible to its slot's type — THROWS a typed `TOOL` {@link import('./errors.js').AgentToolError}
+ * coercible to its slot's type — THROWS a typed `TOOL` {@link import('./errors.js').ToolboxError}
  * carrying the structured `explain` faults, and `invoke` is never called. Beyond that coercion,
  * enforcement is STRUCTURAL — required keys, `enum` membership, and numeric bounds — `format`
  * annotations (`email`, `date-time`, `uuid`, `uri`, ...) are NEVER asserted, mirroring

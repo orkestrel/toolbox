@@ -9,7 +9,7 @@ import type {
 import type { PromptType } from '@orkestrel/terminal'
 import {
 	agentTag,
-	AgentToolError,
+	ToolboxError,
 	clampCriteria,
 	coerceAnswer,
 	columnSchema,
@@ -21,7 +21,7 @@ import {
 	expandInclude,
 	expandSteps,
 	expandTables,
-	isAgentToolError,
+	isToolboxError,
 	isColumnKind,
 	isColumnSpec,
 	isDatabaseDefinition,
@@ -354,7 +354,7 @@ describe('pressure: coerceAnswer — hostile-value fuzz (totality, exact branch 
 	})
 })
 
-describe('terminalToolCode — classify a caught error into an AgentToolErrorCode', () => {
+describe('terminalToolCode — classify a caught error into a ToolboxErrorCode', () => {
 	it('maps DEADLOCK and EXPIRE to their own code', () => {
 		expect(terminalToolCode(new TerminalError('DEADLOCK', 'cycle'))).toBe('DEADLOCK')
 		expect(terminalToolCode(new TerminalError('EXPIRE', 'timed out'))).toBe('EXPIRE')
@@ -666,21 +666,21 @@ describe('expandInclude — expand a flat dot-path include list into a nested In
 		})
 	})
 
-	it('a path exceeding the depth cap throws a typed TOOL AgentToolError', () => {
-		expect(() => expandInclude(['a.b.c'], 2)).toThrow(AgentToolError)
+	it('a path exceeding the depth cap throws a typed TOOL ToolboxError', () => {
+		expect(() => expandInclude(['a.b.c'], 2)).toThrow(ToolboxError)
 		let caught: unknown
 		try {
 			expandInclude(['a.b.c'], 2)
 		} catch (error) {
 			caught = error
 		}
-		expect(isAgentToolError(caught) ? caught.code : undefined).toBe('TOOL')
+		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
 	})
 
-	it('an empty segment (leading/trailing/doubled dot) throws a typed TOOL AgentToolError', () => {
-		expect(() => expandInclude(['.a'], 3)).toThrow(AgentToolError)
-		expect(() => expandInclude(['a..b'], 3)).toThrow(AgentToolError)
-		expect(() => expandInclude(['a.'], 3)).toThrow(AgentToolError)
+	it('an empty segment (leading/trailing/doubled dot) throws a typed TOOL ToolboxError', () => {
+		expect(() => expandInclude(['.a'], 3)).toThrow(ToolboxError)
+		expect(() => expandInclude(['a..b'], 3)).toThrow(ToolboxError)
+		expect(() => expandInclude(['a.'], 3)).toThrow(ToolboxError)
 	})
 
 	it('an undefined paths list yields the empty Include', () => {

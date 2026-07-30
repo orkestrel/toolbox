@@ -4,25 +4,29 @@ A dual-axis index into this repository's guides — by concept, and by directory
 
 ## By concept
 
-| Concept | Spec                         | Source                                                   | Tests                                                                            |
-| ------- | ---------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Tool    | [`src/tool.md`](src/tool.md) | [`src/core`](../src/core), [`src/server`](../src/server) | [`tests/src/core`](../tests/src/core), [`tests/src/server`](../tests/src/server) |
+| Concept | Spec                               | Source                                                   | Tests                                                                            |
+| ------- | ---------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Toolbox | [`src/toolbox.md`](src/toolbox.md) | [`src/core`](../src/core), [`src/server`](../src/server) | [`tests/src/core`](../tests/src/core), [`tests/src/server`](../tests/src/server) |
 
 ## By directory
 
-| Directory    | Guide                        |
-| ------------ | ---------------------------- |
-| `src/core`   | [`src/tool.md`](src/tool.md) |
-| `src/server` | [`src/tool.md`](src/tool.md) |
+| Directory    | Guide                              |
+| ------------ | ---------------------------------- |
+| `src/core`   | [`src/toolbox.md`](src/toolbox.md) |
+| `src/server` | [`src/toolbox.md`](src/toolbox.md) |
 
 ## Dependency reference
 
 [`src/agent.md`](src/agent.md) is a byte-identical mirror of the guide for
-`@orkestrel/agent` — a runtime dependency, the tool runtime (`ToolInterface`,
-`createTool`, `ToolManager`) this package's concrete tools plug into. It
-documents **that package's** surface, not anything sourced in this repo; it
-is kept here so a reader of this package can see the runtime it is built
-from without leaving this guide set.
+`@orkestrel/agent` — a runtime dependency supplying the agent, conversation,
+and workspace surfaces this package's concrete tools drive. It documents
+**that package's** surface, not anything sourced in this repo.
+
+[`src/tool.md`](src/tool.md) is a byte-identical mirror of the guide for
+`@orkestrel/tool` — the runtime dependency supplying `ToolInterface`,
+`createTool`, `ToolManager`, and the call/result envelope this package's
+concrete tools plug into. It documents **that package's** surface, not
+anything sourced in this repo.
 
 [`src/contract.md`](src/contract.md) is a byte-identical mirror of the guide
 for `@orkestrel/contract` — a runtime dependency, the shape DSL a tool's

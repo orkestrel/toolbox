@@ -20,7 +20,7 @@ import { TerminalConnection } from './TerminalConnection.js'
  *
  * @example
  * ```ts
- * import { TerminalRoutes } from '@orkestrel/tool/server'
+ * import { TerminalRoutes } from '@orkestrel/toolbox/server'
  *
  * const routes = new TerminalRoutes(manager).routes()
  * ```
