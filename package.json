@@ -1,21 +1,22 @@
 {
-	"name": "@orkestrel/tool",
-	"version": "0.0.6",
-	"description": "Concrete LLM-callable tools for the @orkestrel line — workflow authoring, workspace editing, and sub-agent delegation, over the agent tool runtime, with pluggable stores. Part of the @orkestrel line.",
+	"name": "@orkestrel/toolbox",
+	"version": "0.0.1",
+	"description": "Concrete LLM-callable tools for the @orkestrel line — workflow authoring, workspace editing, sub-agent delegation, and more, over the @orkestrel/tool runtime, with pluggable stores. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
 		"llm",
 		"tool",
+		"toolbox",
 		"typescript",
 		"workflow",
 		"workspace"
 	],
-	"homepage": "https://github.com/orkestrel/tool#readme",
-	"bugs": "https://github.com/orkestrel/tool/issues",
+	"homepage": "https://github.com/orkestrel/toolbox#readme",
+	"bugs": "https://github.com/orkestrel/toolbox/issues",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/orkestrel/tool.git"
+		"url": "git+https://github.com/orkestrel/toolbox.git"
 	},
 	"files": [
 		"dist/src",
@@ -82,6 +83,7 @@
 		"@orkestrel/relation": "^0.0.6",
 		"@orkestrel/server": "^0.0.7",
 		"@orkestrel/terminal": "^0.0.5",
+		"@orkestrel/tool": "^0.0.7",
 		"@orkestrel/workflow": "^0.0.7"
 	},
 	"devDependencies": {
