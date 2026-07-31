@@ -68,7 +68,7 @@ descriptions never enter agent instruction context.
 | @orkestrel/toolbox    | 0.0.1   |
 | @orkestrel/websocket  | 0.0.7   |
 | @orkestrel/worker     | 0.0.4   |
-| @orkestrel/workflow   | 0.0.7   |
+| @orkestrel/workflow   | 0.0.8   |
 | @orkestrel/workspace  | 0.0.2   |
 
 <!-- catalog:end -->

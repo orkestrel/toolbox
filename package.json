@@ -84,7 +84,7 @@
 		"@orkestrel/server": "^0.0.7",
 		"@orkestrel/terminal": "^0.0.5",
 		"@orkestrel/tool": "^0.0.8",
-		"@orkestrel/workflow": "^0.0.7",
+		"@orkestrel/workflow": "^0.0.8",
 		"@orkestrel/workspace": "^0.0.2"
 	},
 	"devDependencies": {
