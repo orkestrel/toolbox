@@ -78,7 +78,7 @@
 	},
 	"dependencies": {
 		"@orkestrel/agent": "^0.0.11",
-		"@orkestrel/contract": "^0.0.8",
+		"@orkestrel/contract": "^0.0.9",
 		"@orkestrel/database": "^0.0.6",
 		"@orkestrel/relation": "^0.0.6",
 		"@orkestrel/server": "^0.0.7",
@@ -88,14 +88,14 @@
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.58.12",
-		"@orkestrel/guide": "^0.0.7",
-		"@orkestrel/scaffold": "^0.0.11",
+		"@orkestrel/guide": "^0.0.8",
+		"@orkestrel/scaffold": "^0.0.12",
 		"@types/node": "^26.1.2",
 		"@vitest/browser-playwright": "^4.1.10",
 		"oxfmt": "^0.61.0",
 		"oxlint": "^1.76.0",
 		"typescript": "^6.0.3",
-		"vite": "^8.1.5",
+		"vite": "^8.2.0",
 		"vite-plugin-dts": "^5.0.3",
 		"vitest": "^4.1.10"
 	},
