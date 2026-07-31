@@ -3,9 +3,11 @@ import type { WorkflowSteps, WorkspaceOperation } from './types.js'
 
 // Toolbox constants — UPPER_SNAKE, `Object.freeze`d, every member exported (AGENTS §5).
 // The workflow tool's name/description/examples/depth-bound and the workspace tool's
-// name/description are OWNED here now — ported byte-faithfully from `@orkestrel/workflow` /
-// `@orkestrel/workspace` ahead of the upstream cleanup that drops the authoring surface from those
-// packages (this package becomes the defining home). Only the net-new agent tool's constants
+// name/description are OWNED here now — the workflow half ported byte-faithfully from
+// `@orkestrel/workflow` ahead of the upstream cleanup that drops the authoring surface from that
+// package; the workspace half ported from `@orkestrel/agent` before the workspace domain was
+// extracted to `@orkestrel/workspace`, which now owns the files and editing surface the tool
+// drives (this package is the defining home for both). Only the net-new agent tool's constants
 // were already net-new to this package.
 
 /**
@@ -175,7 +177,7 @@ export const WORKFLOW_TOOL_DESCRIPTION = [
  * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  *
  * @remarks
- * OWNED here now (ported from `@orkestrel/workspace`).
+ * OWNED here now (ported from `@orkestrel/agent`).
  */
 export const WORKSPACE_TOOL_NAME = 'workspace'
 
@@ -184,7 +186,7 @@ export const WORKSPACE_TOOL_NAME = 'workspace'
  * VERBATIM in {@link WORKSPACE_TOOL_DESCRIPTION}.
  *
  * @remarks
- * OWNED here now (ported from `@orkestrel/workspace`). A `'write'` op (the most common authoring
+ * OWNED here now (ported from `@orkestrel/agent`). A `'write'` op (the most common authoring
  * action): create or overwrite `notes.txt` with `hello`. Frozen so it cannot be mutated in
  * place.
  */
@@ -200,7 +202,7 @@ export const WORKSPACE_TOOL_EXAMPLE: WorkspaceOperation = Object.freeze({
  * `operation`-keyed tool.
  *
  * @remarks
- * OWNED here now (ported from `@orkestrel/workspace`). Mirrors {@link WORKFLOW_TOOL_DESCRIPTION}'s
+ * OWNED here now (ported from `@orkestrel/agent`). Mirrors {@link WORKFLOW_TOOL_DESCRIPTION}'s
  * teaching style: names the `operation` discriminant field, enumerates all 13 operations with
  * their FLAT fields, gives a worked example for the common ones, and embeds
  * {@link WORKSPACE_TOOL_EXAMPLE} verbatim.

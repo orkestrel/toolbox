@@ -11,8 +11,8 @@ import type { RelationManagerInterface } from '@orkestrel/relation'
 // AgentFunctionOptions are OWNED here now — ported byte-faithfully from `@orkestrel/workflow`
 // ahead of the upstream cleanup that drops the authoring surface from that package (this package
 // becomes the defining home). WorkspaceOperation is OWNED here now — ported from
-// `@orkestrel/workspace`
-// for the same reason. Each tool factory's options additionally grows a single `store` (or, for
+// `@orkestrel/agent` before the workspace domain was extracted to `@orkestrel/workspace`, which
+// now owns the files and editing surface. Each tool factory's options additionally grows a single `store` (or, for
 // the workspace tool, `manager` / `store`) slot — the pluggable persistence seam this package
 // layers on top of the ported handler logic.
 
@@ -183,7 +183,7 @@ export interface WorkspaceToolOptions {
 	readonly store?: WorkspaceStoreInterface
 }
 
-// === Workspace operation union (OWNED here now, ported from `@orkestrel/workspace`)
+// === Workspace operation union (OWNED here now, ported from `@orkestrel/agent`)
 
 /**
  * One operation an agent invokes through {@link import('./factories.js').createWorkspaceTool} — a

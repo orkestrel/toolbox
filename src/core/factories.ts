@@ -113,10 +113,11 @@ import {
 } from './shapers.js'
 
 // This package's tool factories. `createWorkflowTool` / `createWorkspaceTool` OWN their full
-// handler logic now (ported byte-faithfully from `@orkestrel/workflow` / `@orkestrel/workspace` ahead
-// of the upstream cleanup that drops the authoring surface from those packages) and additionally
-// layer a pluggable store slot on top; `createAgentTool` is net-new: sub-agent delegation over an
-// `AgentRegistryInterface`.
+// handler logic now (the workflow half ported byte-faithfully from `@orkestrel/workflow` ahead of
+// the upstream cleanup that drops the authoring surface from that package; the workspace half
+// ported from `@orkestrel/agent` before the workspace domain was extracted to
+// `@orkestrel/workspace`) and additionally layer a pluggable store slot on top;
+// `createAgentTool` is net-new: sub-agent delegation over an `AgentRegistryInterface`.
 
 /**
  * Wrap a registered tool as a {@link WorkflowFunction} (`@orkestrel/workflow`) — the OPT-IN

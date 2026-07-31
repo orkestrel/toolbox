@@ -145,9 +145,10 @@ export const answerToolShape = unionShape(
 // Toolbox shapes — the shape VALUE each `create*Tool` factory (factories.ts) compiles into
 // the lockstep guard + parser + JSON Schema outputs (AGENTS §14). `agentToolShape` MUST agree
 // with the hand-written `AgentToolArguments` (types.ts), which is the source of truth.
-// `workflowStepsShape` / `workflowDraftShape` / `workspaceToolShape` are OWNED here now — ported
-// byte-faithfully from `@orkestrel/workflow` / `@orkestrel/workspace` ahead of the upstream cleanup
-// that drops the authoring surface from those packages (this package becomes the defining home).
+// `workflowStepsShape` / `workflowDraftShape` are OWNED here now — ported byte-faithfully from
+// `@orkestrel/workflow` ahead of the upstream cleanup that drops the authoring surface from that
+// package. `workspaceToolShape` is OWNED here now — ported from `@orkestrel/agent` before the
+// workspace domain was extracted to `@orkestrel/workspace` (this package is the defining home).
 
 /**
  * The shape of {@link import('./types.js').AgentToolArguments} —
@@ -319,7 +320,7 @@ export const workflowStepsShape = objectShape({
 	}),
 })
 
-// === Workspace operation shape (OWNED here now, ported from `@orkestrel/workspace`)
+// === Workspace operation shape (OWNED here now, ported from `@orkestrel/agent`)
 
 /**
  * The shape of a {@link import('./types.js').WorkspaceOperation} — a descriptive tagged union
