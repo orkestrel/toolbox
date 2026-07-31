@@ -1,4 +1,4 @@
-import type { WorkflowDefinition, WorkflowResult, WorkflowStatus } from '@orkestrel/workflow'
+import type { WorkflowDefinition, WorkflowResult } from '@orkestrel/workflow'
 import type { PromptType } from '@orkestrel/terminal'
 import type { TableMap } from '@orkestrel/database'
 import type { DatabaseErrorCode } from '@orkestrel/database'
@@ -11,11 +11,14 @@ import type {
 import type { Condition, ConditionConnector, OrderDirection, QueryInput } from '@orkestrel/database'
 import type { ContractShape } from '@orkestrel/contract'
 import type {
+	AgentFunction,
 	ToolboxErrorCode,
 	ColumnKind,
 	ColumnSpec,
 	DatabaseDefinition,
 	TableSpec,
+	WorkflowToolResult,
+	WorkflowLineage,
 } from './types.js'
 import type { PhaseDraft, TaskDraft, WorkflowDraft, WorkflowSteps } from './types.js'
 import { isTerminalError } from '@orkestrel/terminal'
@@ -23,6 +26,7 @@ import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
 import { ToolboxError } from './errors.js'
 import {
+	attempt,
 	booleanShape,
 	integerShape,
 	isFiniteNumber,
@@ -34,10 +38,9 @@ import {
 	stringShape,
 } from '@orkestrel/contract'
 
-// Toolbox helpers — OWNED here now, ported byte-faithfully from `@orkestrel/workflow` ahead
-// of the upstream cleanup that drops the authoring surface from that package (this package
-// becomes the defining home for the workflow tool's lenient-authoring pipeline and its ancestry
-// tagging).
+// Toolbox owns the workflow tool's lenient-authoring completion, ancestry tags, and boundary
+// projections. Runtime scheduling, named-function resolution, and persistence remain native
+// `@orkestrel/workflow` responsibilities.
 
 /**
  * The ancestry identifier of a workflow in a run chain — `workflow:<id>`.
@@ -60,7 +63,7 @@ export function workflowTag(id: string): string {
  * @remarks
  * The agent counterpart of {@link workflowTag}: {@link import('./factories.js').createAgentFunction}
  * / {@link import('./factories.js').createWorkflowTool} guard against re-entering an agent or
- * workflow already in the chain (a typed `DEPTH` `WorkflowError`, `@orkestrel/workflow`). The
+ * workflow already in the chain (this package's typed `DEPTH` `ToolboxError`). The
  * `agent:` namespace keeps it distinct from a same-string workflow id.
  *
  * @param name - The agent's identifier / registry name
@@ -71,23 +74,104 @@ export function agentTag(name: string): string {
 }
 
 /**
+ * Narrow an unknown value to a valid alternating workflow lineage.
+ *
+ * @param value - The value to inspect
+ * @returns Whether `value` is a unique, nonempty-tagged workflow/agent chain
+ */
+export function isWorkflowLineage(value: unknown): value is WorkflowLineage {
+	const inspected = attempt(() => {
+		if (!Array.isArray(value)) return false
+		const seen = new Set<string>()
+		for (const [index, tag] of value.entries()) {
+			if (!isString(tag)) return false
+			const prefix = index % 2 === 0 ? 'workflow:' : 'agent:'
+			if (!tag.startsWith(prefix) || tag.length === prefix.length || seen.has(tag)) return false
+			seen.add(tag)
+		}
+		return true
+	})
+	return inspected.success && inspected.value
+}
+
+/**
+ * Build a validated, copied, and frozen workflow lineage value.
+ *
+ * @param lineage - The configured chain; omitted means a direct root
+ * @returns An immutable caller-isolated lineage
+ */
+export function lineageOf(lineage: WorkflowLineage = []): WorkflowLineage {
+	if (!isWorkflowLineage(lineage)) {
+		throw new ToolboxError('TOOL', 'workflow lineage must alternate unique workflow and agent tags')
+	}
+	return Object.freeze([...lineage])
+}
+
+/**
+ * Append one tag to a workflow lineage and return a frozen copy.
+ *
+ * @param lineage - The valid chain to extend
+ * @param tag - The workflow or agent tag to append
+ * @returns The validated immutable extension
+ */
+export function extendLineage(lineage: WorkflowLineage, tag: string): WorkflowLineage {
+	return lineageOf([...lineage, tag])
+}
+
+/**
+ * Derive the zero-based workflow nesting depth from a valid lineage.
+ *
+ * @param lineage - The workflow/agent chain
+ * @returns Zero for an empty/root lineage, then one per nested workflow
+ */
+export function deriveWorkflowDepth(lineage: WorkflowLineage): number {
+	const current = lineageOf(lineage)
+	const workflows = current.filter((tag) => tag.startsWith('workflow:')).length
+	return Math.max(0, workflows - 1)
+}
+
+/**
+ * Narrow an unknown callable to Toolbox's frozen contextual agent adapter metadata.
+ *
+ * @param value - The value to inspect
+ * @returns Whether it is a frozen {@link AgentFunction} with a frozen valid lineage
+ */
+export function isAgentFunction(value: unknown): value is AgentFunction {
+	const inspected = attempt(() => {
+		if (typeof value !== 'function' || !Object.isFrozen(value)) return false
+		const category = Reflect.getOwnPropertyDescriptor(value, 'category')
+		const lineage = Reflect.getOwnPropertyDescriptor(value, 'lineage')
+		return (
+			category?.value === 'agent' &&
+			lineage !== undefined &&
+			'value' in lineage &&
+			Object.isFrozen(lineage.value) &&
+			isWorkflowLineage(lineage.value)
+		)
+	})
+	return inspected.success && inspected.value
+}
+
+/**
  * Build the plain success summary {@link import('./factories.js').createWorkflowTool} returns on
  * a completed run — the universal tool-handler contract (AGENTS §14): return a plain value on
  * success, appearing identically over BOTH the agent loop and MCP.
  *
  * @remarks
- * The summary is LEAN: the workflow's terminal `status` and the COUNT of settled task results —
- * enough for a caller / model to react without serializing the whole live tree. (It carries no
- * synthetic `id` / `name`: a tool handler has no call id; the `ToolManagerInterface`
- * (`@orkestrel/tool`) supplies the canonical envelope's identity.)
+ * The summary is LEAN: the workflow's terminal `status`, settled-task count, and exact optional
+ * native persistence outcome. It carries no synthetic `id` / `name`: a tool handler has no call
+ * id; the `ToolManagerInterface` (`@orkestrel/tool`) supplies the canonical envelope's identity.
  *
  * @param result - The terminal `WorkflowResult` (`@orkestrel/workflow`) the run produced
- * @returns The plain success summary — `{ status, count }`
+ * @returns The plain success summary — `{ status, count, durable?, fault? }`
  */
-export function workflowToolSummary(
-	result: WorkflowResult,
-): Readonly<{ status: WorkflowStatus; count: number }> {
-	return { status: result.status, count: result.results.length }
+export function workflowToolSummary(result: WorkflowResult): WorkflowToolResult {
+	return {
+		status: result.status,
+		count: result.results.length,
+		...(result.durable === undefined ? {} : { durable: result.durable }),
+		...(result.fault === undefined ? {} : { fault: result.fault }),
+	}
 }
 
 // === Draft completion + flat-steps expansion (the tool's LENIENT authoring surfaces)
@@ -187,16 +271,17 @@ export function completeTaskDraft(
  * `name` becomes the task's `run` (the behavior-registry key). Ids/names are auto-filled
  * positionally — it builds an ids-omitted {@link WorkflowDraft} and delegates to
  * {@link completeDraft}, so the two lenient surfaces share ONE synthesis path (step `i` → phase
- * `phase-<i>`, its task `phase-<i>-task-0`). The optional `name` becomes the workflow's `name`.
- * The result is a complete definition the caller validates against the STRICT contract before
- * running.
+ * `phase-<i>`, its task `phase-<i>-task-0`). The optional `name` becomes both the workflow's
+ * deterministic id and its name, so named flat workflows retain distinct persistence keys;
+ * omission keeps the shared draft fallback `wf`. The result is a complete definition the caller
+ * validates against the STRICT contract before running.
  *
  * @param flat - The flat steps blob (`{ name?, steps: [{ name }] }`)
  * @returns A complete {@link WorkflowDefinition} (one one-task phase per step)
  */
 export function expandSteps(flat: WorkflowSteps): WorkflowDefinition {
 	return completeDraft({
-		...(flat.name === undefined ? {} : { name: flat.name }),
+		...(flat.name === undefined ? {} : { id: flat.name, name: flat.name }),
 		phases: flat.steps.map((step) => ({
 			tasks: [{ run: step.name }],
 		})),

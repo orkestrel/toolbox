@@ -11,6 +11,7 @@ import {
 	stringShape,
 	unionShape,
 } from '@orkestrel/contract'
+import { MAX_TIMER_MS } from '@orkestrel/workflow'
 
 // === Prompt / answer shapes (createPromptTool / createAnswerTool call args)
 //
@@ -145,10 +146,9 @@ export const answerToolShape = unionShape(
 // Toolbox shapes — the shape VALUE each `create*Tool` factory (factories.ts) compiles into
 // the lockstep guard + parser + JSON Schema outputs (AGENTS §14). `agentToolShape` MUST agree
 // with the hand-written `AgentToolArguments` (types.ts), which is the source of truth.
-// `workflowStepsShape` / `workflowDraftShape` are OWNED here now — ported byte-faithfully from
-// `@orkestrel/workflow` ahead of the upstream cleanup that drops the authoring surface from that
-// package. `workspaceToolShape` is OWNED here now — ported from `@orkestrel/agent` before the
-// workspace domain was extracted to `@orkestrel/workspace` (this package is the defining home).
+// `workflowStepsShape` / `workflowDraftShape` are Toolbox's authoring boundary over the current
+// `@orkestrel/workflow` definition contract. `workspaceToolShape` is Toolbox's operation boundary
+// over the editing primitives now owned by `@orkestrel/workspace`.
 
 /**
  * The shape of {@link import('./types.js').AgentToolArguments} —
@@ -197,7 +197,7 @@ export const describeToolShape = objectShape({
 	}),
 })
 
-// === Workflow draft / flat-steps shapes (OWNED here now, ported from `@orkestrel/workflow`)
+// === Workflow draft / flat-steps shapes
 
 /**
  * The shape of a {@link import('./types.js').TaskDraft} — identical to a strict task shape
@@ -213,7 +213,7 @@ export const taskDraftShape = objectShape({
 		stringShape({
 			min: 1,
 			description:
-				'The registered behavior name to invoke (a registry key, not a label); omitted has no handler.',
+				'The registered behavior name to invoke (a registry key, not a label); omitted completes with JSON null.',
 		}),
 	),
 	retries: optionalShape(
@@ -226,8 +226,9 @@ export const taskDraftShape = objectShape({
 	timeout: optionalShape(
 		integerShape({
 			min: 0,
+			max: MAX_TIMER_MS,
 			description:
-				'Per-attempt deadline in milliseconds; overrides the phase default. Omitted means no deadline.',
+				'Persisted per-attempt deadline in milliseconds (0 disables it); omitted means no deadline.',
 		}),
 	),
 })
@@ -263,7 +264,8 @@ export const phaseDraftShape = objectShape({
  *
  * @remarks
  * The lenient counterpart {@link import('./factories.js').createWorkflowDraftContract} compiles.
- * `run` stays required on the strict form; a provided `id` / `name` still has `minLength: 1` (so
+ * `run` stays optional like the strict form; omission is the deliberate JSON `null` no-op. A
+ * provided `id` / `name` still has `minLength: 1` (so
  * an explicitly-empty `id: ''` is REJECTED, not auto-filled). After
  * {@link import('./helpers.js').completeDraft} fills the missing ids/names, the result is
  * validated against the STRICT `createWorkflowContract` (`@orkestrel/workflow`) gate before
@@ -320,7 +322,7 @@ export const workflowStepsShape = objectShape({
 	}),
 })
 
-// === Workspace operation shape (OWNED here now, ported from `@orkestrel/agent`)
+// === Workspace operation shape
 
 /**
  * The shape of a {@link import('./types.js').WorkspaceOperation} — a descriptive tagged union

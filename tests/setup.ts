@@ -1,12 +1,21 @@
 import type {
 	MessageInterface,
+	AgentInterface,
+	AgentResult,
 	ProviderDelta,
 	ProviderInterface,
 	ProviderResult,
 } from '@orkestrel/agent'
 import type { DatabaseInterface } from '@orkestrel/database'
-import { ProviderAbortError } from '@orkestrel/agent'
+import type { JSONRecord } from '@orkestrel/contract'
+import type {
+	TaskControllerInterface,
+	WorkflowSnapshot,
+	WorkflowStoreInterface,
+} from '@orkestrel/workflow'
+import { createAgent, ProviderAbortError } from '@orkestrel/agent'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
+import { createWorkflow, TaskController } from '@orkestrel/workflow'
 
 /**
  * Create an empty live memory database for core integration tests.
@@ -87,6 +96,78 @@ export async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 	return values
 }
 
+/** Options for a real workflow {@link TaskController} test handle. */
+export interface TestTaskControllerOptions {
+	readonly signal?: AbortSignal
+	readonly input?: JSONRecord
+	readonly workflow?: string
+	readonly task?: string
+}
+
+/**
+ * Build a real exported workflow task and its native {@link TaskController} handle.
+ *
+ * @param options - Optional signal, input, and lineage identities
+ * @returns A native controller over a real workflow task
+ */
+export function createTestTaskController(
+	options?: TestTaskControllerOptions,
+): TaskControllerInterface {
+	const workflowId = options?.workflow ?? 'wf'
+	const taskId = options?.task ?? 't'
+	const workflow = createWorkflow({
+		id: workflowId,
+		name: workflowId,
+		phases: [{ id: 'p', name: 'P', tasks: [{ id: taskId, name: taskId }] }],
+	})
+	const task = workflow.phase('p')?.task(taskId)
+	if (task === undefined) throw new Error(`test task '${taskId}' was not constructed`)
+	return new TaskController(
+		options?.signal ?? new AbortController().signal,
+		options?.input ?? {},
+		task,
+		1,
+		() => workflow.results(),
+		(input) => task.report(input),
+		() => task.pulse(),
+	)
+}
+
+/** A protocol-faithful workflow store that records checkpoints and rejects a controlled prefix. */
+export class RecordingWorkflowStore implements WorkflowStoreInterface {
+	readonly #snapshots: WorkflowSnapshot[] = []
+	readonly #failures: number
+	#attempts = 0
+
+	constructor(failures = 0) {
+		this.#failures = failures
+	}
+
+	get snapshots(): readonly WorkflowSnapshot[] {
+		return [...this.#snapshots]
+	}
+
+	get attempts(): number {
+		return this.#attempts
+	}
+
+	async get(id: string): Promise<WorkflowSnapshot | undefined> {
+		return this.#snapshots.findLast((snapshot) => snapshot.id === id)
+	}
+
+	async set(snapshot: WorkflowSnapshot): Promise<void> {
+		this.#attempts += 1
+		if (this.#attempts <= this.#failures) throw new Error('checkpoint refused')
+		this.#snapshots.push(snapshot)
+	}
+
+	async delete(id: string): Promise<void> {
+		for (let index = this.#snapshots.length - 1; index >= 0; index -= 1) {
+			if (this.#snapshots[index]?.id === id) this.#snapshots.splice(index, 1)
+		}
+	}
+}
+
 // ── Call recorder (a real callback, not a mock) ──────────────────────────────
 //
 // AGENTS §16.1: when a test only needs to count calls or inspect arguments, use a
@@ -136,13 +217,13 @@ export function createRecorder<TArgs extends readonly unknown[]>(): TestRecorder
 // delta and RETURNS the result, honouring `signal` so an abort mid-stream throws a
 // `ProviderAbortError` carrying the accumulated partial (a genuine cancel-fold proof).
 
-/** One recorded `generate` / `stream` call on a {@link createScriptedProvider}. */
+/** One recorded `generate` / `stream` call on a {@link ScriptedProvider}. */
 export interface ScriptedCall {
 	readonly messages: readonly MessageInterface[]
 }
 
 /**
- * Options for {@link createScriptedProvider} — every field optional.
+ * Options for {@link ScriptedProvider} — every field optional.
  *
  * @remarks
  * `delay` pauses (ms) at the start of each call, letting a test observe an abort firing
@@ -150,11 +231,12 @@ export interface ScriptedCall {
  */
 export interface ScriptedProviderOptions {
 	readonly delay?: number
+	readonly failure?: Error
 }
 
 /**
  * A scripted {@link ProviderInterface} plus its `started` call count and recorded `calls` —
- * the minimal fixture {@link createScriptedProvider} returns.
+ * the minimal {@link ScriptedProvider} fixture exposes.
  */
 export interface ScriptedProviderInterface extends ProviderInterface {
 	/** How many `stream` calls have started in total. */
@@ -176,24 +258,41 @@ export interface ScriptedProviderInterface extends ProviderInterface {
  * @param options - The {@link ScriptedProviderOptions} (all optional)
  * @returns A {@link ScriptedProviderInterface} (the provider + its recorders)
  */
-export function createScriptedProvider(
-	turns: readonly ProviderResult[],
-	options?: ScriptedProviderOptions,
-): ScriptedProviderInterface {
-	const delay = options?.delay ?? 0
-	const calls: ScriptedCall[] = []
-	let index = 0
-	let started = 0
-	async function* stream(
+export class ScriptedProvider implements ScriptedProviderInterface {
+	readonly id = 'scripted'
+	readonly name = 'scripted'
+	readonly #turns: readonly ProviderResult[]
+	readonly #delay: number
+	readonly #failure: Error | undefined
+	readonly #calls: ScriptedCall[] = []
+	#index = 0
+	#started = 0
+
+	constructor(turns: readonly ProviderResult[], options?: ScriptedProviderOptions) {
+		this.#turns = turns
+		this.#delay = options?.delay ?? 0
+		this.#failure = options?.failure
+	}
+
+	get started(): number {
+		return this.#started
+	}
+
+	get calls(): readonly ScriptedCall[] {
+		return this.#calls
+	}
+
+	async *stream(
 		messages: readonly MessageInterface[],
 		signal: AbortSignal,
 	): AsyncGenerator<ProviderDelta, ProviderResult> {
-		calls.push({ messages: [...messages] })
-		started += 1
+		this.#calls.push({ messages: [...messages] })
+		this.#started += 1
 		if (signal.aborted) throw new ProviderAbortError({ content: '' })
-		if (delay > 0) await waitForDelay(delay)
-		const turn = turns[Math.min(index, turns.length - 1)] ?? { content: '' }
-		index += 1
+		if (this.#delay > 0) await waitForDelay(this.#delay)
+		if (this.#failure !== undefined) throw this.#failure
+		const turn = this.#turns[Math.min(this.#index, this.#turns.length - 1)] ?? { content: '' }
+		this.#index += 1
 		let streamed = ''
 		for (const delta of [turn.content]) {
 			if (signal.aborted) throw new ProviderAbortError({ content: streamed })
@@ -203,22 +302,47 @@ export function createScriptedProvider(
 		if (signal.aborted) throw new ProviderAbortError({ content: streamed })
 		return turn
 	}
-	return {
-		id: 'scripted',
-		name: 'scripted',
-		get started() {
-			return started
-		},
-		get calls() {
-			return calls
-		},
-		stream,
-		async generate(messages, signal) {
-			const generator = stream(messages, signal)
-			let step = await generator.next()
-			while (!step.done) step = await generator.next()
-			return step.value
-		},
+
+	async generate(
+		messages: readonly MessageInterface[],
+		signal: AbortSignal,
+	): Promise<ProviderResult> {
+		const generator = this.stream(messages, signal)
+		let step = await generator.next()
+		while (!step.done) step = await generator.next()
+		return step.value
+	}
+}
+
+/** A structural agent boundary whose typed result is deliberately malformed at runtime. */
+export class MalformedAgent implements AgentInterface {
+	readonly #agent = createAgent(new ScriptedProvider([{ content: 'unused' }]))
+	readonly id = 'malformed'
+
+	get emitter(): AgentInterface['emitter'] {
+		return this.#agent.emitter
+	}
+
+	get status(): AgentInterface['status'] {
+		return this.#agent.status
+	}
+
+	get context(): AgentInterface['context'] {
+		return this.#agent.context
+	}
+
+	generate(): Promise<AgentResult> {
+		const result: AgentResult = { content: 'valid-to-types', partial: false }
+		Object.defineProperty(result, 'content', { enumerable: true, value: 7 })
+		return Promise.resolve(result)
+	}
+
+	stream(options?: Parameters<AgentInterface['stream']>[0]): ReturnType<AgentInterface['stream']> {
+		return this.#agent.stream(options)
+	}
+
+	abort(reason?: unknown): void {
+		this.#agent.abort(reason)
 	}
 }
 

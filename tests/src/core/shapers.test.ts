@@ -9,6 +9,7 @@ import {
 import type { AgentToolArguments, WorkspaceOperation } from '@src/core'
 import { createContract, isRecord } from '@orkestrel/contract'
 import type { Infer } from '@orkestrel/contract'
+import { MAX_TIMER_MS } from '@orkestrel/workflow'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 
 // tests/src/core/shapers.test.ts — mirrors src/core/shapers.ts. Each shape compiles
@@ -104,6 +105,12 @@ describe('workflowDraftShape — the lenient draft (ids/names optional at every 
 	it('is() rejects a task with an empty run, or a sub-1 concurrency', () => {
 		expect(contract.is({ phases: [{ tasks: [{ run: '' }] }] })).toBe(false)
 		expect(contract.is({ phases: [{ tasks: [], concurrency: 0 }] })).toBe(false)
+	})
+
+	it('accepts timeout 0 and MAX_TIMER_MS, and rejects max + 1', () => {
+		expect(contract.is({ phases: [{ tasks: [{ timeout: 0 }] }] })).toBe(true)
+		expect(contract.is({ phases: [{ tasks: [{ timeout: MAX_TIMER_MS }] }] })).toBe(true)
+		expect(contract.is({ phases: [{ tasks: [{ timeout: MAX_TIMER_MS + 1 }] }] })).toBe(false)
 	})
 
 	it('generate() round-trips through its own guard and parser', () => {

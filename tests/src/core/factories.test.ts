@@ -1,8 +1,9 @@
 import type { AgentToolArguments } from '@src/core'
+import type { ProviderResult } from '@orkestrel/agent'
 import type { ToolResult } from '@orkestrel/tool'
 import type { WorkflowDraft } from '@src/core'
 import type { DatabaseInterface } from '@orkestrel/database'
-import type { TaskContext, TaskControllerInterface, WorkflowDefinition } from '@orkestrel/workflow'
+import type { WorkflowDefinition, WorkflowFunction, WorkflowFunctions } from '@orkestrel/workflow'
 import type { TerminalManagerInterface, TimerCancel, TimerHandler } from '@orkestrel/terminal'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 import { createAgent, createAgentRegistry, createMemoryConversationStore } from '@orkestrel/agent'
@@ -13,6 +14,8 @@ import {
 	createMemoryWorkflowStore,
 	createWorkflowRunner,
 	isWorkflowError,
+	restoreWorkflow,
+	WorkflowError,
 } from '@orkestrel/workflow'
 import {
 	AGENT_TOOL_DEPTH,
@@ -31,6 +34,7 @@ import {
 	createRelationTool,
 	createToolFunction,
 	createWorkflowDraftContract,
+	createWorkflowFunctions,
 	createWorkflowTool,
 	createWorkspaceTool,
 	DATABASE_TOOL_NAME,
@@ -51,24 +55,27 @@ import { createTerminalManager, TerminalError } from '@orkestrel/terminal'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { belongsTo, createRelationManager, hasMany, hasThrough } from '@orkestrel/relation'
 import { describe, expect, it } from 'vitest'
-import { createRecorder, createScriptedProvider, waitForDelay } from '../../setup.js'
+import {
+	createRecorder,
+	createTestTaskController,
+	MalformedAgent,
+	RecordingWorkflowStore,
+	ScriptedProvider,
+	waitForDelay,
+} from '../../setup.js'
 
-// tests/src/core/factories.test.ts — mirrors src/core/factories.ts. Ported from
-// @orkestrel/workflow's + @orkestrel/workspace's own factory suites (the byte-faithful port
-// source), plus net-new coverage for this package's ADDITIONS: the pluggable store slot on
-// createWorkflowTool, the unified manager/store options on createWorkspaceTool, and the
-// net-new createAgentTool sub-agent delegation. Real handlers/stores/scripted providers
-// throughout (AGENTS §16 — no mocks).
+// tests/src/core/factories.test.ts — mirrors src/core/factories.ts with real
+// handlers, stores, workflow runners, agents, and scripted protocol providers throughout.
 
 // ── Shared fixtures ──────────────────────────────────────────────────────────
 
-// A one-task definition whose `run` is left UNREGISTERED against any functions passed at
-// `execute` time, so the lone task auto-completes ⇒ a `completed` run.
+// A one-task definition whose `run` is omitted, so Workflow performs the deliberate JSON-null
+// no-op and the run completes without a functions registry.
 function simpleDefinition(id = 'nested'): WorkflowDefinition {
 	return {
 		id,
 		name: id,
-		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'noop' }] }],
+		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] }],
 	}
 }
 
@@ -79,6 +86,73 @@ function readSummary(value: unknown): { status: string; count: number } | undefi
 	return { status: value.status, count: value.count }
 }
 
+function rejectTerminalAsk(..._args: readonly unknown[]): Promise<never> {
+	return Promise.reject(new TerminalError('DRIVER', 'driver failed'))
+}
+
+function buildWorkflowLineageFixture(depth: number): readonly string[] {
+	const lineage: string[] = ['workflow:w0']
+	for (let index = 1; index <= depth; index += 1) {
+		lineage.push(`agent:a${index}`, `workflow:w${index}`)
+	}
+	return lineage
+}
+
+function buildToolLineageFixture(depth: number): readonly string[] {
+	if (depth === 0) return []
+	const lineage: string[] = ['workflow:w0']
+	for (let index = 1; index <= depth; index += 1) {
+		lineage.push(`agent:a${index}`)
+		if (index < depth) lineage.push(`workflow:w${index}`)
+	}
+	return lineage
+}
+
+function createWorkflowProviderCall(id: string, run: string): ProviderResult {
+	return {
+		content: '',
+		tools: [
+			{
+				id: `call-${id}`,
+				name: WORKFLOW_TOOL_NAME,
+				arguments: {
+					id,
+					name: id,
+					bail: true,
+					phases: [
+						{
+							id: 'p',
+							name: 'P',
+							tasks: [{ id: 't', name: 'T', run }],
+						},
+					],
+				},
+			},
+		],
+	}
+}
+
+const revokedWorkflowArguments = Proxy.revocable<Record<string, unknown>>({}, {})
+revokedWorkflowArguments.revoke()
+
+const throwingOwnKeysWorkflowArguments = new Proxy<Record<string, unknown>>(
+	{},
+	{
+		ownKeys() {
+			throw new Error('hostile ownKeys')
+		},
+	},
+)
+
+const throwingGetWorkflowArguments = new Proxy<Record<string, unknown>>(
+	{ steps: undefined },
+	{
+		get() {
+			throw new Error('hostile get')
+		},
+	},
+)
+
 async function rejectionOf(promise: Promise<unknown> | unknown): Promise<unknown> {
 	try {
 		await promise
@@ -88,27 +162,18 @@ async function rejectionOf(promise: Promise<unknown> | unknown): Promise<unknown
 	}
 }
 
-// A minimal, hand-built TaskContext — pure DATA, the lineage shape createAgentFunction /
-// createToolFunction read from controller.task. Lets the adapter tests call the returned
-// WorkflowFunction directly, without driving a full runner round-trip.
-function fakeTaskContext(workflowId = 'wf', taskId = 't'): TaskContext {
-	const workflow = { id: workflowId, name: workflowId }
-	const phase = { id: 'p', name: 'P', workflow }
-	return { id: taskId, name: taskId, phase }
-}
-
-function fakeController(overrides: Partial<TaskControllerInterface> = {}): TaskControllerInterface {
-	const controller = new AbortController()
-	return {
-		signal: controller.signal,
-		aborted: controller.signal.aborted,
-		input: {},
-		task: fakeTaskContext(),
-		results: () => [],
-		...overrides,
+function thrownOf(action: () => unknown): unknown {
+	try {
+		action()
+		return undefined
+	} catch (error) {
+		return error
 	}
 }
 
+// A minimal, hand-built TaskContext — pure DATA, the lineage shape createAgentFunction /
+// createToolFunction read from controller.task. Lets the adapter tests call the returned
+// WorkflowFunction directly, without driving a full runner round-trip.
 function executeThroughManager(
 	tool: ReturnType<typeof createWorkflowTool>,
 	args: Readonly<Record<string, unknown>> = { ...simpleDefinition('via-mgr') },
@@ -134,12 +199,12 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 			}),
 		)
 		const fn = createToolFunction(tools, 'scan')
-		const value = await fn(fakeController({ input: { path: '/repo' } }))
+		const value = await fn(createTestTaskController({ input: { path: '/repo' } }))
 		expect(value).toBe('scanned')
 		expect(seen.calls[0]?.[0]).toEqual({ path: '/repo' })
 	})
 
-	it('error-to-cause: a directly thrown tool error is preserved by identity as `cause`', async () => {
+	it('a directly thrown tool error is preserved by identity', async () => {
 		const tools = createToolManager()
 		const thrown = new Error('tool exploded')
 		tools.add(
@@ -151,17 +216,49 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 			}),
 		)
 		const fn = createToolFunction(tools, 'boom')
-		const error = await rejectionOf(fn(fakeController()))
-		expect(error).toBeInstanceOf(Error)
-		expect(error instanceof Error ? error.cause : undefined).toBe(thrown)
+		const error = await rejectionOf(fn(createTestTaskController()))
+		expect(error).toBe(thrown)
 	})
 
-	it('an UNREGISTERED tool name throws a typed TOOL WorkflowError', async () => {
+	it('an UNREGISTERED tool name throws a typed TOOL ToolboxError', async () => {
 		const tools = createToolManager()
 		const fn = createToolFunction(tools, 'missing')
-		const error = await rejectionOf(fn(fakeController()))
-		expect(error instanceof Error ? error.name : undefined).toBe('WorkflowError')
-		expect(isWorkflowError(error) ? error.code : undefined).toBe('TOOL')
+		const error = await rejectionOf(fn(createTestTaskController()))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+	})
+
+	it('rejects wrapping the reserved live workflow tool at construction', () => {
+		const tools = createToolManager()
+		tools.add(createWorkflowTool(simpleDefinition(), createWorkflowRunner()))
+		const error = thrownOf(() => createToolFunction(tools, WORKFLOW_TOOL_NAME))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+	})
+
+	it('deep-gates representative JSON and rejects adversarial non-JSON results', async () => {
+		const tools = createToolManager()
+		const json = { nested: [null, true, 3, 'x', { value: false }] }
+		const cycle: Record<string, unknown> = {}
+		cycle.self = cycle
+		const sparse: unknown[] = []
+		sparse.length = 1
+		const invalid: readonly unknown[] = [
+			undefined,
+			() => undefined,
+			1n,
+			Number.NaN,
+			Number.POSITIVE_INFINITY,
+			sparse,
+			cycle,
+			new Date(0),
+		]
+		tools.add(createTool({ name: 'json', execute: () => json }))
+		expect(await createToolFunction(tools, 'json')(createTestTaskController())).toBe(json)
+		for (const [index, value] of invalid.entries()) {
+			const name = `invalid-${index}`
+			tools.add(createTool({ name, execute: () => value }))
+			const error = await rejectionOf(createToolFunction(tools, name)(createTestTaskController()))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		}
 	})
 
 	it('composed into a real runner: a task whose `run` maps to a createToolFunction entry dispatches the tool for real', async () => {
@@ -186,55 +283,111 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 // ── createAgentFunction — wraps a live AgentInterface as a WorkflowFunction ──
 
 describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunction', () => {
-	it('run: resolves the agent to its settled result, boxed as the task value', async () => {
-		const agent = createAgent(createScriptedProvider([{ content: 'audited' }]))
+	it('projects the full settled agent result as exact JSON', async () => {
+		const agent = createAgent(
+			new ScriptedProvider([
+				{
+					content: 'audited',
+					thinking: 'checked evidence',
+					usage: { prompt: 2, completion: 3, total: 5 },
+				},
+			]),
+		)
 		const fn = createAgentFunction(agent)
-		const value = await fn(fakeController())
-		const content = isRecord(value) ? value.content : undefined
-		expect(content).toBe('audited')
+		const value = await fn(createTestTaskController())
+		expect(value).toEqual({
+			content: 'audited',
+			thinking: 'checked evidence',
+			usage: { prompt: 2, completion: 3, total: 5 },
+			partial: false,
+		})
 	})
 
-	it('abort fold: a mid-generate controller-signal abort cancels the agent (a partial resolves, never rejects)', async () => {
-		const provider = createScriptedProvider([{ content: 'partial-content' }], { delay: 200 })
+	it('native per-run signal: a mid-generate abort settles as a partial result', async () => {
+		const provider = new ScriptedProvider([{ content: 'partial-content' }], { delay: 200 })
 		const agent = createAgent(provider)
 		const controller = new AbortController()
 		const fn = createAgentFunction(agent)
-		const running = fn(fakeController({ signal: controller.signal }))
+		const running = fn(createTestTaskController({ signal: controller.signal }))
 		await waitForDelay(20)
 		controller.abort(new Error('cancelled mid-generate'))
 		const value = await running
 		expect(isRecord(value) ? value.partial : undefined).toBe(true)
 	})
 
-	it('DEPTH on depth exceed: `depth + 1 > MAX_WORKFLOW_DEPTH` throws a typed DEPTH WorkflowError and never runs the agent', async () => {
-		const provider = createScriptedProvider([{ content: 'x' }])
-		const agent = createAgent(provider)
-		const fn = createAgentFunction(agent, { depth: MAX_WORKFLOW_DEPTH })
-		const error = await rejectionOf(fn(fakeController()))
-		expect(isWorkflowError(error) ? error.code : undefined).toBe('DEPTH')
+	it('native per-run signal: an already-aborted controller never starts the provider', async () => {
+		const provider = new ScriptedProvider([{ content: 'unreached' }])
+		const controller = new AbortController()
+		controller.abort(new Error('cancelled before generate'))
+		const value = await createAgentFunction(createAgent(provider))(
+			createTestTaskController({ signal: controller.signal }),
+		)
+		expect(isRecord(value) ? value.partial : undefined).toBe(true)
 		expect(provider.started).toBe(0)
 	})
 
-	it('DEPTH on ancestry cycle: an agent already present in the ancestry throws a typed DEPTH WorkflowError and never runs', async () => {
-		const provider = createScriptedProvider([{ content: 'x' }])
+	it('DEPTH on depth exceed throws a typed ToolboxError and never runs the agent', async () => {
+		const provider = new ScriptedProvider([{ content: 'x' }])
 		const agent = createAgent(provider)
-		const fn = createAgentFunction(agent, { ancestry: [`agent:${agent.id}`] })
-		const error = await rejectionOf(fn(fakeController()))
-		expect(isWorkflowError(error) ? error.code : undefined).toBe('DEPTH')
+		const fn = createAgentFunction(agent, {
+			lineage: buildWorkflowLineageFixture(MAX_WORKFLOW_DEPTH + 1),
+		})
+		const error = await rejectionOf(
+			fn(createTestTaskController({ workflow: `w${MAX_WORKFLOW_DEPTH + 1}` })),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
 
-	it('tool binding when `runner` is supplied: the agent context gains exactly one workflow tool under WORKFLOW_TOOL_NAME', async () => {
-		const agent = createAgent(createScriptedProvider([{ content: 'audited' }]))
+	it('DEPTH on ancestry cycle throws a typed ToolboxError and never runs', async () => {
+		const provider = new ScriptedProvider([{ content: 'x' }])
+		const agent = createAgent(provider)
+		const fn = createAgentFunction(agent, {
+			lineage: ['workflow:w0', `agent:${agent.id}`, 'workflow:w1'],
+		})
+		const error = await rejectionOf(fn(createTestTaskController({ workflow: 'w1' })))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(provider.started).toBe(0)
+	})
+
+	it('bound nested workflow dispatches through propagated functions and store', async () => {
+		const agent = createAgent(new ScriptedProvider([{ content: 'audited' }]))
+		const store = createMemoryWorkflowStore()
 		expect(agent.context.tools.count).toBe(0)
-		const fn = createAgentFunction(agent, { runner: createWorkflowRunner() })
-		await fn(fakeController())
+		const fn = createAgentFunction(agent, {
+			runner: createWorkflowRunner(),
+			functions: { nested: () => 'nested-result' },
+			store,
+		})
+		await fn(createTestTaskController())
 		expect(agent.context.tools.count).toBe(1)
-		expect(agent.context.tools.tool(WORKFLOW_TOOL_NAME)).toBeDefined()
+		const tool = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
+		if (tool === undefined) throw new Error('workflow tool was not bound')
+		expect(await tool.execute({ name: 'child', steps: [{ name: 'nested' }] })).toEqual({
+			status: 'completed',
+			count: 1,
+			durable: true,
+		})
+		expect((await store.get('child'))?.phases[0]?.tasks[0]?.result?.result).toEqual({
+			success: true,
+			value: 'nested-result',
+		})
+	})
+
+	it('a bound nested workflow tool refuses its no-arg containing-workflow target as a cycle', async () => {
+		const agent = createAgent(new ScriptedProvider([{ content: 'bound' }]))
+		await createAgentFunction(agent, { runner: createWorkflowRunner() })(
+			createTestTaskController({ workflow: 'containing' }),
+		)
+		const tool = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
+		if (tool === undefined) throw new Error('workflow tool was not bound')
+		const error = await rejectionOf(tool.execute({}))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(error instanceof Error ? error.message : '').toContain('cycle')
 	})
 
 	it('composed into a real runner: a task whose `run` maps to a createAgentFunction entry dispatches the agent for real', async () => {
-		const agent = createAgent(createScriptedProvider([{ content: 'audited' }]))
+		const agent = createAgent(new ScriptedProvider([{ content: 'audited' }]))
 		const definition: WorkflowDefinition = {
 			id: 'wf',
 			name: 'WF',
@@ -252,6 +405,291 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 })
 
 // ── createWorkflowTool — wrap a definition as an LLM-callable tool ───────────
+
+describe('createAgentFunction — contextual metadata and lifecycle guards', () => {
+	it('copies and freezes lineage metadata independently of caller mutation', () => {
+		const source = ['workflow:root']
+		const fn = createAgentFunction(createAgent(new ScriptedProvider([{ content: 'ok' }])), {
+			lineage: source,
+		})
+		source.push('agent:later')
+		expect(fn.category).toBe('agent')
+		expect(fn.lineage).toEqual(['workflow:root'])
+		expect(Object.isFrozen(fn)).toBe(true)
+		expect(Object.isFrozen(fn.lineage)).toBe(true)
+	})
+
+	it('rejects a contextual workflow mismatch before agent activity', async () => {
+		const provider = new ScriptedProvider([{ content: 'unreached' }])
+		const fn = createAgentFunction(createAgent(provider), { lineage: ['workflow:expected'] })
+		const error = await rejectionOf(fn(createTestTaskController({ workflow: 'actual' })))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(provider.started).toBe(0)
+	})
+
+	it('uses Agent-owned full projection and maps a malformed structural result to TOOL', async () => {
+		const error = await rejectionOf(
+			createAgentFunction(new MalformedAgent())(createTestTaskController()),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+	})
+
+	it('preserves a genuine provider error by identity', async () => {
+		const failure = new Error('provider refused')
+		const agent = createAgent(new ScriptedProvider([{ content: 'unreached' }], { failure }))
+		const error = await rejectionOf(createAgentFunction(agent)(createTestTaskController()))
+		expect(error).toBe(failure)
+		expect(agent.status).toBe('error')
+	})
+
+	it('a concurrent same-agent loser rejects before replacing the bound workflow tool', async () => {
+		const agent = createAgent(new ScriptedProvider([{ content: 'slow' }], { delay: 40 }))
+		const fn = createAgentFunction(agent, { runner: createWorkflowRunner() })
+		const first = fn(createTestTaskController({ workflow: 'first' }))
+		const bound = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
+		const error = await rejectionOf(fn(createTestTaskController({ workflow: 'second' })))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(agent.context.tools.tool(WORKFLOW_TOOL_NAME)).toBe(bound)
+		await first
+	})
+})
+
+describe('createWorkflowFunctions — recursion-safe registry composition', () => {
+	it('runs a direct-root raw agent through a real native runner', async () => {
+		const runner = createWorkflowRunner()
+		const agent = createAgent(new ScriptedProvider([{ content: 'root-agent' }]))
+		const definition: WorkflowDefinition = {
+			id: 'root',
+			name: 'Root',
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'review' }] }],
+		}
+		const functions = createWorkflowFunctions(runner, { agents: { review: agent } })
+		const result = await runner.execute(definition, { functions })
+		expect(result.workflow.phase('p')?.task('t')?.result?.result).toEqual({
+			success: true,
+			value: { content: 'root-agent', partial: false },
+		})
+	})
+
+	it('snapshots and freezes opaque functions and agent registries', () => {
+		const leaves = { leaf: () => 'leaf' }
+		const agents = { review: createAgent(new ScriptedProvider([{ content: 'review' }])) }
+		const functions = createWorkflowFunctions(createWorkflowRunner(), {
+			functions: leaves,
+			agents,
+		})
+		Object.defineProperty(leaves, 'later', { enumerable: true, value: () => 'later' })
+		Object.defineProperty(agents, 'later', {
+			enumerable: true,
+			value: createAgent(new ScriptedProvider([{ content: 'later' }])),
+		})
+		expect(Object.keys(functions).sort()).toEqual(['leaf', 'review'])
+		expect(Object.isFrozen(functions)).toBe(true)
+		expect(Object.getPrototypeOf(functions)).toBeNull()
+	})
+
+	it('returns a frozen null-prototype empty registry when no entries are supplied', () => {
+		const functions = createWorkflowFunctions(createWorkflowRunner())
+		expect(functions).toEqual({})
+		expect(Object.isFrozen(functions)).toBe(true)
+		expect(Object.getPrototypeOf(functions)).toBeNull()
+	})
+
+	it('the native runner rejects every unregistered inherited-record name as TRANSITION', () => {
+		const runner = createWorkflowRunner()
+		const functions = createWorkflowFunctions(runner)
+		for (const name of ['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__']) {
+			const error = thrownOf(() =>
+				runner.execute(
+					{
+						id: `inherited-${name}`,
+						name,
+						phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: name }] }],
+					},
+					{ functions },
+				),
+			)
+			expect(error).toBeInstanceOf(WorkflowError)
+			expect(isWorkflowError(error) ? error.code : undefined).toBe('TRANSITION')
+		}
+	})
+
+	it('the native runner executes dangerous names only when they are registered as own entries', async () => {
+		const runner = createWorkflowRunner()
+		const leaves: Record<string, WorkflowFunction> = {}
+		for (const name of ['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__']) {
+			Object.defineProperty(leaves, name, {
+				enumerable: true,
+				value: () => name,
+			})
+		}
+		const functions = createWorkflowFunctions(runner, { functions: leaves })
+		for (const name of Object.keys(leaves)) {
+			const result = await runner.execute(
+				{
+					id: `registered-${name}`,
+					name,
+					phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: name }] }],
+				},
+				{ functions },
+			)
+			expect(result.workflow.phase('p')?.task('t')?.result?.result).toEqual({
+				success: true,
+				value: name,
+			})
+		}
+	})
+
+	it('rejects function/agent key collisions and stale marked adapters before runner entry', () => {
+		const runner = createWorkflowRunner()
+		const agent = createAgent(new ScriptedProvider([{ content: 'unreached' }]))
+		const collision = thrownOf(() =>
+			createWorkflowFunctions(runner, {
+				functions: { review: () => 'opaque' },
+				agents: { review: agent },
+			}),
+		)
+		expect(isToolboxError(collision) ? collision.code : undefined).toBe('TOOL')
+
+		const stale = createAgentFunction(agent)
+		const marked = thrownOf(() => createWorkflowFunctions(runner, { functions: { review: stale } }))
+		expect(isToolboxError(marked) ? marked.code : undefined).toBe('TOOL')
+	})
+
+	it('rejects non-callable runtime entries and factory-specific lineage endings', () => {
+		const invalid: WorkflowFunctions = { leaf: () => 'leaf' }
+		Object.defineProperty(invalid, 'leaf', { enumerable: true, value: 7 })
+		const callable = thrownOf(() =>
+			createWorkflowFunctions(createWorkflowRunner(), { functions: invalid }),
+		)
+		expect(isToolboxError(callable) ? callable.code : undefined).toBe('TOOL')
+
+		const agent = createAgent(new ScriptedProvider([{ content: 'unreached' }]))
+		const agentEnding = thrownOf(() =>
+			createAgentFunction(agent, { lineage: ['workflow:w', 'agent:a'] }),
+		)
+		const toolEnding = thrownOf(() =>
+			createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
+				lineage: ['workflow:w'],
+			}),
+		)
+		const functionsEnding = thrownOf(() =>
+			createWorkflowFunctions(createWorkflowRunner(), {
+				lineage: ['workflow:w', 'agent:a'],
+			}),
+		)
+		for (const error of [agentEnding, toolEnding, functionsEnding]) {
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		}
+	})
+
+	it('allows depth eight and rejects depth nine for a direct registry consumer', async () => {
+		for (const depth of [MAX_WORKFLOW_DEPTH, MAX_WORKFLOW_DEPTH + 1]) {
+			const provider = new ScriptedProvider([{ content: `depth-${depth}` }])
+			const agent = createAgent(provider)
+			const id = `w${depth}`
+			const functions = createWorkflowFunctions(createWorkflowRunner(), {
+				lineage: buildWorkflowLineageFixture(depth),
+				agents: { review: agent },
+			})
+			const result = await createWorkflowRunner().execute(
+				{
+					id,
+					name: id,
+					bail: true,
+					phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'review' }] }],
+				},
+				{ functions },
+			)
+			expect(result.status).toBe(depth === MAX_WORKFLOW_DEPTH ? 'completed' : 'failed')
+			expect(provider.started).toBe(depth === MAX_WORKFLOW_DEPTH ? 1 : 0)
+		}
+	})
+})
+
+describe('workflow/agent recursion through real providers and runners', () => {
+	it('rejects direct agent self-recursion before a second agent run', async () => {
+		const store = createMemoryWorkflowStore()
+		const runner = createWorkflowRunner()
+		const provider = new ScriptedProvider([
+			createWorkflowProviderCall('child', 'a'),
+			{ content: 'outer done' },
+		])
+		const agent = createAgent(provider)
+		const functions = createWorkflowFunctions(runner, {
+			agents: { a: agent },
+			store,
+		})
+		await runner.execute(
+			{
+				id: 'root',
+				name: 'Root',
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'a' }] }],
+			},
+			{ functions },
+		)
+		const snapshot = await store.get('child')
+		expect(snapshot?.status).toBe('failed')
+		expect(JSON.stringify(snapshot)).toContain(`agent '${agent.id}' is already an ancestor`)
+		expect(provider.started).toBe(2)
+	})
+
+	it('rejects A to B to A re-entry while allowing both outer agents to settle', async () => {
+		const store = createMemoryWorkflowStore()
+		const runner = createWorkflowRunner()
+		const providerA = new ScriptedProvider([
+			createWorkflowProviderCall('child', 'b'),
+			{ content: 'A done' },
+		])
+		const providerB = new ScriptedProvider([
+			createWorkflowProviderCall('grandchild', 'a'),
+			{ content: 'B done' },
+		])
+		const agentA = createAgent(providerA)
+		const agentB = createAgent(providerB)
+		const functions = createWorkflowFunctions(runner, {
+			agents: { a: agentA, b: agentB },
+			store,
+		})
+		await runner.execute(
+			{
+				id: 'root',
+				name: 'Root',
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'a' }] }],
+			},
+			{ functions },
+		)
+		const snapshot = await store.get('grandchild')
+		expect(snapshot?.status).toBe('failed')
+		expect(JSON.stringify(snapshot)).toContain(`agent '${agentA.id}' is already an ancestor`)
+		expect(providerA.started).toBe(2)
+		expect(providerB.started).toBe(2)
+	})
+
+	it('rejects a repeated workflow id before the native runner is entered', async () => {
+		const runner = createWorkflowRunner()
+		const provider = new ScriptedProvider([
+			createWorkflowProviderCall('root', 'leaf'),
+			{ content: 'handled refusal' },
+		])
+		const agent = createAgent(provider)
+		const functions = createWorkflowFunctions(runner, {
+			functions: { leaf: () => 'leaf' },
+			agents: { a: agent },
+		})
+		await runner.execute(
+			{
+				id: 'root',
+				name: 'Root',
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'a' }] }],
+			},
+			{ functions },
+		)
+		expect(JSON.stringify(provider.calls[1]?.messages)).toContain(
+			"workflow 'root' is already an ancestor",
+		)
+	})
+})
 
 describe('createWorkflowTool — its parameters advertise the FLAT authoring shape', () => {
 	it('the advertised parameters expose only name/steps (no id/phases)', () => {
@@ -286,7 +724,33 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		expect(readSummary(await tool.execute({}))).toEqual({ status: 'completed', count: 1 })
 	})
 
-	it('a malformed authored blob THROWS a typed TOOL WorkflowError (the §14 handler contract)', async () => {
+	it('an omitted run completes with native JSON null', async () => {
+		const store = createMemoryWorkflowStore()
+		const tool = createWorkflowTool(simpleDefinition('omitted'), createWorkflowRunner(), { store })
+		expect(await tool.execute({})).toEqual({ status: 'completed', count: 1, durable: true })
+		const snapshot = await store.get('omitted')
+		expect(snapshot?.phases[0]?.tasks[0]?.result?.result).toEqual({
+			success: true,
+			value: null,
+		})
+	})
+
+	it('an unresolved named run preserves the native TRANSITION WorkflowError', async () => {
+		const store = new RecordingWorkflowStore()
+		const definition: WorkflowDefinition = {
+			id: 'unresolved',
+			name: 'Unresolved',
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'missing' }] }],
+		}
+		const error = await rejectionOf(
+			createWorkflowTool(definition, createWorkflowRunner(), { store }).execute({}),
+		)
+		expect(error).toBeInstanceOf(WorkflowError)
+		expect(isWorkflowError(error) ? error.code : undefined).toBe('TRANSITION')
+		expect(store.attempts).toBe(0)
+	})
+
+	it('a malformed authored blob throws a typed TOOL ToolboxError', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
 		const error = await rejectionOf(
 			tool.execute({
@@ -295,27 +759,60 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 				phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 0 }],
 			}),
 		)
-		expect(isWorkflowError(error) ? error.code : undefined).toBe('TOOL')
-		expect(isWorkflowError(error) ? error.context : undefined).toMatchObject({
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.context : undefined).toMatchObject({
 			workflow: 'wrapped',
 		})
 	})
 
-	it('an over-deep call (depth at the ceiling) THROWS a typed DEPTH WorkflowError without running', async () => {
+	it('hostile argument traversal becomes TOOL before runner functions or persistence start', async () => {
+		const entered = createRecorder<readonly []>()
+		const store = new RecordingWorkflowStore()
+		const tool = createWorkflowTool(
+			{
+				id: 'wrapped',
+				name: 'Wrapped',
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'entered' }] }],
+			},
+			createWorkflowRunner(),
+			{
+				functions: {
+					entered: () => {
+						entered.handler()
+						return 'entered'
+					},
+				},
+				store,
+			},
+		)
+		for (const args of [
+			revokedWorkflowArguments.proxy,
+			throwingOwnKeysWorkflowArguments,
+			throwingGetWorkflowArguments,
+		]) {
+			const error = await rejectionOf(tool.execute(args))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(error instanceof Error ? error.message : '').toBe('malformed workflow definition')
+		}
+		expect(entered.calls).toHaveLength(0)
+		expect(store.attempts).toBe(0)
+	})
+
+	it('an over-deep call throws a typed DEPTH ToolboxError without running', async () => {
 		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
-			depth: MAX_WORKFLOW_DEPTH,
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
 		})
 		const error = await rejectionOf(tool.execute({ ...simpleDefinition('deep') }))
-		expect(isWorkflowError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('max depth')
 	})
 
-	it('a cyclic call (target id already an ancestor) THROWS a typed DEPTH WorkflowError', async () => {
+	it('a cyclic call throws a typed DEPTH ToolboxError', async () => {
 		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
-			ancestry: ['workflow:loop'],
+			lineage: ['workflow:loop', 'agent:a'],
 		})
 		const error = await rejectionOf(tool.execute({ ...simpleDefinition('loop') }))
-		expect(isWorkflowError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('cycle')
 	})
 
@@ -327,7 +824,9 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	})
 
 	it('the tool runs an ids-OMITTED nested draft end-to-end → completed with the right result count', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
+		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+			functions: { x: () => 'x', y: () => 'y' },
+		})
 		const summary = readSummary(
 			await tool.execute({ phases: [{ tasks: [{ run: 'x' }] }, { tasks: [{ run: 'y' }] }] }),
 		)
@@ -335,21 +834,54 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	})
 
 	it('the tool runs a minimal FLAT steps blob end-to-end → { status: completed, count: N }', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
+		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+			functions: { compile: () => 'compiled', publish: () => 'published' },
+		})
 		const summary = readSummary(
 			await tool.execute({ name: 'build', steps: [{ name: 'compile' }, { name: 'publish' }] }),
 		)
 		expect(summary).toEqual({ status: 'completed', count: 2 })
 	})
 
-	it('a flat blob that cannot expand (a step missing `name`) THROWS a typed TOOL WorkflowError', async () => {
+	it('a flat blob that cannot expand throws a typed TOOL ToolboxError', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
 		const error = await rejectionOf(tool.execute({ steps: [{}] }))
-		expect(isWorkflowError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+	})
+
+	it('a top-level tool contextually adapts a raw agent registry', async () => {
+		const agent = createAgent(new ScriptedProvider([{ content: 'tool-agent' }]))
+		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+			agents: { review: agent },
+		})
+		expect(await tool.execute({ name: 'agent-root', steps: [{ name: 'review' }] })).toEqual({
+			status: 'completed',
+			count: 1,
+		})
+	})
+
+	it('allows depth eight and rejects depth nine from a top-level-tool entry path', async () => {
+		const allowed = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH),
+		})
+		expect(await allowed.execute({ ...simpleDefinition(`w${MAX_WORKFLOW_DEPTH}`) })).toEqual({
+			status: 'completed',
+			count: 1,
+		})
+
+		const rejected = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
+		})
+		const error = await rejectionOf(
+			rejected.execute({ ...simpleDefinition(`w${MAX_WORKFLOW_DEPTH + 1}`) }),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 	})
 
 	it('a blob carrying BOTH `steps` and `phases` takes the FLAT branch (expands steps, IGNORES phases)', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
+		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+			functions: { a: () => 'a', b: () => 'b' },
+		})
 		const summary = readSummary(
 			await tool.execute({
 				name: 'precedence',
@@ -378,7 +910,7 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 
 	it('a FAILURE maps to a SINGLE-LEVEL ToolResult — a TOP-LEVEL error, no value', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
-			depth: MAX_WORKFLOW_DEPTH,
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
 		})
 		const result = await executeThroughManager(tool)
 		if (result.success) throw new Error('expected the depth guard to fail')
@@ -388,7 +920,7 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 
 	it('the manager constructs the expected success-discriminated ToolResult shapes directly', async () => {
 		const failing = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
-			depth: MAX_WORKFLOW_DEPTH,
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
 		})
 		const failure = await executeThroughManager(failing)
 		expect(failure).toEqual({
@@ -409,14 +941,18 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 	})
 })
 
-// ── net-new: createWorkflowTool's store slot ─────────────────────────────────
+// ── createWorkflowTool native store propagation ─────────────────────────────
 
-describe('createWorkflowTool — the optional durable store slot (this package`s addition)', () => {
+describe('createWorkflowTool — optional native durable store', () => {
 	it('a successful authored run PERSISTS the final snapshot into the provided store', async () => {
 		const store = createMemoryWorkflowStore()
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), { store })
 		expect(await store.get('authored')).toBeUndefined()
-		await tool.execute({ ...simpleDefinition('authored') })
+		expect(await tool.execute({ ...simpleDefinition('authored') })).toEqual({
+			status: 'completed',
+			count: 1,
+			durable: true,
+		})
 		const persisted = await store.get('authored')
 		expect(persisted).toBeDefined()
 		expect(persisted?.status).toBe('completed')
@@ -428,6 +964,21 @@ describe('createWorkflowTool — the optional durable store slot (this package`s
 		await tool.execute({ ...simpleDefinition('restorable') })
 		const persisted = await store.get('restorable')
 		expect(persisted?.phases[0]?.tasks[0]?.status).toBe('completed')
+		expect(persisted === undefined ? undefined : restoreWorkflow(persisted).status).toBe(
+			'completed',
+		)
+	})
+
+	it('repeated flat names deterministically replace the same stored workflow snapshot', async () => {
+		const store = createMemoryWorkflowStore()
+		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+			functions: { one: () => 1, two: () => 2 },
+			store,
+		})
+		await tool.execute({ name: 'shared', steps: [{ name: 'one' }] })
+		expect((await store.get('shared'))?.phases).toHaveLength(1)
+		await tool.execute({ name: 'shared', steps: [{ name: 'one' }, { name: 'two' }] })
+		expect((await store.get('shared'))?.phases).toHaveLength(2)
 	})
 
 	it('an ABSENT store has NO persistence side effects', async () => {
@@ -437,18 +988,54 @@ describe('createWorkflowTool — the optional durable store slot (this package`s
 		// No store was supplied; nothing to assert beyond the run completing without error.
 	})
 
-	it('a FAILED run (depth guard) does NOT persist anything (the store.set is post-run only)', async () => {
+	it('a depth refusal never reaches native runner persistence', async () => {
 		const store = createMemoryWorkflowStore()
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
 			store,
-			depth: MAX_WORKFLOW_DEPTH,
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
 		})
 		await rejectionOf(tool.execute({ ...simpleDefinition('unreached') }))
 		expect(await store.get('unreached')).toBeUndefined()
 	})
+
+	it('native persistence records the ordered pending, running, completed subsequence', async () => {
+		const store = new RecordingWorkflowStore()
+		const tool = createWorkflowTool(simpleDefinition('recorded'), createWorkflowRunner(), { store })
+		await tool.execute({})
+		const statuses = store.snapshots.map((snapshot) => snapshot.phases[0]?.tasks[0]?.status)
+		const pending = statuses.indexOf('pending')
+		const running = statuses.indexOf('running', pending + 1)
+		const completed = statuses.indexOf('completed', running + 1)
+		expect(pending).toBeGreaterThanOrEqual(0)
+		expect(running).toBeGreaterThan(pending)
+		expect(completed).toBeGreaterThan(running)
+	})
+
+	it('an always-rejecting store surfaces durable false and a persistence fault', async () => {
+		const store = new RecordingWorkflowStore(Number.POSITIVE_INFINITY)
+		const result = await createWorkflowTool(simpleDefinition('rejected'), createWorkflowRunner(), {
+			store,
+		}).execute({})
+		expect(result).toMatchObject({
+			durable: false,
+			fault: { origin: 'persistence', message: 'checkpoint refused' },
+		})
+	})
+
+	it('a fail-once store can recover durability while retaining the first fault', async () => {
+		const store = new RecordingWorkflowStore(1)
+		const result = await createWorkflowTool(simpleDefinition('fail-once'), createWorkflowRunner(), {
+			store,
+		}).execute({})
+		expect(result).toMatchObject({
+			durable: true,
+			fault: { origin: 'persistence', checkpoint: 'initial', message: 'checkpoint refused' },
+		})
+		expect(await store.get('fail-once')).toBeDefined()
+	})
 })
 
-// ── createWorkspaceTool — unified manager/store options (this package`s addition) ──
+// ── createWorkspaceTool — unified manager/store options ─────────────────────
 
 describe('createWorkspaceTool — default (in-memory manager constructed)', () => {
 	it('with no options, edits land on a freshly-constructed in-memory-backed manager', async () => {
@@ -571,7 +1158,7 @@ describe('createWorkspaceTool — precedence: manager wins when BOTH manager and
 describe('createAgentTool — schema accept/reject via agentToolShape', () => {
 	it('a malformed call (missing/empty task) THROWS a typed TOOL ToolboxError', async () => {
 		const registry = createAgentRegistry({
-			providers: { main: createScriptedProvider([{ content: 'x' }]) },
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
 		const error = await rejectionOf(tool.execute({}))
@@ -594,7 +1181,7 @@ describe('createAgentTool — schema accept/reject via agentToolShape', () => {
 
 	it('a malformed tools/system field on the call THROWS a typed TOOL ToolboxError', async () => {
 		const registry = createAgentRegistry({
-			providers: { main: createScriptedProvider([{ content: 'x' }]) },
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
 		const error = await rejectionOf(tool.execute({ task: 'x', tools: 'not-an-array' }))
@@ -603,7 +1190,7 @@ describe('createAgentTool — schema accept/reject via agentToolShape', () => {
 
 	it('no resolvable provider (neither call nor tool default) THROWS a typed TOOL ToolboxError', async () => {
 		const registry = createAgentRegistry({
-			providers: { main: createScriptedProvider([{ content: 'x' }]) },
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry) // no default provider configured
 		const error = await rejectionOf(tool.execute({ task: 'do it' }))
@@ -613,7 +1200,7 @@ describe('createAgentTool — schema accept/reject via agentToolShape', () => {
 
 describe('createAgentTool — depth / cycle guard', () => {
 	it('depth at the ceiling THROWS a typed DEPTH ToolboxError', async () => {
-		const provider = createScriptedProvider([{ content: 'x' }])
+		const provider = new ScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', depth: AGENT_TOOL_DEPTH })
 		const error = await rejectionOf(tool.execute({ task: 'do it' }))
@@ -622,7 +1209,7 @@ describe('createAgentTool — depth / cycle guard', () => {
 	})
 
 	it('a cyclic ancestry (provider already present) THROWS a typed DEPTH ToolboxError', async () => {
-		const provider = createScriptedProvider([{ content: 'x' }])
+		const provider = new ScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', ancestry: ['agent:main'] })
 		const error = await rejectionOf(tool.execute({ task: 'do it' }))
@@ -633,7 +1220,7 @@ describe('createAgentTool — depth / cycle guard', () => {
 
 describe('createAgentTool — delegation happy-path with a real minimal registry + scripted provider', () => {
 	it('delegates the task and returns the sub-agent`s settled content', async () => {
-		const provider = createScriptedProvider([{ content: 'delegated result' }])
+		const provider = new ScriptedProvider([{ content: 'delegated result' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main' })
 		const result = await tool.execute({ task: 'summarize the notes' })
@@ -645,8 +1232,8 @@ describe('createAgentTool — delegation happy-path with a real minimal registry
 	})
 
 	it('a per-call provider overrides the tool default', async () => {
-		const defaultProvider = createScriptedProvider([{ content: 'default-provider' }])
-		const otherProvider = createScriptedProvider([{ content: 'other-provider' }])
+		const defaultProvider = new ScriptedProvider([{ content: 'default-provider' }])
+		const otherProvider = new ScriptedProvider([{ content: 'other-provider' }])
 		const registry = createAgentRegistry({
 			providers: { primary: defaultProvider, secondary: otherProvider },
 		})
@@ -657,7 +1244,7 @@ describe('createAgentTool — delegation happy-path with a real minimal registry
 	})
 
 	it('per-call tools/system override the tool`s own configured defaults', async () => {
-		const provider = createScriptedProvider([{ content: 'ok' }])
+		const provider = new ScriptedProvider([{ content: 'ok' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', system: 'default system' })
 		await tool.execute({ task: 'x', system: 'override system' })
@@ -667,7 +1254,7 @@ describe('createAgentTool — delegation happy-path with a real minimal registry
 
 describe('createAgentTool — abort fold (abort during generate settles per the agent contract)', () => {
 	it('the delegated agent genuinely runs to a settled result through the tool (no throw)', async () => {
-		const provider = createScriptedProvider([{ content: 'partial-delegate' }], { delay: 20 })
+		const provider = new ScriptedProvider([{ content: 'partial-delegate' }], { delay: 20 })
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main' })
 		const result = await tool.execute({ task: 'do it' })
@@ -676,9 +1263,9 @@ describe('createAgentTool — abort fold (abort during generate settles per the 
 	})
 })
 
-// ── net-new: createAgentTool's store slot (agent 0.0.4 addition) ─────────────
+// ── createAgentTool conversation store ──────────────────────────────────────
 
-describe('createAgentTool — the optional conversation store slot (this package`s addition)', () => {
+describe('createAgentTool — optional conversation store', () => {
 	it('a successful delegation PERSISTS the sub-agent`s conversation snapshot into the provided store', async () => {
 		const backing = createMemoryConversationStore()
 		const seen = createRecorder<readonly [string]>()
@@ -690,7 +1277,7 @@ describe('createAgentTool — the optional conversation store slot (this package
 			},
 			delete: (id: string) => backing.delete(id),
 		}
-		const provider = createScriptedProvider([{ content: 'delegated' }])
+		const provider = new ScriptedProvider([{ content: 'delegated' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', store })
 		const result = await tool.execute({ task: 'summarize the notes' })
@@ -711,7 +1298,7 @@ describe('createAgentTool — the optional conversation store slot (this package
 			},
 			delete: (id: string) => backing.delete(id),
 		}
-		const provider = createScriptedProvider([{ content: 'first' }, { content: 'second' }])
+		const provider = new ScriptedProvider([{ content: 'first' }, { content: 'second' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', store })
 		await tool.execute({ task: 'first task' })
@@ -721,7 +1308,7 @@ describe('createAgentTool — the optional conversation store slot (this package
 	})
 
 	it('an ABSENT store has no persistence side effects (the storeless path is unchanged)', async () => {
-		const provider = createScriptedProvider([{ content: 'no-store-result' }])
+		const provider = new ScriptedProvider([{ content: 'no-store-result' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main' })
 		const result = await tool.execute({ task: 'do it' })
@@ -736,7 +1323,7 @@ describe('createAgentTool — the optional conversation store slot (this package
 			},
 			delete: async () => undefined,
 		}
-		const provider = createScriptedProvider([{ content: 'x' }])
+		const provider = new ScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', store: failingStore })
 		const manager = createToolManager()
@@ -751,7 +1338,7 @@ describe('createAgentTool — the optional conversation store slot (this package
 	})
 })
 
-// ── net-new: the three tools' advertised `summary` (agent 0.0.4 lean projection) ──
+// ── advertised lean summaries ────────────────────────────────────────────────
 
 describe('the workflow/workspace/agent tool factories advertise a `summary` alongside the full `description`', () => {
 	it('createWorkflowTool exposes the exact summary and keeps its full description', () => {
@@ -768,7 +1355,7 @@ describe('the workflow/workspace/agent tool factories advertise a `summary` alon
 
 	it('createAgentTool exposes the exact summary and keeps its full description', () => {
 		const registry = createAgentRegistry({
-			providers: { main: createScriptedProvider([{ content: 'x' }]) },
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
 		expect(tool.summary).toBe(AGENT_TOOL_SUMMARY)
@@ -777,7 +1364,7 @@ describe('the workflow/workspace/agent tool factories advertise a `summary` alon
 
 	it('a real ToolManager`s definitions() advertise the summary while tool(name).description keeps the full text', () => {
 		const registry = createAgentRegistry({
-			providers: { main: createScriptedProvider([{ content: 'x' }]) },
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const manager = createToolManager()
 		const workflowTool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
@@ -795,12 +1382,12 @@ describe('the workflow/workspace/agent tool factories advertise a `summary` alon
 	})
 })
 
-// ── net-new: createDescribeTool — full-description lookup by name ────────────
+// ── createDescribeTool — full-description lookup by name ────────────────────
 
 describe('createDescribeTool — returns a registered tool`s full description', () => {
 	it('describes each of the three tools through a real ToolManager', async () => {
 		const registry = createAgentRegistry({
-			providers: { main: createScriptedProvider([{ content: 'x' }]) },
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const manager = createToolManager()
 		const workflowTool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
@@ -1055,9 +1642,6 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 			clear: () => {},
 			destroy: () => {},
 		}
-		function ask(..._args: readonly unknown[]): Promise<never> {
-			return Promise.reject(new TerminalError('DRIVER', 'driver failed'))
-		}
 		const stub: TerminalManagerInterface = {
 			emitter,
 			count: 0,
@@ -1066,7 +1650,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 			add: () => {
 				throw new Error('not implemented')
 			},
-			ask,
+			ask: rejectTerminalAsk,
 			pending: () => [],
 			answer: () => ({ success: false, error: 'unknown' }),
 			open: async () => undefined,

@@ -1,7 +1,14 @@
-import type { ConversationStoreInterface } from '@orkestrel/agent'
+import type { AgentInterface, ConversationStoreInterface } from '@orkestrel/agent'
 import type { WorkspaceManagerInterface, WorkspaceStoreInterface } from '@orkestrel/workspace'
 import type { TerminalManagerInterface } from '@orkestrel/terminal'
-import type { WorkflowRunnerInterface, WorkflowStoreInterface } from '@orkestrel/workflow'
+import type {
+	WorkflowFault,
+	WorkflowFunction,
+	WorkflowFunctions,
+	WorkflowRunnerInterface,
+	WorkflowStatus,
+	WorkflowStoreInterface,
+} from '@orkestrel/workflow'
 import type {
 	DatabaseInterface,
 	DriverInterface,
@@ -13,14 +20,11 @@ import type { RelationManagerInterface } from '@orkestrel/relation'
 
 // Toolbox types — one interface per `create*Tool` / `create*Function` factory (AGENTS §5:
 // types are the SOURCE OF TRUTH; implementation conforms to them, never the reverse). The
-// workflow-authoring family (WorkflowSteps/WorkflowStep/WorkflowDraft/PhaseDraft/TaskDraft) and
-// AgentFunctionOptions are OWNED here now — ported byte-faithfully from `@orkestrel/workflow`
-// ahead of the upstream cleanup that drops the authoring surface from that package (this package
-// becomes the defining home). WorkspaceOperation is OWNED here now — ported from
-// `@orkestrel/agent` before the workspace domain was extracted to `@orkestrel/workspace`, which
-// now owns the files and editing surface. Each tool factory's options additionally grows a single `store` (or, for
-// the workspace tool, `manager` / `store`) slot — the pluggable persistence seam this package
-// layers on top of the ported handler logic.
+// workflow-authoring family (WorkflowSteps/WorkflowStep/WorkflowDraft/PhaseDraft/TaskDraft),
+// WorkflowToolResult, and adapter options are OWNED here and consume the current
+// `@orkestrel/workflow` contracts. WorkspaceOperation remains Toolbox's model-facing operation
+// union over the editing surface owned by `@orkestrel/workspace`. Each tool exposes only the
+// dependency configuration seams its handler actually composes.
 
 // === Draft family (the workflow tool's LENIENT authoring surface — id/name optional)
 //
@@ -45,11 +49,11 @@ export interface TaskDraft {
 	readonly id?: string
 	readonly name?: string
 	readonly description?: string
-	/** The behavior reference — a registry key resolved against a workflow's functions registry at construction; omitted ⇒ no handler. */
+	/** The behavior reference — a registry key resolved against a workflow's functions registry at construction; omitted ⇒ a deliberate JSON `null` no-op. */
 	readonly run?: string
-	/** Extra attempts after the first on failure (a non-negative integer); overrides the phase Runner default. Execution-only. */
+	/** Extra attempts after the first on failure (a non-negative integer); persisted with the workflow. */
 	readonly retries?: number
-	/** The per-attempt deadline in milliseconds (a non-negative integer); overrides the phase Runner default. Execution-only. */
+	/** The per-attempt deadline in milliseconds (`0..MAX_TIMER_MS`); persisted with the workflow. */
 	readonly timeout?: number
 }
 
@@ -104,64 +108,79 @@ export interface WorkflowStep {
  *
  * @remarks
  * Each {@link WorkflowStep} becomes a one-task phase, in order
- * ({@link import('./helpers.js').expandSteps}); `name` is the optional workflow name (defaulted
- * when omitted).
+ * ({@link import('./helpers.js').expandSteps}); `name` is the optional workflow name and
+ * deterministic persistence id (both default to `wf` when omitted).
  */
 export interface WorkflowSteps {
 	readonly name?: string
 	readonly steps: readonly WorkflowStep[]
 }
 
-/**
- * Options for {@link import('./factories.js').createAgentFunction} — the OPT-IN adapter that
- * wraps a live `AgentInterface` (`@orkestrel/agent`) as a `WorkflowFunction`
- * (`@orkestrel/workflow`), folding a nested workflow-authoring depth / cycle guard into its
- * closure.
- *
- * @remarks
- * All fields are optional: omitted entirely, the adapter runs the agent with no nested workflow
- * tool bound and no depth/cycle bound (depth `0`, empty ancestry).
- * - `runner` — when supplied, the adapter BINDS a depth/cycle-aware
- *   {@link import('./factories.js').createWorkflowTool} onto the agent's `context.tools` (the
- *   propagation seam), so the agent can author + run a NESTED workflow through it. Omitted ⇒ the
- *   agent runs with no workflow tool bound.
- * - `depth` — this invocation's nesting depth (default `0`); the bound workflow tool runs its
- *   nested workflow at `depth + 1`, bounded by
- *   {@link import('./constants.js').MAX_WORKFLOW_DEPTH}.
- * - `ancestry` — the workflow / agent identifiers already in this run chain (default empty); a
- *   cycle (this agent already present) is rejected with a typed `DEPTH` `WorkflowError`
- *   (`@orkestrel/workflow`).
- */
-export interface AgentFunctionOptions {
-	readonly runner?: WorkflowRunnerInterface
-	readonly depth?: number
-	readonly ancestry?: readonly string[]
+/** The JSON-safe run summary returned by {@link import('./factories.js').createWorkflowTool}. */
+export interface WorkflowToolResult {
+	/** The workflow's native terminal status. */
+	readonly status: WorkflowStatus
+	/** The number of settled task results. */
+	readonly count: number
+	/** Whether the native runner stored its final state; omitted when no store was supplied. */
+	readonly durable?: boolean
+	/** The native runner's first persistence failure; omitted when none occurred. */
+	readonly fault?: WorkflowFault
+}
+
+/** One immutable workflow/agent call chain, beginning with a workflow tag. */
+export type WorkflowLineage = readonly string[]
+
+/** Raw live agents keyed by the workflow function names that invoke them. */
+export type WorkflowAgents = Readonly<Record<string, AgentInterface>>
+
+/** A contextual agent adapter carrying immutable metadata for Toolbox composition. */
+export type AgentFunction = WorkflowFunction & {
+	readonly category: 'agent'
+	readonly lineage: WorkflowLineage
 }
 
 /**
- * Options for {@link import('./factories.js').createWorkflowTool} — the depth + ancestry a
- * nested workflow run is bound at, plus the optional durable {@link WorkflowStoreInterface}
- * (`@orkestrel/workflow`) this package layers on top of the ported handler logic.
+ * Options for {@link import('./factories.js').createAgentFunction} — the OPT-IN adapter that
+ * wraps a live `AgentInterface` (`@orkestrel/agent`) as an {@link AgentFunction} with immutable
+ * lineage metadata and optional nested-workflow composition.
  *
  * @remarks
- * This is the PROPAGATION carrier across the agent/tool boundary. A `Tool`'s handler receives
- * ONLY the model-supplied `args` (no ambient context, no signal — see `@orkestrel/tool`'s
- * `ToolOptions`), so the run's position in the workflow→agent→workflow chain CANNOT be threaded
- * through a tool call at runtime. Instead {@link import('./factories.js').createAgentFunction}
- * CLOSES `depth` / `ancestry` over the tool at BIND time. Both are OPTIONAL: a workflow tool
- * built for a TOP-LEVEL caller omits them — its nested run starts the chain at depth `1` with
- * the bare `workflow:<id>` ancestry.
+ * All fields are optional. An empty lineage is resolved from the controller's root workflow when
+ * the adapter runs; a configured lineage must already identify that exact workflow.
+ * - `runner` — when supplied, the adapter binds a recursion-safe
+ *   {@link import('./factories.js').createWorkflowTool} onto the agent's `context.tools` (the
+ *   propagation seam), so the agent can author and run a nested workflow through it. Omitted ⇒ the
+ *   agent runs with no workflow tool bound.
+ * - `lineage` — the immutable alternating workflow/agent chain for this adapter's workflow.
+ * - `functions` — opaque host-owned leaf functions propagated unchanged.
+ * - `agents` — raw live agents Toolbox contextually adapts for each target workflow.
+ * - `store` — the native runner checkpoint store propagated through nested runs.
+ */
+export interface AgentFunctionOptions {
+	readonly runner?: WorkflowRunnerInterface
+	readonly lineage?: WorkflowLineage
+	readonly functions?: WorkflowFunctions
+	readonly agents?: WorkflowAgents
+	readonly store?: WorkflowStoreInterface
+}
+
+/**
+ * Options for {@link import('./factories.js').createWorkflowTool} and
+ * {@link import('./factories.js').createWorkflowFunctions} — lineage-aware composition of opaque
+ * leaves, raw agents, and native workflow persistence.
  *
- * `store` is this package's ADDITION: when supplied, the tool's handler persists the run's final
- * snapshot (`store.set(result.workflow.snapshot())`) once the run settles, so a workflow
- * authored + run through the tool is retrievable / restorable afterwards. Omitted ⇒ no
- * persistence.
+ * @remarks
+ * A top-level workflow tool uses an empty lineage and establishes its authored target as depth
+ * zero. A tool bound onto an agent carries a lineage ending in that agent; the target workflow is
+ * appended at invocation. `functions` remains strictly opaque host behavior. `agents` is the raw
+ * live registry Toolbox uses to mint target-specific {@link AgentFunction}s. `store` is forwarded
+ * to the native runner, which owns checkpoints and reports final durability/fault state.
  */
 export interface WorkflowToolOptions {
-	/** The depth the INVOKING agent runs at; the nested workflow runs at `depth + 1`. Default `0`. */
-	readonly depth?: number
-	/** The ancestry of the invoking run; the nested run extends it with its own `workflow:<id>`. Default empty. */
-	readonly ancestry?: readonly string[]
+	readonly lineage?: WorkflowLineage
+	readonly functions?: WorkflowFunctions
+	readonly agents?: WorkflowAgents
 	readonly store?: WorkflowStoreInterface
 }
 
@@ -178,7 +197,7 @@ export interface WorkflowToolOptions {
  *   `@orkestrel/workspace`'s `createWorkspaceManager`) — used only when `manager` is omitted.
  *   The store only backs the manager's own `open` / `save` operations: the tool's edits are
  *   NOT auto-persisted — durability requires an explicit caller `save` on the manager
- *   (unlike the workflow tool's `store`, which persists each executed snapshot on settle).
+ *   (unlike the workflow tool's `store`, which is forwarded into native run-wide checkpoints).
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').WORKSPACE_TOOL_NAME} / {@link import('./constants.js').WORKSPACE_TOOL_DESCRIPTION}.
  */
@@ -189,7 +208,7 @@ export interface WorkspaceToolOptions {
 	readonly store?: WorkspaceStoreInterface
 }
 
-// === Workspace operation union (OWNED here now, ported from `@orkestrel/agent`)
+// === Workspace operation union
 
 /**
  * One operation an agent invokes through {@link import('./factories.js').createWorkspaceTool} — a

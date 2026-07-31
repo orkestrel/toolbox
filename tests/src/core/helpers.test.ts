@@ -15,20 +15,27 @@ import {
 	completeDraft,
 	completePhaseDraft,
 	completeTaskDraft,
+	createAgentFunction,
+	deriveWorkflowDepth,
+	extendLineage,
+	lineageOf,
 	queryOf,
 	databaseToolCode,
 	expandInclude,
 	expandSteps,
 	expandTables,
+	isAgentFunction,
 	isToolboxError,
 	isColumnKind,
 	isColumnSpec,
 	isDatabaseDefinition,
+	isWorkflowLineage,
 	relationToolCode,
 	terminalToolCode,
 	workflowTag,
 	workflowToolSummary,
 } from '@src/core'
+import { createAgent } from '@orkestrel/agent'
 import { TerminalError } from '@orkestrel/terminal'
 import {
 	buildPhaseContext,
@@ -41,6 +48,7 @@ import { DatabaseError } from '@orkestrel/database'
 import { RelationError } from '@orkestrel/relation'
 import { createContract, objectShape } from '@orkestrel/contract'
 import { describe, expect, it } from 'vitest'
+import { ScriptedProvider } from '../../setup.js'
 
 // tests/src/core/helpers.test.ts — mirrors src/core/helpers.ts. Pure, deterministic
 // synthesis (AGENTS §16.1: real inputs, no mocks): the ancestry tag namespacing, the
@@ -61,23 +69,119 @@ describe('ancestry tags — workflowTag / agentTag (depth/cycle chain identifier
 	})
 })
 
+describe('workflow lineage helpers', () => {
+	it('validates strict alternating unique nonempty tags beginning with workflow', () => {
+		expect(isWorkflowLineage([])).toBe(true)
+		expect(isWorkflowLineage(['workflow:root', 'agent:a', 'workflow:child'])).toBe(true)
+		for (const invalid of [
+			['agent:a'],
+			['workflow:'],
+			['workflow:a', 'workflow:b'],
+			['workflow:a', 'agent:b', 'workflow:a'],
+			['workflow:a', 'agent:b', 'agent:c'],
+		]) {
+			expect(isWorkflowLineage(invalid)).toBe(false)
+		}
+		const revoked = Proxy.revocable<readonly string[]>(['workflow:root'], {})
+		revoked.revoke()
+		expect(isWorkflowLineage(revoked.proxy)).toBe(false)
+	})
+
+	it('copies and freezes construction and extension without aliasing caller arrays', () => {
+		const source = ['workflow:root']
+		const root = lineageOf(source)
+		source.push('agent:later')
+		const nested = extendLineage(root, 'agent:a')
+		expect(root).toEqual(['workflow:root'])
+		expect(nested).toEqual(['workflow:root', 'agent:a'])
+		expect(Object.isFrozen(root)).toBe(true)
+		expect(Object.isFrozen(nested)).toBe(true)
+	})
+
+	it('throws TOOL for malformed configured chains', () => {
+		for (const lineage of [
+			['agent:a'],
+			['workflow:a', 'workflow:b'],
+			['workflow:a', 'agent:b', 'workflow:a'],
+		]) {
+			let error: unknown
+			try {
+				lineageOf(lineage)
+			} catch (caught) {
+				error = caught
+			}
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		}
+	})
+
+	it('derives uniform zero-based workflow depth', () => {
+		expect(deriveWorkflowDepth([])).toBe(0)
+		expect(deriveWorkflowDepth(['workflow:root'])).toBe(0)
+		expect(deriveWorkflowDepth(['workflow:root', 'agent:a', 'workflow:child'])).toBe(1)
+		expect(
+			deriveWorkflowDepth([
+				'workflow:root',
+				'agent:a',
+				'workflow:child',
+				'agent:b',
+				'workflow:leaf',
+			]),
+		).toBe(2)
+	})
+
+	it('recognizes only frozen agent adapters carrying frozen valid metadata', () => {
+		const fn = createAgentFunction(createAgent(new ScriptedProvider([{ content: 'ok' }])))
+		expect(isAgentFunction(fn)).toBe(true)
+		expect(isAgentFunction(() => 'opaque')).toBe(false)
+		expect(
+			isAgentFunction(
+				Object.freeze(
+					Object.assign(() => 'spoof', {
+						category: 'agent',
+						lineage: ['agent:wrong'],
+					}),
+				),
+			),
+		).toBe(false)
+		const revoked = Proxy.revocable(() => 'revoked', {})
+		revoked.revoke()
+		expect(isAgentFunction(revoked.proxy)).toBe(false)
+	})
+})
+
 describe('workflowToolSummary — WorkflowResult → the plain handler summary', () => {
 	it('summarizes a run as the terminal status + the result count', () => {
 		const workflowContext = buildWorkflowContext({ id: 'wf-1', name: 'WF' })
 		const phaseContext = buildPhaseContext(workflowContext, { id: 'p', name: 'P' })
-		const taskResult = (id: string, status: TaskStatus): TaskResult => ({
-			task: buildTaskContext(phaseContext, { id, name: id }),
+		const statuses: readonly TaskStatus[] = ['completed', 'failed']
+		const results: readonly TaskResult[] = statuses.map((status, index) => ({
+			task: buildTaskContext(phaseContext, { id: `t${index}`, name: `t${index}` }),
 			phase: phaseContext,
 			workflow: workflowContext,
 			status,
 			timestamp: 0,
-		})
+		}))
 		const result: WorkflowResult = {
 			workflow: createWorkflow({ id: 'wf-1', name: 'WF', phases: [] }),
 			status: 'completed',
-			results: [taskResult('t0', 'completed'), taskResult('t1', 'failed')],
+			results,
+			durable: true,
+			fault: {
+				origin: 'persistence',
+				checkpoint: 'settlement',
+				message: 'temporary refusal',
+			},
 		}
-		expect(workflowToolSummary(result)).toEqual({ status: 'completed', count: 2 })
+		expect(workflowToolSummary(result)).toEqual({
+			status: 'completed',
+			count: 2,
+			durable: true,
+			fault: {
+				origin: 'persistence',
+				checkpoint: 'settlement',
+				message: 'temporary refusal',
+			},
+		})
 	})
 
 	it('an empty result list summarizes to count 0', () => {
@@ -197,6 +301,7 @@ describe('expandSteps — flatten a steps blob into a one-task-phase-per-step de
 		}
 		const definition = expandSteps(flat)
 		expect(createWorkflowContract().is(definition)).toBe(true)
+		expect(definition.id).toBe('pipeline')
 		expect(definition.name).toBe('pipeline')
 		expect(definition.phases).toHaveLength(3)
 		expect(definition.phases.map((phase) => phase.tasks.length)).toEqual([1, 1, 1])

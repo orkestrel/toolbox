@@ -5,10 +5,14 @@ import type { ToolInterface, ToolManagerInterface } from '@orkestrel/tool'
 import type {
 	WorkflowDefinition,
 	WorkflowFunction,
+	WorkflowFunctions,
 	WorkflowRunnerInterface,
+	TaskControllerInterface,
 } from '@orkestrel/workflow'
 import type {
+	AgentFunction,
 	AgentFunctionOptions,
+	WorkflowAgents,
 	AgentToolOptions,
 	AnswerToolOptions,
 	DatabaseDefinition,
@@ -27,11 +31,15 @@ import type {
 	WorkspaceToolOptions,
 } from './types.js'
 import type { DatabaseInterface, DriverInterface, TableInterface } from '@orkestrel/database'
+import { agentResultToJSON } from '@orkestrel/agent'
 import { createWorkspaceManager, isText, rangeOf } from '@orkestrel/workspace'
 import { createTool } from '@orkestrel/tool'
 import {
+	attempt,
+	cloneJSONRecord,
 	createContract,
 	isRecord,
+	parseJSONValue,
 	rawShape,
 	samplesToSchema,
 	schemaToObject,
@@ -41,7 +49,7 @@ import {
 } from '@orkestrel/contract'
 import { isTerminalError } from '@orkestrel/terminal'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
-import { createWorkflowContract, WorkflowError } from '@orkestrel/workflow'
+import { createWorkflowContract } from '@orkestrel/workflow'
 import { MemoryDefinitionStore } from './stores/MemoryDefinitionStore.js'
 import { DatabaseDefinitionStore } from './stores/DatabaseDefinitionStore.js'
 import { DatabaseResolver } from './databases/DatabaseResolver.js'
@@ -86,6 +94,9 @@ import {
 	clampQuery,
 	coerceAnswer,
 	completeDraft,
+	deriveWorkflowDepth,
+	extendLineage,
+	lineageOf,
 	queryOf,
 	databaseToolCode,
 	expandInclude,
@@ -95,6 +106,7 @@ import {
 	relationModelOf,
 	relationToolCode,
 	terminalToolCode,
+	isAgentFunction,
 	workflowTag,
 	workflowToolSummary,
 } from './helpers.js'
@@ -111,28 +123,23 @@ import {
 	workspaceToolShape,
 } from './shapers.js'
 
-// This package's tool factories. `createWorkflowTool` / `createWorkspaceTool` OWN their full
-// handler logic now (the workflow half ported byte-faithfully from `@orkestrel/workflow` ahead of
-// the upstream cleanup that drops the authoring surface from that package; the workspace half
-// ported from `@orkestrel/agent` before the workspace domain was extracted to
-// `@orkestrel/workspace`) and additionally layer a pluggable store slot on top;
-// `createAgentTool` is net-new: sub-agent delegation over an `AgentRegistryInterface`.
+// This package's tool factories. `createWorkflowTool` owns authoring translation and boundary
+// policy while delegating execution/persistence to `@orkestrel/workflow`; `createWorkspaceTool`
+// owns the model-facing operation dispatch over `@orkestrel/workspace`; `createAgentTool` owns
+// sub-agent delegation over an `AgentRegistryInterface`.
 
 /**
  * Wrap a registered tool as a {@link WorkflowFunction} (`@orkestrel/workflow`) — the OPT-IN
  * adapter that lets a `function`-form task run a `@orkestrel/tool` tool BY NAME.
  *
  * @remarks
- * OWNED here now (ported from `@orkestrel/workflow`). Composes into a caller's
- * `WorkflowOptions.functions` registry like any other behavior
+ * Composes into a caller's `WorkflowOptions.functions` registry like any other behavior
  * (`{ publish: createToolFunction(tools, 'publish') }`); the pure workflow runner has no
  * knowledge of tools itself. The returned function executes `name` against `tools` with the
- * task's `controller.input` as the call arguments. The adapter resolves the live tool and calls
- * its `execute` method directly, preserving any thrown value as the `cause` of the task failure
- * instead of flattening it through the registry result envelope. An UNREGISTERED tool name is a
- * programmer error (an explicit binding to a name that doesn't exist) — unlike the engine's own
- * silent auto-complete of an unresolved task handler, this THROWS a typed `TOOL`
- * `WorkflowError` (`@orkestrel/workflow`).
+ * task's `controller.input` as the call arguments. The adapter resolves the live tool, calls its
+ * `execute` method directly, and deep-gates the returned unknown through `parseJSONValue`.
+ * Genuine execution throws retain identity. An unregistered name or non-JSON return throws this
+ * package's typed `TOOL` `ToolboxError`.
  *
  * @param tools - The `ToolManagerInterface` (`@orkestrel/tool`) the named tool is registered on
  * @param name - The registered tool's name
@@ -151,49 +158,49 @@ import {
  * ```
  */
 export function createToolFunction(tools: ToolManagerInterface, name: string): WorkflowFunction {
+	if (name === WORKFLOW_TOOL_NAME) {
+		throw new ToolboxError('TOOL', `tool '${WORKFLOW_TOOL_NAME}' is reserved for live workflows`, {
+			tool: name,
+		})
+	}
 	return async (controller) => {
 		const tool = tools.tool(name)
 		if (tool === undefined) {
-			throw new WorkflowError('TOOL', `tool '${name}' is not registered`, { tool: name })
+			throw new ToolboxError('TOOL', `tool '${name}' is not registered`, { tool: name })
 		}
-		try {
-			return await tool.execute(controller.input)
-		} catch (error) {
-			throw new Error(error instanceof Error ? error.message : String(error), { cause: error })
+		const result = parseJSONValue(await tool.execute(controller.input))
+		if (result === undefined) {
+			throw new ToolboxError('TOOL', `tool '${name}' returned a non-JSON value`, { tool: name })
 		}
+		return result
 	}
 }
 
 /**
  * Wrap a live `AgentInterface` (`@orkestrel/agent`) as a {@link WorkflowFunction}
- * (`@orkestrel/workflow`) — the OPT-IN adapter that runs the agent to a settled result, folding
- * a nested workflow-authoring depth / cycle guard into its own closure.
+ * (`@orkestrel/workflow`) — the opt-in adapter that runs the agent to a settled result and carries
+ * immutable lineage metadata for contextual Toolbox composition.
  *
  * @remarks
- * OWNED here now (ported from `@orkestrel/workflow`). Composes into a caller's
- * `WorkflowOptions.functions` registry like any other behavior; the pure workflow runner has no
- * knowledge of agents itself. Before running the agent, the depth/cycle guard REJECTS the call
- * (a THROWN typed `DEPTH` `WorkflowError`, which the leaf `fail`s) when running it would push a
- * nested chain past {@link import('./constants.js').MAX_WORKFLOW_DEPTH}, OR when this agent is
- * already an ancestor (a cycle). When {@link import('./types.js').AgentFunctionOptions.runner}
- * is supplied, the adapter BINDS a depth/cycle-aware {@link createWorkflowTool} onto the agent's
- * `context.tools` (the propagation seam) — closed over `depth` and the extended ancestry (the
- * tool itself computes `depth + 1` internally) — so the agent can author + run a NESTED workflow
- * through it; the wrapped default is the CURRENT task's own workflow id (used only on a no-args
- * tool call). The task's cancellation folds into the agent run: an already-aborted
- * `controller.signal` cancels the agent up front; otherwise a one-shot listener fires
- * `agent.abort(reason)` when the task cancels, removed in `finally`. `agent.generate()` resolves
- * a partial `AgentResult` on a cancel (never rejects), returned as the task's completed value.
+ * Composes into a caller's registry like any other behavior; the pure workflow runner has no
+ * knowledge of agents itself. A root adapter derives its workflow lineage from the controller,
+ * while a contextual adapter requires an exact match. Repeated agents, repeated workflows, and
+ * targets deeper than {@link import('./constants.js').MAX_WORKFLOW_DEPTH} are rejected before
+ * agent or runner activity. When {@link import('./types.js').AgentFunctionOptions.runner} is
+ * supplied, the adapter binds a recursion-safe {@link createWorkflowTool} onto the agent's
+ * `context.tools`, propagating opaque leaves, raw agents, lineage, and the native store. The
+ * task's cancellation propagates through the Agent's native per-run signal seam:
+ * `agent.generate({ signal: controller.signal })` resolves a partial `AgentResult` on a cancel
+ * (never rejects), projected onto its exact JSON fields.
  *
- * A bound agent is effectively SINGLE-RUN: `context.tools.add` binds one `ToolInterface` under
- * the fixed {@link import('./constants.js').WORKFLOW_TOOL_NAME}, and `agent.generate()` /
- * `agent.abort()` are per-agent state. Two CONCURRENT tasks sharing the SAME `agent` instance
- * race on that one tool binding (last-write-wins) and on generate/abort — give each concurrent
- * task its OWN agent instance.
+ * A bound agent is single-run. A concurrent branch sharing the same real agent is rejected before
+ * its fixed {@link import('./constants.js').WORKFLOW_TOOL_NAME} binding can be replaced. Toolbox
+ * cannot serialize opaque external wrappers that hide or bypass the raw agent registry; hosts
+ * must give such concurrent work distinct agents.
  *
  * @param agent - The live `AgentInterface` to run
- * @param options - The nested-workflow binding + depth/cycle bookkeeping (see {@link import('./types.js').AgentFunctionOptions})
- * @returns A {@link WorkflowFunction} that runs `agent` to its settled result
+ * @param options - The nested-workflow composition and lineage options
+ * @returns A frozen {@link AgentFunction} that runs `agent` to its settled result
  *
  * @example
  * ```ts
@@ -208,87 +215,154 @@ export function createToolFunction(tools: ToolManagerInterface, name: string): W
 export function createAgentFunction(
 	agent: AgentInterface,
 	options?: AgentFunctionOptions,
-): WorkflowFunction {
-	return async (controller) => {
-		const depth = options?.depth ?? 0
-		const ancestry = options?.ancestry ?? []
-		// GUARD (before running the agent): running it would let it author + run a NESTED workflow
-		// at `depth + 1`, so reject when that would exceed the bound, OR when this agent is already
-		// an ancestor (a re-entry cycle). The throw becomes the leaf's typed `DEPTH` failure.
-		if (depth + 1 > MAX_WORKFLOW_DEPTH) {
-			throw new WorkflowError('DEPTH', `agent '${agent.id}' exceeds max workflow depth`, {
-				agent: agent.id,
-				depth,
-				max: MAX_WORKFLOW_DEPTH,
-			})
-		}
-		const tag = agentTag(agent.id)
-		if (ancestry.includes(tag)) {
-			throw new WorkflowError('DEPTH', `agent '${agent.id}' is already an ancestor (cycle)`, {
-				agent: agent.id,
-				ancestry: [...ancestry],
-			})
-		}
-		// BIND the workflow tool so the agent can fan out into a nested workflow at `depth + 1` with
-		// THIS agent added to the ancestry — the propagation across the agent/tool boundary (closed
-		// over the tool at bind time, since a tool handler receives no ambient context). The current
-		// task's own workflow id is the tool's WRAPPED default, used only on a no-args call.
-		const runner = options?.runner
-		if (runner !== undefined) {
-			const workflowId = controller.task.phase.workflow.id
-			const wrapped: WorkflowDefinition = { id: workflowId, name: workflowId, phases: [] }
-			agent.context.tools.add(
-				createWorkflowTool(wrapped, runner, { depth, ancestry: [...ancestry, tag] }),
-			)
-		}
-		// Fold the task's cancellation into the agent run: an already-aborted signal cancels the
-		// agent up front; otherwise a one-shot listener fires `agent.abort(reason)` when the task
-		// cancels. `generate()` RESOLVES a partial on a cancel (never rejects).
-		const signal = controller.signal
-		const onAbort = {
-			handleEvent(): void {
-				agent.abort(signal.reason)
-			},
-		}
-		if (signal.aborted) {
-			agent.abort(signal.reason)
-		} else {
-			signal.addEventListener('abort', onAbort, { once: true })
-		}
-		try {
-			return await agent.generate()
-		} finally {
-			signal.removeEventListener('abort', onAbort)
-		}
+): AgentFunction {
+	const lineage = lineageOf(options?.lineage)
+	if (lineage.length > 0 && !lineage.at(-1)?.startsWith('workflow:')) {
+		throw new ToolboxError('TOOL', 'agent function lineage must end with a workflow tag')
 	}
+	const functions =
+		options?.functions === undefined ? undefined : Object.freeze({ ...options.functions })
+	const agents = options?.agents === undefined ? undefined : Object.freeze({ ...options.agents })
+	const metadata: Pick<AgentFunction, 'category' | 'lineage'> = {
+		category: 'agent',
+		lineage,
+	}
+	return Object.freeze(
+		Object.assign(async (controller: TaskControllerInterface) => {
+			const workflow = workflowTag(controller.task.phase.workflow.id)
+			const current = lineage.length === 0 ? extendLineage(lineage, workflow) : lineage
+			if (current.at(-1) !== workflow) {
+				throw new ToolboxError('DEPTH', 'agent function workflow does not match its lineage', {
+					workflow,
+					lineage: [...current],
+				})
+			}
+			const depth = deriveWorkflowDepth(current)
+			// Reject over-depth or re-entry before the agent, tool registry, or runner becomes active.
+			if (depth > MAX_WORKFLOW_DEPTH) {
+				throw new ToolboxError('DEPTH', `agent '${agent.id}' exceeds max workflow depth`, {
+					agent: agent.id,
+					depth,
+					max: MAX_WORKFLOW_DEPTH,
+				})
+			}
+			const tag = agentTag(agent.id)
+			if (current.includes(tag)) {
+				throw new ToolboxError('DEPTH', `agent '${agent.id}' is already an ancestor (cycle)`, {
+					agent: agent.id,
+					lineage: [...current],
+				})
+			}
+			const nested = extendLineage(current, tag)
+			// Bind the nested workflow tool with this agent appended to the immutable lineage.
+			const runner = options?.runner
+			if (runner !== undefined) {
+				if (agent.status === 'running') {
+					throw new ToolboxError('TOOL', `agent '${agent.id}' is already running`, {
+						agent: agent.id,
+					})
+				}
+				const workflowId = controller.task.phase.workflow.id
+				const wrapped: WorkflowDefinition = { id: workflowId, name: workflowId, phases: [] }
+				agent.context.tools.add(
+					createWorkflowTool(wrapped, runner, {
+						lineage: nested,
+						...(functions === undefined ? {} : { functions }),
+						...(agents === undefined ? {} : { agents }),
+						...(options?.store === undefined ? {} : { store: options.store }),
+					}),
+				)
+			}
+			// Start synchronously with the task's native per-run signal so Agent owns cancellation,
+			// including already-aborted signals and partial-result settlement.
+			const generated = agent.generate({ signal: controller.signal })
+			const result = agentResultToJSON(await generated)
+			if (result === undefined) {
+				throw new ToolboxError('TOOL', `agent '${agent.id}' returned a non-JSON result`, {
+					agent: agent.id,
+				})
+			}
+			return result
+		}, metadata),
+	)
 }
 
 /**
- * Compile the LENIENT workflow DRAFT contract — identical to `createWorkflowContract`
- * (`@orkestrel/workflow`) EXCEPT `id` and `name` are OPTIONAL at all three levels (workflow /
- * phase / task), so a small model can omit the six identity strings.
+ * Compose opaque host functions and raw agents into one immutable workflow registry.
  *
  * @remarks
- * The widened authoring surface {@link createWorkflowTool} parses an authored blob through
- * before {@link import('./helpers.js').completeDraft} fills the missing ids/names. It does NOT
- * relax the canonical contract — `createWorkflowContract` (`@orkestrel/workflow`) stays
- * byte-for-byte unchanged and STRICT, and the completed draft is re-validated against THAT
- * strict gate before running (soundness preserved). A PROVIDED `id` / `name` still carries
- * `minLength: 1`, so an explicitly-empty `id: ''` is REJECTED (parses to `undefined`), never
- * auto-filled — keeping "garbage" distinct from "omitted". `run` stays optional (a plain name
- * string).
+ * This is the target-aware composition boundary used by direct runner consumers and
+ * {@link createWorkflowTool}. Opaque leaves are copied unchanged, marked agent adapters are
+ * rejected from that channel, raw agents are rebound to the supplied lineage, collisions fail
+ * closed, and the returned null-prototype record prevents inherited names from becoming phantom
+ * Workflow handlers.
  *
- * @returns The compiled {@link import('./types.js').WorkflowDraft} contract
+ * @param runner - The native runner propagated into contextual agent adapters
+ * @param options - Target lineage, opaque functions, raw agents, and native store
+ * @returns A frozen null-prototype snapshot of the target workflow's callable registry
  *
  * @example
  * ```ts
- * import { createWorkflowDraftContract, completeDraft } from '@src/core'
+ * import { createWorkflowFunctions } from '@src/core'
+ * import { createWorkflowRunner } from '@orkestrel/workflow'
  *
- * const draft = createWorkflowDraftContract()
- * const parsed = draft.parse({ phases: [{ tasks: [{ run: 'compile' }] }] })
- * const definition = parsed && completeDraft(parsed) // ids/names filled positionally
- * draft.parse({ id: '', phases: [] }) // undefined — an explicit empty id is rejected
+ * const runner = createWorkflowRunner()
+ * const functions = createWorkflowFunctions(runner, {
+ * 	functions: { publish: async () => 'published' },
+ * 	agents: { review: reviewAgent },
+ * })
+ * await runner.execute(definition, { functions })
  * ```
+ */
+export function createWorkflowFunctions(
+	runner: WorkflowRunnerInterface,
+	options?: WorkflowToolOptions,
+): WorkflowFunctions {
+	const lineage = lineageOf(options?.lineage)
+	if (lineage.length > 0 && !lineage.at(-1)?.startsWith('workflow:')) {
+		throw new ToolboxError('TOOL', 'workflow functions lineage must end with a workflow tag')
+	}
+	const functions: WorkflowFunctions =
+		options?.functions === undefined ? Object.freeze({}) : Object.freeze({ ...options.functions })
+	const agents: WorkflowAgents =
+		options?.agents === undefined ? Object.freeze({}) : Object.freeze({ ...options.agents })
+	const composed: Record<string, WorkflowFunction> = {}
+	Object.setPrototypeOf(composed, null)
+	for (const [name, fn] of Object.entries(functions)) {
+		if (typeof fn !== 'function') {
+			throw new ToolboxError('TOOL', `workflow function '${name}' is not callable`, {
+				function: name,
+			})
+		}
+		if (isAgentFunction(fn)) {
+			throw new ToolboxError('TOOL', `agent function '${name}' must be supplied through agents`, {
+				function: name,
+			})
+		}
+		composed[name] = fn
+	}
+	for (const [name, agent] of Object.entries(agents)) {
+		if (Object.hasOwn(composed, name)) {
+			throw new ToolboxError('TOOL', `workflow function '${name}' collides with an agent`, {
+				function: name,
+			})
+		}
+		const fn = createAgentFunction(agent, {
+			runner,
+			lineage,
+			functions,
+			agents,
+			...(options?.store === undefined ? {} : { store: options.store }),
+		})
+		composed[name] = fn
+	}
+	return Object.freeze(composed)
+}
+
+/**
+ * Compile the lenient workflow draft contract used by {@link createWorkflowTool}.
+ *
+ * @returns The compiled {@link import('./types.js').WorkflowDraft} contract
  */
 export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> {
 	return createContract(workflowDraftShape)
@@ -298,19 +372,16 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
  * Wrap a {@link WorkflowDefinition} as an LLM-callable tool — it ADVERTISES the SIMPLE flat
  * authoring shape (`{ name?, steps: [{ name }] }`) as its `parameters` so even a small model can
  * author a complete tree, and its handler EXPANDS / COMPLETES the authored blob, validates it
- * against the STRICT contract, runs it through `runner`, and, when
- * {@link import('./types.js').WorkflowToolOptions.store} is supplied, PERSISTS each executed
- * workflow's final snapshot after the run settles.
+ * against the STRICT contract, and runs it through `runner`, forwarding the caller's optional
+ * named functions and native checkpoint store.
  *
  * @remarks
  * A plain `ToolManagerInterface`-compatible tool (`@orkestrel/tool`), reproducing
- * `@orkestrel/workflow`'s former call contract exactly (flat / draft / full authoring forms, the
- * strict soundness gate, the depth/cycle guard). It is ALSO the propagation carrier
+ * Toolbox's flat / draft / full authoring contract, strict soundness gate, and lineage guard.
+ * It is ALSO the propagation carrier
  * {@link createAgentFunction} binds onto a wrapped agent's `context.tools`: because a tool
- * handler receives ONLY the model-supplied `args` (no ambient context, no signal), the run's
- * depth + ancestry are CLOSED OVER at bind time via {@link import('./types.js').WorkflowToolOptions},
- * and the handler enforces the SAME depth / cycle guard itself before running the nested
- * workflow at `depth + 1` with the extended ancestry.
+ * handler receives only the model-supplied `args`, the immutable lineage is closed over at bind
+ * time. The authored target is appended and its zero-based depth derived from workflow tags.
  *
  * **Widened authoring surface (additive — the canonical contract + runner stay STRICT and
  * unchanged).** A 2B model reliably CALLS the tool but cannot reliably emit the full four-level
@@ -325,17 +396,17 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
  *   super-set.
  *
  * The universal tool-handler contract (AGENTS §14): returns the plain run summary
- * (`{ status, count }`) on success, THROWS a typed `WorkflowError` (`@orkestrel/workflow`) on
- * every failure path — malformed authored args (`TOOL`), or an over-deep / cyclic nested run
- * (`DEPTH`). The `ToolManagerInterface` isolates every throw into the canonical tool result's
- * top-level `error`, so nothing escapes the run. `options.depth` / `options.ancestry` are the
- * propagation carrier across a workflow → agent → workflow chain; `options.store` is this
- * package's ADDITION — the persisted snapshot is retrievable via the store afterwards (a caller
- * restores it through `@orkestrel/workflow`'s own `Workflow.restore` / store-backed factories).
+ * (`{ status, count, durable?, fault? }`) on success, THROWS a typed `ToolboxError` on Toolbox
+ * boundary failures — malformed authored args (`TOOL`), or an over-deep / cyclic nested run
+ * (`DEPTH`) — and preserves genuine runner `WorkflowError`s. The `ToolManagerInterface` isolates every throw into the canonical tool result's
+ * top-level `error`, so nothing escapes the run. `options.lineage` is the propagation carrier
+ * across a workflow → agent → workflow chain. Opaque `functions` remain host leaves; raw `agents`
+ * are contextually adapted through {@link createWorkflowFunctions}; native checkpoint persistence
+ * makes the final snapshot retrievable without a second Toolbox write.
  *
  * @param definition - The workflow the tool runs when called with no authored args
  * @param runner - The `WorkflowRunnerInterface` (`@orkestrel/workflow`) that executes the (nested) workflow
- * @param options - Depth/ancestry bookkeeping plus the optional durable store (see {@link import('./types.js').WorkflowToolOptions})
+ * @param options - Lineage-aware functions, agents, and optional native store
  * @returns A `ToolInterface` (named {@link import('./constants.js').WORKFLOW_TOOL_NAME}) whose
  *   `parameters` advertise the flat authoring schema
  *
@@ -349,7 +420,7 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
  * const store = createMemoryWorkflowStore()
  * const tool = createWorkflowTool(definition, runner, { store })
  * const tools = createToolManager()
- * tools.add(tool) // authored runs are now persisted to `store` on settle
+ * tools.add(tool) // authored runs now use native checkpoints through `store`
  * ```
  */
 export function createWorkflowTool(
@@ -360,8 +431,13 @@ export function createWorkflowTool(
 	const strict = createWorkflowContract()
 	const draft = createWorkflowDraftContract()
 	const steps: ContractInterface<WorkflowSteps> = createContract(workflowStepsShape)
-	const depth = options?.depth ?? 0
-	const ancestry = options?.ancestry ?? []
+	const lineage = lineageOf(options?.lineage)
+	if (lineage.length > 0 && !lineage.at(-1)?.startsWith('agent:')) {
+		throw new ToolboxError('TOOL', 'workflow tool lineage must end with an agent tag')
+	}
+	const functions =
+		options?.functions === undefined ? undefined : Object.freeze({ ...options.functions })
+	const agents = options?.agents === undefined ? undefined : Object.freeze({ ...options.agents })
 	const store = options?.store
 	const parameters = schemaToParameters(steps.schema)
 	return createTool({
@@ -370,47 +446,63 @@ export function createWorkflowTool(
 		summary: WORKFLOW_TOOL_SUMMARY,
 		...(parameters === undefined ? {} : { parameters }),
 		async execute(args) {
-			// Branch on the authored args' SHAPE (no ambient context — a tool handler gets only
+			const cloned = attempt(() => cloneJSONRecord(args))
+			if (!cloned.success) {
+				throw new ToolboxError('TOOL', 'malformed workflow definition', {
+					workflow: definition.id,
+				})
+			}
+			const owned = cloned.value
+			// Branch on the owned args snapshot's SHAPE (no ambient context — a tool handler gets only
 			// `args`): empty ⇒ the wrapped definition; a `steps` array ⇒ the FLAT form, parsed +
 			// expanded; otherwise the nested DRAFT form, parsed + completed. A parse failure leaves
 			// `target` undefined ⇒ the strict gate below throws `TOOL`.
 			let target: WorkflowDefinition | undefined
-			if (Object.keys(args).length === 0) {
+			if (Object.keys(owned).length === 0) {
 				target = definition
-			} else if (Array.isArray(args.steps)) {
-				const flat = steps.parse(args)
+			} else if (Array.isArray(owned.steps)) {
+				const flat = steps.parse(owned)
 				target = flat === undefined ? undefined : expandSteps(flat)
 			} else {
-				const parsed = draft.parse(args)
+				const parsed = draft.parse(owned)
 				target = parsed === undefined ? undefined : completeDraft(parsed)
 			}
 			// The SOUNDNESS gate: whatever authoring form produced `target`, it must satisfy the
 			// STRICT canonical contract before it runs — the leniency never reaches the runner.
 			if (target === undefined || !strict.is(target)) {
-				throw new WorkflowError('TOOL', 'malformed workflow definition', {
+				throw new ToolboxError('TOOL', 'malformed workflow definition', {
 					workflow: definition.id,
 				})
 			}
-			if (depth + 1 > MAX_WORKFLOW_DEPTH) {
-				throw new WorkflowError(
-					'DEPTH',
-					`nested workflow exceeds max depth ${MAX_WORKFLOW_DEPTH}`,
-					{
-						workflow: target.id,
-						depth,
-						max: MAX_WORKFLOW_DEPTH,
-					},
-				)
-			}
 			const tag = workflowTag(target.id)
-			if (ancestry.includes(tag)) {
-				throw new WorkflowError('DEPTH', `workflow '${target.id}' is already an ancestor (cycle)`, {
+			if (lineage.includes(tag)) {
+				throw new ToolboxError('DEPTH', `workflow '${target.id}' is already an ancestor (cycle)`, {
 					workflow: target.id,
-					ancestry: [...ancestry],
+					lineage: [...lineage],
 				})
 			}
-			const result = await runner.execute(target)
-			if (store !== undefined) await store.set(result.workflow.snapshot())
+			const targetLineage = extendLineage(lineage, tag)
+			const depth = deriveWorkflowDepth(targetLineage)
+			if (depth > MAX_WORKFLOW_DEPTH) {
+				throw new ToolboxError('DEPTH', `nested workflow exceeds max depth ${MAX_WORKFLOW_DEPTH}`, {
+					workflow: target.id,
+					depth,
+					max: MAX_WORKFLOW_DEPTH,
+				})
+			}
+			const registry =
+				functions === undefined && agents === undefined
+					? undefined
+					: createWorkflowFunctions(runner, {
+							lineage: targetLineage,
+							...(functions === undefined ? {} : { functions }),
+							...(agents === undefined ? {} : { agents }),
+							...(store === undefined ? {} : { store }),
+						})
+			const result = await runner.execute(target, {
+				...(registry === undefined ? {} : { functions: registry }),
+				...(store === undefined ? {} : { store }),
+			})
 			return workflowToolSummary(result)
 		},
 	})
