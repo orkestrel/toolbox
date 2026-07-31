@@ -3,13 +3,15 @@ import type { ToolboxErrorCode } from './types.js'
 // Toolbox errors — one error class per domain this package mints its own error for.
 // `@orkestrel/workflow`'s `WorkflowError` and `@orkestrel/agent`'s `WorkspaceError` already
 // cover the workflow tool + workspace tool's failure paths (imported and thrown as-is, never
-// duplicated here per §6). `createAgentTool` / `createDescribeTool` are net-new and none of
+// duplicated here under AGENTS' no-superfluous-wrappers law). `createAgentTool` /
+// `createDescribeTool` are net-new and none of
 // `@orkestrel/agent`'s error classes fit a pre-run validation / guard failure (`AgentJobError`
 // REQUIRES a settled partial `AgentResult` it cannot construct before a run starts;
 // `ConversationError` / `ProviderAbortError` / `WorkspaceError` are each scoped to an unrelated
 // domain) — so this package mints ONE typed error, `ToolboxError`, mirroring `WorkflowError`'s
 // exact shape (`code` + optional `context`) for the same reason: a thrown, machine-readable,
-// code-bearing error the tool-handler contract (AGENTS §14) requires, never a `{ error }`
+// code-bearing error after AGENTS' “narrow untrusted input with guards” boundary rejects a call,
+// never a `{ error }`
 // return. `ToolboxError` is this package's general TOOL-CALL error — not scoped to agent
 // delegation alone — so `createDescribeTool` (a malformed call / an unknown tool name) reuses it
 // rather than minting a second class for the same `TOOL` misuse semantics.
@@ -22,15 +24,13 @@ import type { ToolboxErrorCode } from './types.js'
  * (`DEADLOCK`), a prompt that expired before it was answered (`EXPIRE`), or an answer that
  * failed to apply (`ANSWER`) — the last three thrown by
  * {@link import('./factories.js').createPromptTool} / {@link import('./factories.js').createAnswerTool}.
- * The upcoming database / relation tools (SRC-1's later units) will throw it too: a typed
- * `@orkestrel/database` failure re-surfaces as `DATABASE`, a typed `@orkestrel/relation` failure
- * as `RELATION` — each carrying the package's own granular error code in `context`.
  *
  * @remarks
  * Carries a machine-readable `code` (see {@link import('./types.js').ToolboxErrorCode}) and
- * an optional `context` bag for structured diagnostics. The `ToolManagerInterface`
- * (`@orkestrel/tool`) isolates every throw into the canonical tool result's top-level `error`
- * (AGENTS §14) — nothing escapes the run.
+ * an optional `context` bag for structured diagnostics. They are readable through an in-process
+ * catch, including around a direct `tool.execute(args)` call. The `ToolManagerInterface`
+ * (`@orkestrel/tool`) instead flattens every throw to the canonical tool result's top-level
+ * `error` message string under AGENTS' “narrow untrusted input with guards” rule.
  *
  * @example
  * ```ts

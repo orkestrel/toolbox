@@ -1,5 +1,7 @@
 # PROPOSAL — The next tools for @orkestrel/toolbox
 
+Historical note (2026-07-31): this proposal was written against `@orkestrel/tool` 0.0.1 before the runtime/toolbox split and is superseded by the shipped package.
+
 Status: proposal for review — nothing in here is implemented. `@orkestrel/toolbox` 0.0.1
 (workflow, workspace, agent, describe) is gated and ready; this document evaluates the
 candidates for the tools that come next, ranks them, and sketches each design far enough
@@ -42,8 +44,9 @@ All five candidates are published, plus the supporting packages they lean on:
 | `@orkestrel/sse`      | 0.0.1   | The event-stream parser the terminal client uses                                          |
 | `@orkestrel/console`  | 0.0.1   | Styler the terminal renders through                                                       |
 
-Toolbox's dependency set today is `agent` + `workflow` + `contract` only — every adopted
-candidate is a deliberate new dependency, which is one more reason to phase them.
+At the time of this proposal, Toolbox's dependency set was `agent` + `workflow` + `contract`
+only — every adopted candidate was a deliberate new dependency, which was one more reason to
+phase them.
 
 ---
 
@@ -519,7 +522,7 @@ database and terminal packages' own core/server precedent. Core never imports no
 **Dependencies are phased, not bundled.** Each round adds only its own: terminal round →
 `@orkestrel/terminal` (+ `server`/`router` for the `/server` barrel mount); database round →
 `@orkestrel/database`; server round → `@orkestrel/server` + `@orkestrel/router`; reason →
-`@orkestrel/reason`. Nothing speculative lands early (AGENTS §21).
+`@orkestrel/reason`. Nothing speculative lands early under AGENTS' minimal-public-API law.
 
 **One error, richer context.** `ToolboxError` stays the package error. Underlying typed
 errors (`TerminalError`, `DatabaseError`, `HTTPError`, `ReasonError`) are caught, and
@@ -542,8 +545,9 @@ handles_ — is the single sentence that answers every statefulness question abo
 
 ## 9. Recommended roadmap
 
-1. **Publish `@orkestrel/toolbox` 0.0.1 now.** It is gated, reviewed, and its four tools are
-   complete. Holding a verified release hostage to future tools inverts §21 — ship what
+1. **Historical recommendation: publish `@orkestrel/toolbox` 0.0.1.** At the time, the
+   proposal treated its four tools as gated, reviewed, and complete. Holding a verified
+   release hostage to future tools would invert AGENTS' minimal-public-API law — ship what
    exists, add what's next.
 2. **0.0.2 — terminal round**: `createPromptHub`, `createPromptTool`, `createAnswerTool`,
    prompt store twins, `/server` barrel with `promptRoutes`. Pre-work: the two terminal

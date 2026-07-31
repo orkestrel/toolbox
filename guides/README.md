@@ -1,6 +1,6 @@
 # Guides
 
-A dual-axis index into this repository's guides — by concept, and by directory (AGENTS §22).
+A dual-axis index into this repository's guides — by concept, and by directory under AGENTS' documentation contract.
 
 ## By concept
 
@@ -62,6 +62,18 @@ for `@orkestrel/relation` — a runtime dependency, the declarative ORM layer
 wraps. It documents **that package's** surface, not anything sourced in this
 repo; it is kept here for the same reason.
 
+[`src/server.md`](src/server.md) is a byte-identical mirror of the guide for
+`@orkestrel/server` — a runtime dependency supplying the SSE stream primitive
+used by this package's terminal routes.
+
+[`src/terminal.md`](src/terminal.md) is a byte-identical mirror of the guide for
+`@orkestrel/terminal` — a runtime dependency supplying the prompt manager and
+client surfaces this package's terminal tools and routes drive.
+
+[`src/scaffold.md`](src/scaffold.md) is a byte-identical mirror of the guide for
+`@orkestrel/scaffold` — the devDependency supplying this repository's
+workspace-blueprint and policy infrastructure.
+
 ## See also
 
-- [`AGENTS.md`](../AGENTS.md) — the rules; §22 documentation-as-contracts.
+- [`AGENTS.md`](../AGENTS.md) — the rules; documentation is an enforced contract.
