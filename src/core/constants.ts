@@ -4,7 +4,7 @@ import type { WorkflowSteps, WorkspaceOperation } from './types.js'
 // Toolbox constants — UPPER_SNAKE, `Object.freeze`d, every member exported (AGENTS §5).
 // The workflow tool's name/description/examples/depth-bound and the workspace tool's
 // name/description are OWNED here now — ported byte-faithfully from `@orkestrel/workflow` /
-// `@orkestrel/agent` ahead of the upstream cleanup that drops the authoring surface from those
+// `@orkestrel/workspace` ahead of the upstream cleanup that drops the authoring surface from those
 // packages (this package becomes the defining home). Only the net-new agent tool's constants
 // were already net-new to this package.
 
@@ -175,7 +175,7 @@ export const WORKFLOW_TOOL_DESCRIPTION = [
  * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  *
  * @remarks
- * OWNED here now (ported from `@orkestrel/agent`).
+ * OWNED here now (ported from `@orkestrel/workspace`).
  */
 export const WORKSPACE_TOOL_NAME = 'workspace'
 
@@ -184,7 +184,7 @@ export const WORKSPACE_TOOL_NAME = 'workspace'
  * VERBATIM in {@link WORKSPACE_TOOL_DESCRIPTION}.
  *
  * @remarks
- * OWNED here now (ported from `@orkestrel/agent`). A `'write'` op (the most common authoring
+ * OWNED here now (ported from `@orkestrel/workspace`). A `'write'` op (the most common authoring
  * action): create or overwrite `notes.txt` with `hello`. Frozen so it cannot be mutated in
  * place.
  */
@@ -200,7 +200,7 @@ export const WORKSPACE_TOOL_EXAMPLE: WorkspaceOperation = Object.freeze({
  * `operation`-keyed tool.
  *
  * @remarks
- * OWNED here now (ported from `@orkestrel/agent`). Mirrors {@link WORKFLOW_TOOL_DESCRIPTION}'s
+ * OWNED here now (ported from `@orkestrel/workspace`). Mirrors {@link WORKFLOW_TOOL_DESCRIPTION}'s
  * teaching style: names the `operation` discriminant field, enumerates all 13 operations with
  * their FLAT fields, gives a worked example for the common ones, and embeds
  * {@link WORKSPACE_TOOL_EXAMPLE} verbatim.
@@ -223,8 +223,8 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
 	'- read     { "operation": "read", "path": "<file>" } — return the file\'s text.',
 	'- list     { "operation": "list" } — list every file in the active workspace (path, state, size, lines, kind).',
 	'- has      { "operation": "has", "path": "<file>" } — whether the file exists.',
-	'- search   { "operation": "search", "query": "<text>", "regex"?: bool, "exact"?: bool, "limit"?: int } — find lines matching the query across all files.',
-	'- replace  { "operation": "replace", "query": "<text>", "replacement": "<text>", "regex"?: bool, "exact"?: bool, "limit"?: int } — replace matches across all files.',
+	'- search   { "operation": "search", "query": "<text>", "regex"?: bool, "sensitive"?: bool, "limit"?: int } — find lines matching the query across all files.',
+	'- replace  { "operation": "replace", "query": "<text>", "replacement": "<text>", "regex"?: bool, "sensitive"?: bool, "limit"?: int } — replace matches across all files.',
 	'- write    { "operation": "write", "path": "<file>", "content": "<text>" } — create or overwrite the whole file.',
 	'- splice   { "operation": "splice", "path": "<file>", "content": "<text>", "fromLine": int, "fromColumn": int, "toLine": int, "toColumn": int } — replace a 1-based range (from inclusive, to exclusive) with content.',
 	'- prepend  { "operation": "prepend", "path": "<file>", "content": "<text>" } — add content to the start of the file.',
@@ -234,7 +234,7 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
 	'- workspaces { "operation": "workspaces" } — list the workspaces you can switch between (each id, file count, active).',
 	'- switch   { "operation": "switch", "id": "<id>" } — make the workspace with that id active (ids come from "workspaces").',
 	'',
-	'Notes: lines and columns are 1-based (column 1 is the first character). "regex" defaults to false (a literal substring), "exact" defaults to true (case-sensitive). "search"/"replace"/"splice" act only on text files. Editing with no active workspace auto-creates one.',
+	'Notes: lines and columns are 1-based (column 1 is the first character). "regex" defaults to false (a literal substring), "sensitive" defaults to true (case-sensitive). "search"/"replace"/"splice" act only on text files. Editing with no active workspace auto-creates one.',
 	'',
 	'Example — write a file:',
 	JSON.stringify(WORKSPACE_TOOL_EXAMPLE),

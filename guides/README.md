@@ -19,8 +19,13 @@ A dual-axis index into this repository's guides — by concept, and by directory
 
 [`src/agent.md`](src/agent.md) is a byte-identical mirror of the guide for
 `@orkestrel/agent` — a runtime dependency supplying the agent, conversation,
-and workspace surfaces this package's concrete tools drive. It documents
+and delegation surfaces this package's concrete tools drive. It documents
 **that package's** surface, not anything sourced in this repo.
+
+[`src/workspace.md`](src/workspace.md) is a byte-identical mirror of the guide
+for `@orkestrel/workspace` — the runtime dependency supplying the workspace,
+file, manager, and store surfaces this package's workspace tool drives. It
+documents **that package's** surface, not anything sourced in this repo.
 
 [`src/tool.md`](src/tool.md) is a byte-identical mirror of the guide for
 `@orkestrel/tool` — the runtime dependency supplying `ToolInterface`,

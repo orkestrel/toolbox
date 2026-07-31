@@ -7,7 +7,8 @@ relation operations, and schema inference over the
 
 The runtime envelope and registry (`ToolInterface`, `ToolCall`, `ToolResult`,
 `createTool`, and `createToolManager`) live in `@orkestrel/tool`. This package supplies
-the concrete handlers that plug into that runtime.
+the concrete handlers that plug into that runtime, including workspace operations over
+`@orkestrel/workspace` and agent delegation over `@orkestrel/agent`.
 
 ## Install
 
@@ -46,7 +47,8 @@ published from `@orkestrel/toolbox/server`.
 ## Guide
 
 See [`guides/src/toolbox.md`](guides/src/toolbox.md). The vendored
-[`guides/src/tool.md`](guides/src/tool.md) documents the runtime dependency.
+[`guides/src/tool.md`](guides/src/tool.md) and
+[`guides/src/workspace.md`](guides/src/workspace.md) document the runtime dependencies.
 
 ## License
 

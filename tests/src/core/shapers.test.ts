@@ -157,7 +157,7 @@ describe('workspaceToolShape — the 13-op discriminated union', () => {
 		['search', { operation: 'search', query: 'x' }],
 		[
 			'search with options',
-			{ operation: 'search', query: 'x', regex: true, exact: false, limit: 3 },
+			{ operation: 'search', query: 'x', regex: true, sensitive: false, limit: 3 },
 		],
 		['replace', { operation: 'replace', query: 'x', replacement: 'y' }],
 		['write', { operation: 'write', path: 'a.ts', content: 'x' }],
@@ -225,9 +225,9 @@ describe('workspaceToolShape — the 13-op discriminated union', () => {
 		).toBe(false)
 	})
 
-	it('is() rejects a search with a non-boolean regex/exact or a sub-1 limit', () => {
+	it('is() rejects a search with a non-boolean regex/sensitive or a sub-1 limit', () => {
 		expect(contract.is({ operation: 'search', query: 'x', regex: 'yes' })).toBe(false)
-		expect(contract.is({ operation: 'search', query: 'x', exact: 'no' })).toBe(false)
+		expect(contract.is({ operation: 'search', query: 'x', sensitive: 'no' })).toBe(false)
 		expect(contract.is({ operation: 'search', query: 'x', limit: 0 })).toBe(false)
 	})
 

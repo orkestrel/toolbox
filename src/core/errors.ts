@@ -1,29 +1,20 @@
 import type { ToolboxErrorCode } from './types.js'
 
 // Toolbox errors — one error class per domain this package mints its own error for.
-// `@orkestrel/workflow`'s `WorkflowError` and `@orkestrel/agent`'s `WorkspaceError` already
-// cover the workflow tool + workspace tool's failure paths (imported and thrown as-is, never
-// duplicated here under AGENTS' no-superfluous-wrappers law). `createAgentTool` /
-// `createDescribeTool` are net-new and none of
-// `@orkestrel/agent`'s error classes fit a pre-run validation / guard failure (`AgentJobError`
-// REQUIRES a settled partial `AgentResult` it cannot construct before a run starts;
-// `ConversationError` / `ProviderAbortError` / `WorkspaceError` are each scoped to an unrelated
-// domain) — so this package mints ONE typed error, `ToolboxError`, mirroring `WorkflowError`'s
-// exact shape (`code` + optional `context`) for the same reason: a thrown, machine-readable,
-// code-bearing error after AGENTS' “narrow untrusted input with guards” boundary rejects a call,
-// never a `{ error }`
-// return. `ToolboxError` is this package's general TOOL-CALL error — not scoped to agent
-// delegation alone — so `createDescribeTool` (a malformed call / an unknown tool name) reuses it
-// rather than minting a second class for the same `TOOL` misuse semantics.
+// `@orkestrel/workflow`'s `WorkflowError` and `@orkestrel/workspace`'s `WorkspaceError` already
+// cover their genuine domain failure paths (imported and thrown as-is, never duplicated here
+// under AGENTS' no-superfluous-wrappers law). Neither package error fits this package's own
+// malformed-call and resolution guards, so this package mints ONE typed error, `ToolboxError`,
+// mirroring `WorkflowError`'s exact shape (`code` + optional `context`) for the same reason: a
+// thrown, machine-readable, code-bearing error after AGENTS' “narrow untrusted input with guards”
+// boundary rejects a call, never a `{ error }` return. `ToolboxError` is this package's general
+// TOOL-CALL error — not scoped to agent delegation alone — so every package-owned `TOOL` misuse
+// shares it rather than minting one error class per tool.
 
 /**
- * Thrown by {@link import('./factories.js').createAgentTool}'s and
- * {@link import('./factories.js').createDescribeTool}'s handlers on every failure path — a
- * malformed / unresolvable call or an unknown tool name (`TOOL`), a delegation that would
- * exceed the configured depth bound or re-enter an ancestor (`DEPTH`), a prompt cycle
- * (`DEADLOCK`), a prompt that expired before it was answered (`EXPIRE`), or an answer that
- * failed to apply (`ANSWER`) — the last three thrown by
- * {@link import('./factories.js').createPromptTool} / {@link import('./factories.js').createAnswerTool}.
+ * A package-owned tool-call failure: malformed input or unresolved configuration (`TOOL`),
+ * delegation depth/cycle rejection (`DEPTH`), prompt failure (`DEADLOCK` / `EXPIRE` / `ANSWER`),
+ * or a translated upstream database/relation failure (`DATABASE` / `RELATION`).
  *
  * @remarks
  * Carries a machine-readable `code` (see {@link import('./types.js').ToolboxErrorCode}) and

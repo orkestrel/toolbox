@@ -5,14 +5,8 @@ import type { DatabaseInterface } from '@orkestrel/database'
 import type { TaskContext, TaskControllerInterface, WorkflowDefinition } from '@orkestrel/workflow'
 import type { TerminalManagerInterface, TimerCancel, TimerHandler } from '@orkestrel/terminal'
 import type { RelationManagerInterface } from '@orkestrel/relation'
-import {
-	buildToolResult,
-	createAgent,
-	createAgentRegistry,
-	createMemoryConversationStore,
-	createMemoryWorkspaceStore,
-	createWorkspaceManager,
-} from '@orkestrel/agent'
+import { createAgent, createAgentRegistry, createMemoryConversationStore } from '@orkestrel/agent'
+import { createMemoryWorkspaceStore, createWorkspaceManager } from '@orkestrel/workspace'
 import { createTool, createToolManager } from '@orkestrel/tool'
 import { booleanShape, isRecord, numberShape, stringShape } from '@orkestrel/contract'
 import {
@@ -58,7 +52,7 @@ import { describe, expect, it } from 'vitest'
 import { createRecorder, createScriptedProvider, waitForDelay } from '../../setup.js'
 
 // tests/src/core/factories.test.ts — mirrors src/core/factories.ts. Ported from
-// @orkestrel/workflow's + @orkestrel/agent's own factory suites (the byte-faithful port
+// @orkestrel/workflow's + @orkestrel/workspace's own factory suites (the byte-faithful port
 // source), plus net-new coverage for this package's ADDITIONS: the pluggable store slot on
 // createWorkflowTool, the unified manager/store options on createWorkspaceTool, and the
 // net-new createAgentTool sub-agent delegation. Real handlers/stores/scripted providers
@@ -143,20 +137,21 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 		expect(seen.calls[0]?.[0]).toEqual({ path: '/repo' })
 	})
 
-	it('error-to-cause: a tool whose result carries an error throws an Error carrying it as `cause`', async () => {
+	it('error-to-cause: a directly thrown tool error is preserved by identity as `cause`', async () => {
 		const tools = createToolManager()
+		const thrown = new Error('tool exploded')
 		tools.add(
 			createTool({
 				name: 'boom',
 				execute: () => {
-					throw new Error('tool exploded')
+					throw thrown
 				},
 			}),
 		)
 		const fn = createToolFunction(tools, 'boom')
 		const error = await rejectionOf(fn(fakeController()))
 		expect(error).toBeInstanceOf(Error)
-		expect(error instanceof Error ? error.cause : undefined).toBe('tool exploded')
+		expect(error instanceof Error ? error.cause : undefined).toBe(thrown)
 	})
 
 	it('an UNREGISTERED tool name throws a typed TOOL WorkflowError', async () => {
@@ -372,9 +367,9 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 	it('a SUCCESS maps to a SINGLE-LEVEL ToolResult — value IS the plain summary, no nested envelope', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
 		const result = await executeThroughManager(tool)
+		if (!result.success) throw new Error(result.error)
 		expect(result.value).toEqual({ status: 'completed', count: 1 })
 		expect(isRecord(result.value) && 'value' in result.value).toBe(false)
-		expect(result.error).toBeUndefined()
 		expect(result.id).toBe('call-1')
 		expect(result.name).toBe('workflow')
 	})
@@ -384,23 +379,31 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 			depth: MAX_WORKFLOW_DEPTH,
 		})
 		const result = await executeThroughManager(tool)
-		expect(result.value).toBeUndefined()
+		if (result.success) throw new Error('expected the depth guard to fail')
 		expect(result.error).toContain('max depth')
 		expect(result.id).toBe('call-1')
 	})
 
-	it('the manager FAILURE ToolResult maps to MCP isError:true; SUCCESS to the plain summary text', async () => {
+	it('the manager constructs the expected success-discriminated ToolResult shapes directly', async () => {
 		const failing = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
 			depth: MAX_WORKFLOW_DEPTH,
 		})
-		const failure = buildToolResult(await executeThroughManager(failing))
-		expect(failure.isError).toBe(true)
-		expect(failure.content[0]?.text).toContain('max depth')
+		const failure = await executeThroughManager(failing)
+		expect(failure).toEqual({
+			id: 'call-1',
+			name: 'workflow',
+			success: false,
+			error: expect.stringContaining('max depth'),
+		})
 
 		const ok = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		const success = buildToolResult(await executeThroughManager(ok))
-		expect(success.isError).toBeUndefined()
-		expect(success.content[0]?.text).toBe(JSON.stringify({ status: 'completed', count: 1 }))
+		const success = await executeThroughManager(ok)
+		expect(success).toEqual({
+			id: 'call-1',
+			name: 'workflow',
+			success: true,
+			value: { status: 'completed', count: 1 },
+		})
 	})
 })
 
@@ -458,6 +461,35 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 		const tool = createWorkspaceTool({ name: 'fs', description: 'edit files' })
 		expect(tool.name).toBe('fs')
 		expect(tool.description).toBe('edit files')
+	})
+
+	it('forwards `sensitive` and returns the workspace ReplaceResult without translation', async () => {
+		const tool = createWorkspaceTool()
+		await tool.execute({ operation: 'write', path: 'a.txt', content: 'Alpha alpha' })
+		expect(
+			await tool.execute({
+				operation: 'search',
+				query: 'alpha',
+				sensitive: true,
+			}),
+		).toHaveLength(1)
+		expect(
+			await tool.execute({
+				operation: 'replace',
+				query: 'alpha',
+				replacement: 'x',
+				sensitive: false,
+			}),
+		).toEqual({ occurrences: 2, files: 1 })
+		expect(await tool.execute({ operation: 'read', path: 'a.txt' })).toBe('x x')
+	})
+
+	it('rejects a malformed operation with this package`s TOOL ToolboxError', async () => {
+		const tool = createWorkspaceTool()
+		const error = await rejectionOf(
+			Promise.resolve().then(() => tool.execute({ operation: 'unknown' })),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 })
 
@@ -712,7 +744,7 @@ describe('createAgentTool — the optional conversation store slot (this package
 			name: tool.name,
 			arguments: { task: 'x' },
 		})
-		expect(result.value).toBeUndefined()
+		if (result.success) throw new Error('expected the store failure to reach the tool result')
 		expect(result.error).toContain('store unavailable')
 	})
 })
@@ -791,7 +823,7 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 			name: DESCRIBE_TOOL_NAME,
 			arguments: { name: 'nonexistent' },
 		})
-		expect(result.value).toBeUndefined()
+		if (result.success) throw new Error('expected the unknown tool lookup to fail')
 		expect(result.error).toContain('nonexistent')
 
 		const direct = await rejectionOf(describeTool.execute({ name: 'nonexistent' }))
@@ -2405,7 +2437,7 @@ describe('createInferTool', () => {
 				],
 			},
 		})
-		expect(result.error).toBeUndefined()
+		if (!result.success) throw new Error(result.error)
 		expect(result.value).toEqual({
 			type: 'object',
 			properties: { id: { type: 'integer' }, name: { type: 'string' } },
@@ -2464,7 +2496,7 @@ describe('createInferTool', () => {
 			name: INFER_TOOL_NAME,
 			arguments: { samples: [] },
 		})
-		expect(result.value).toBeUndefined()
+		if (result.success) throw new Error('expected empty samples to fail')
 		expect(result.error).toBeDefined()
 
 		const direct = await rejectionOf(tool.execute({ samples: [] }))
@@ -2667,7 +2699,7 @@ describe('createInferTool', () => {
 			name: INFER_TOOL_NAME,
 			arguments: { samples: [{ name: 'Ada' }], candidates: [hostileParsed] },
 		})
-		expect(parsedResult.error).toBeUndefined()
+		if (!parsedResult.success) throw new Error(parsedResult.error)
 		const checks = isRecord(parsedResult.value) ? parsedResult.value.checks : undefined
 		expect(Array.isArray(checks)).toBe(true)
 		const verdicts = Array.isArray(checks)
@@ -2691,7 +2723,7 @@ describe('createInferTool', () => {
 			name: INFER_TOOL_NAME,
 			arguments: { samples: [{ name: 'Ada' }], candidates: [proxy] },
 		})
-		expect(proxyResult.value).toBeUndefined()
+		if (proxyResult.success) throw new Error('expected the hostile proxy to fail')
 		expect(proxyResult.error).toBeDefined()
 	})
 
@@ -2704,7 +2736,7 @@ describe('createInferTool', () => {
 			name: INFER_TOOL_NAME,
 			arguments: { samples: [{ id: 1 }], candidates: 'nope' },
 		})
-		expect(result.value).toBeUndefined()
+		if (result.success) throw new Error('expected malformed candidates to fail')
 		expect(result.error).toBeDefined()
 
 		const direct = await rejectionOf(tool.execute({ samples: [{ id: 1 }], candidates: 'nope' }))
@@ -2804,8 +2836,8 @@ describe('createEndpointTool', () => {
 			name: 'add',
 			arguments: { a: 3, b: 4 },
 		})
+		if (!result.success) throw new Error(result.error)
 		expect(result.value).toBe(7)
-		expect(result.error).toBeUndefined()
 	})
 
 	it('an async invoke result flows back as the manager value', async () => {
@@ -2825,6 +2857,7 @@ describe('createEndpointTool', () => {
 			name: 'fetchUser',
 			arguments: { id: '1' },
 		})
+		if (!result.success) throw new Error(result.error)
 		expect(result.value).toEqual({ id: '1', name: 'Ada' })
 	})
 
@@ -2840,9 +2873,9 @@ describe('createEndpointTool', () => {
 		const manager = createToolManager()
 		manager.add(tool)
 		const result = await manager.execute({ id: 'call-1', name: 'boom', arguments: { x: 1 } })
-		expect(result.value).toBeUndefined()
+		if (result.success) throw new Error('expected the endpoint to fail')
 		expect(result.error).toBe('endpoint failure')
-		expect(result.error?.split('endpoint failure').length).toBe(2)
+		expect(result.error.split('endpoint failure').length).toBe(2)
 	})
 
 	it('async invoke rejecting surfaces exactly once through the manager error envelope, never double-wrapped', async () => {
@@ -2858,9 +2891,9 @@ describe('createEndpointTool', () => {
 		const manager = createToolManager()
 		manager.add(tool)
 		const result = await manager.execute({ id: 'call-1', name: 'asyncBoom', arguments: { x: 1 } })
-		expect(result.value).toBeUndefined()
+		if (result.success) throw new Error('expected the async endpoint to fail')
 		expect(result.error).toBe('async endpoint failure')
-		expect(result.error?.split('async endpoint failure').length).toBe(2)
+		expect(result.error.split('async endpoint failure').length).toBe(2)
 	})
 
 	it('empty samples THROWS a typed TOOL ToolboxError at construction', () => {
@@ -2988,9 +3021,9 @@ describe('createEndpointTool', () => {
 			// this is a genuine type mismatch, verified against the compiled contract directly.
 			arguments: { id: true, name: 'Ada' },
 		})
-		expect(result.value).toBeUndefined()
+		if (result.success) throw new Error('expected malformed endpoint arguments to fail')
 		expect(result.error).toBeDefined()
-		expect(result.error?.split('malformed endpoint call arguments').length).toBe(2)
+		expect(result.error.split('malformed endpoint call arguments').length).toBe(2)
 	})
 
 	it('(v3) missing required key is rejected; an extra key against a closed inferred schema is silently DROPPED before invoke by default, passed through raw under validate: false', async () => {
@@ -3137,7 +3170,7 @@ describe('createEndpointTool', () => {
 			name: 'lookupUser',
 			arguments: proxy,
 		})
-		expect(proxyResult.value).toBeUndefined()
+		if (proxyResult.success) throw new Error('expected the hostile proxy to fail')
 		expect(proxyResult.error).toBeDefined()
 	})
 

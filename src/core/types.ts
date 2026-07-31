@@ -1,8 +1,5 @@
-import type {
-	ConversationStoreInterface,
-	WorkspaceManagerInterface,
-	WorkspaceStoreInterface,
-} from '@orkestrel/agent'
+import type { ConversationStoreInterface } from '@orkestrel/agent'
+import type { WorkspaceManagerInterface, WorkspaceStoreInterface } from '@orkestrel/workspace'
 import type { TerminalManagerInterface } from '@orkestrel/terminal'
 import type { WorkflowRunnerInterface, WorkflowStoreInterface } from '@orkestrel/workflow'
 import type { DatabaseInterface, DriverInterface, KeyFunction } from '@orkestrel/database'
@@ -13,7 +10,8 @@ import type { RelationManagerInterface } from '@orkestrel/relation'
 // workflow-authoring family (WorkflowSteps/WorkflowStep/WorkflowDraft/PhaseDraft/TaskDraft) and
 // AgentFunctionOptions are OWNED here now — ported byte-faithfully from `@orkestrel/workflow`
 // ahead of the upstream cleanup that drops the authoring surface from that package (this package
-// becomes the defining home). WorkspaceOperation is OWNED here now — ported from `@orkestrel/agent`
+// becomes the defining home). WorkspaceOperation is OWNED here now — ported from
+// `@orkestrel/workspace`
 // for the same reason. Each tool factory's options additionally grows a single `store` (or, for
 // the workspace tool, `manager` / `store`) slot — the pluggable persistence seam this package
 // layers on top of the ported handler logic.
@@ -165,13 +163,13 @@ export interface WorkflowToolOptions {
  * Options for {@link import('./factories.js').createWorkspaceTool} — EITHER a caller-built
  * {@link WorkspaceManagerInterface} to drive directly, OR a {@link WorkspaceStoreInterface} the
  * tool constructs a fresh manager over; neither given constructs a manager over
- * `@orkestrel/agent`'s in-memory store.
+ * `@orkestrel/workspace`'s in-memory store.
  *
  * @remarks
  * - `manager` — drive THIS manager directly (its `active` workspace is what every edit / read
  *   operation targets). Takes priority over `store` when both are supplied.
  * - `store` — construct a manager over this durable {@link WorkspaceStoreInterface} (via
- *   `@orkestrel/agent`'s `createWorkspaceManager`) — used only when `manager` is omitted.
+ *   `@orkestrel/workspace`'s `createWorkspaceManager`) — used only when `manager` is omitted.
  *   The store only backs the manager's own `open` / `save` operations: the tool's edits are
  *   NOT auto-persisted — durability requires an explicit caller `save` on the manager
  *   (unlike the workflow tool's `store`, which persists each executed snapshot on settle).
@@ -185,7 +183,7 @@ export interface WorkspaceToolOptions {
 	readonly store?: WorkspaceStoreInterface
 }
 
-// === Workspace operation union (OWNED here now, ported from `@orkestrel/agent`)
+// === Workspace operation union (OWNED here now, ported from `@orkestrel/workspace`)
 
 /**
  * One operation an agent invokes through {@link import('./factories.js').createWorkspaceTool} — a
@@ -198,7 +196,8 @@ export interface WorkspaceToolOptions {
  * ({@link import('./shapers.js').workspaceToolShape} compiles to a structurally-identical guard /
  * parser / JSON Schema). Every field is FLAT (no nested objects) — the small-model ergonomic
  * lever: a range edit is the four flat integers of the `'splice'` arm (`fromLine` /
- * `fromColumn` / `toLine` / `toColumn`), reassembled into a 1-based `Range` (`@orkestrel/agent`)
+ * `fromColumn` / `toLine` / `toColumn`), reassembled into a 1-based `Range`
+ * (`@orkestrel/workspace`)
  * by `rangeOf`, never a nested `{ start, end }`. Each EDIT / READ arm maps onto exactly one
  * `WorkspaceInterface` call against the manager's ACTIVE workspace; the two REGISTRY arms
  * (`switch` / `workspaces`) drive the {@link WorkspaceManagerInterface} pointer instead —
@@ -217,28 +216,28 @@ export type WorkspaceOperation =
 	 *
 	 * @remarks
 	 * `regex` treats `query` as a regular-expression source (default `false` — a literal substring);
-	 * `exact` matches case-sensitively (default `true`); `limit` caps the total hits returned.
+	 * `sensitive` matches case-sensitively (default `true`); `limit` caps the total hits returned.
 	 */
 	| {
 			readonly operation: 'search'
 			readonly query: string
 			readonly regex?: boolean
-			readonly exact?: boolean
+			readonly sensitive?: boolean
 			readonly limit?: number
 	  }
 	/**
 	 * Replace `query` with `replacement` across every text file, returning the tally.
 	 *
 	 * @remarks
-	 * Same matching axes as `search`: `regex` (default `false`), `exact` (default `true`), `limit`
-	 * (cap the total replacements).
+	 * Same matching axes as `search`: `regex` (default `false`), `sensitive` (default `true`),
+	 * `limit` (cap the total replacements).
 	 */
 	| {
 			readonly operation: 'replace'
 			readonly query: string
 			readonly replacement: string
 			readonly regex?: boolean
-			readonly exact?: boolean
+			readonly sensitive?: boolean
 			readonly limit?: number
 	  }
 	/** Write (create or overwrite) the whole file at `path` with `content`. */
@@ -249,8 +248,8 @@ export type WorkspaceOperation =
 	 *
 	 * @remarks
 	 * The FLAT range edit — the four positive-integer caret components reassemble into a `Range`
-	 * (`@orkestrel/agent`) via `rangeOf`. An empty span (`from === to`) inserts; a span past the
-	 * end is clamped. An inverted / sub-1 range throws `RANGE`; a binary target throws
+	 * (`@orkestrel/workspace`) via `rangeOf`. An empty span (`from === to`) inserts; a span past
+	 * the end is clamped. An inverted / sub-1 range throws `RANGE`; a binary target throws
 	 * `MODALITY`.
 	 */
 	| {

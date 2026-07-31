@@ -1,9 +1,6 @@
 import type { ContractInterface } from '@orkestrel/contract'
-import type {
-	AgentInterface,
-	AgentRegistryInterface,
-	WorkspaceManagerInterface,
-} from '@orkestrel/agent'
+import type { AgentInterface, AgentRegistryInterface } from '@orkestrel/agent'
+import type { WorkspaceManagerInterface } from '@orkestrel/workspace'
 import type { ToolInterface, ToolManagerInterface } from '@orkestrel/tool'
 import type {
 	WorkflowDefinition,
@@ -30,7 +27,7 @@ import type {
 	WorkspaceToolOptions,
 } from './types.js'
 import type { DatabaseInterface, DriverInterface, TableInterface } from '@orkestrel/database'
-import { createWorkspaceManager, isText, rangeOf, WorkspaceError } from '@orkestrel/agent'
+import { createWorkspaceManager, isText, rangeOf } from '@orkestrel/workspace'
 import { createTool } from '@orkestrel/tool'
 import {
 	createContract,
@@ -116,7 +113,7 @@ import {
 } from './shapers.js'
 
 // This package's tool factories. `createWorkflowTool` / `createWorkspaceTool` OWN their full
-// handler logic now (ported byte-faithfully from `@orkestrel/workflow` / `@orkestrel/agent` ahead
+// handler logic now (ported byte-faithfully from `@orkestrel/workflow` / `@orkestrel/workspace` ahead
 // of the upstream cleanup that drops the authoring surface from those packages) and additionally
 // layer a pluggable store slot on top; `createAgentTool` is net-new: sub-agent delegation over an
 // `AgentRegistryInterface`.
@@ -130,12 +127,11 @@ import {
  * `WorkflowOptions.functions` registry like any other behavior
  * (`{ publish: createToolFunction(tools, 'publish') }`); the pure workflow runner has no
  * knowledge of tools itself. The returned function executes `name` against `tools` with the
- * task's `controller.input` as the call arguments, id-correlated to the task's own id. A
- * `ToolManagerInterface.execute` (`@orkestrel/tool`) NEVER throws (a handler throw is isolated
- * into `result.error`), so a failing tool is surfaced here as a THROWN `Error` carrying the
- * original message as `cause` — the leaf `fail`s, honouring `bail`. An UNREGISTERED tool name is
- * a programmer error (an explicit binding to a name that doesn't exist) — unlike the engine's
- * own silent auto-complete of an unresolved task handler, this THROWS a typed `TOOL`
+ * task's `controller.input` as the call arguments. The adapter resolves the live tool and calls
+ * its `execute` method directly, preserving any thrown value as the `cause` of the task failure
+ * instead of flattening it through the registry result envelope. An UNREGISTERED tool name is a
+ * programmer error (an explicit binding to a name that doesn't exist) — unlike the engine's own
+ * silent auto-complete of an unresolved task handler, this THROWS a typed `TOOL`
  * `WorkflowError` (`@orkestrel/workflow`).
  *
  * @param tools - The `ToolManagerInterface` (`@orkestrel/tool`) the named tool is registered on
@@ -160,17 +156,11 @@ export function createToolFunction(tools: ToolManagerInterface, name: string): W
 		if (tool === undefined) {
 			throw new WorkflowError('TOOL', `tool '${name}' is not registered`, { tool: name })
 		}
-		const result = await tools.execute({
-			id: controller.task.id,
-			name,
-			arguments: controller.input,
-		})
-		// A `tool` result NEVER throws — the manager isolates a handler throw into `result.error`.
-		// Surface that as a task failure (so a failing tool `fail`s the leaf, honouring `bail`).
-		// The manager already flattened the original throw to a string, so the message IS the
-		// richest surviving detail — `cause` carries that same string, nothing deeper exists.
-		if (result.error !== undefined) throw new Error(result.error, { cause: result.error })
-		return result.value
+		try {
+			return await tool.execute(controller.input)
+		} catch (error) {
+			throw new Error(error instanceof Error ? error.message : String(error), { cause: error })
+		}
 	}
 }
 
@@ -431,12 +421,13 @@ export function createWorkflowTool(
  * 13-op union ({@link import('./shapers.js').workspaceToolShape}) as its `parameters`, and its
  * handler PARSES the model-supplied args against that contract and DISPATCHES the matched
  * operation against the manager's ACTIVE workspace (the registry ops drive the manager itself),
- * returning the plain result (throwing a typed `WorkspaceError`, `@orkestrel/agent`, on
- * failure). EITHER drives a caller-supplied {@link WorkspaceToolOptions.manager} directly, OR
- * constructs a fresh `WorkspaceManagerInterface` (`@orkestrel/agent`) over
- * {@link import('./types.js').WorkspaceToolOptions.store} (via `@orkestrel/agent`'s
- * `createWorkspaceManager`); neither given constructs a manager backed by `@orkestrel/agent`'s
- * in-memory store default.
+ * returning the plain result. A malformed operation throws this package's `ToolboxError`; a
+ * genuine workspace-domain failure propagates `@orkestrel/workspace`'s typed `WorkspaceError`.
+ * EITHER drives a caller-supplied {@link WorkspaceToolOptions.manager} directly, OR
+ * constructs a fresh `WorkspaceManagerInterface` (`@orkestrel/workspace`) over
+ * {@link import('./types.js').WorkspaceToolOptions.store} (via `@orkestrel/workspace`'s
+ * `createWorkspaceManager`); neither given constructs a manager backed by
+ * `@orkestrel/workspace`'s in-memory store default.
  *
  * @remarks
  * MANAGER-DRIVEN: every edit / read op (read / list / has / search / replace / write / splice /
@@ -454,12 +445,12 @@ export function createWorkflowTool(
  * `false`), never creating one and never throwing.
  *
  * The handler conforms to the universal tool-handler contract (AGENTS §14): it `contract.parse`s
- * the args, THROWS a `TOOL` `WorkspaceError` when no operation arm matched (a malformed / unknown
+ * the args, THROWS a `TOOL` `ToolboxError` when no operation arm matched (a malformed / unknown
  * operation), else `switch`es on `op.operation` and RETURNS the plain result — letting a
  * `WorkspaceError` raised by the live workspace (`MODALITY` / `PATTERN` / `RANGE`) PROPAGATE
  * uncaught. The range edit is the FLAT `'splice'` op: its four flat caret integers are
- * reassembled into a `Range` (`@orkestrel/agent`) by `rangeOf` and fed to the workspace's ranged
- * `write`.
+ * reassembled into a `Range` (`@orkestrel/workspace`) by `rangeOf` and fed to the workspace's
+ * ranged `write`.
  *
  * @param options - `manager` (drive directly) OR `store` (build a manager over it); neither ⇒
  *   an in-memory-backed manager (see {@link import('./types.js').WorkspaceToolOptions})
@@ -489,7 +480,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 		execute(args) {
 			const op = contract.parse(args)
 			if (op === undefined) {
-				throw new WorkspaceError('TOOL', `unknown or malformed operation`, { args })
+				throw new ToolboxError('TOOL', 'unknown or malformed operation', { args })
 			}
 			// Registry ops act on the MANAGER, not a workspace — handle them first.
 			if (op.operation === 'workspaces') {
@@ -528,7 +519,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 					return (
 						active?.search(op.query, {
 							...(op.regex === undefined ? {} : { regex: op.regex }),
-							...(op.exact === undefined ? {} : { exact: op.exact }),
+							...(op.sensitive === undefined ? {} : { sensitive: op.sensitive }),
 							...(op.limit === undefined ? {} : { limit: op.limit }),
 						}) ?? []
 					)
@@ -536,7 +527,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 					const workspace = active ?? manager.add()
 					return workspace.replace(op.query, op.replacement, {
 						...(op.regex === undefined ? {} : { regex: op.regex }),
-						...(op.exact === undefined ? {} : { exact: op.exact }),
+						...(op.sensitive === undefined ? {} : { sensitive: op.sensitive }),
 						...(op.limit === undefined ? {} : { limit: op.limit }),
 					})
 				}

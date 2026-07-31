@@ -146,7 +146,7 @@ export const answerToolShape = unionShape(
 // the lockstep guard + parser + JSON Schema outputs (AGENTS §14). `agentToolShape` MUST agree
 // with the hand-written `AgentToolArguments` (types.ts), which is the source of truth.
 // `workflowStepsShape` / `workflowDraftShape` / `workspaceToolShape` are OWNED here now — ported
-// byte-faithfully from `@orkestrel/workflow` / `@orkestrel/agent` ahead of the upstream cleanup
+// byte-faithfully from `@orkestrel/workflow` / `@orkestrel/workspace` ahead of the upstream cleanup
 // that drops the authoring surface from those packages (this package becomes the defining home).
 
 /**
@@ -319,7 +319,7 @@ export const workflowStepsShape = objectShape({
 	}),
 })
 
-// === Workspace operation shape (OWNED here now, ported from `@orkestrel/agent`)
+// === Workspace operation shape (OWNED here now, ported from `@orkestrel/workspace`)
 
 /**
  * The shape of a {@link import('./types.js').WorkspaceOperation} — a descriptive tagged union
@@ -332,10 +332,10 @@ export const workflowStepsShape = objectShape({
  * The union compiles to an `anyOf` JSON Schema + a `unionOf` guard + a first-match parser
  * automatically ({@link import('./factories.js').createWorkspaceTool} types the result to the
  * hand-written {@link import('./types.js').WorkspaceOperation}). `limit` and the four `'splice'`
- * caret components are POSITIVE integers (`integerShape({ min: 1 })`); `regex` / `exact` are
- * `optionalShape(booleanShape(...))`. The two REGISTRY arms — `workspaces` (list the workspaces
- * the model can move between) and `switch` (re-point the active one by `id`) — let a model
- * DISCOVER then CHOOSE which workspace the edit / read arms target.
+ * caret components are POSITIVE integers (`integerShape({ min: 1 })`); `regex` / `sensitive`
+ * are `optionalShape(booleanShape(...))`. The two REGISTRY arms — `workspaces` (list the
+ * workspaces the model can move between) and `switch` (re-point the active one by `id`) — let a
+ * model DISCOVER then CHOOSE which workspace the edit / read arms target.
  */
 export const workspaceToolShape = unionShape(
 	objectShape({
@@ -360,7 +360,7 @@ export const workspaceToolShape = unionShape(
 					'Treat the query as a regular expression. Defaults to false (a literal substring).',
 			}),
 		),
-		exact: optionalShape(
+		sensitive: optionalShape(
 			booleanShape({
 				description: 'Match case-sensitively. Defaults to true (set false for case-insensitive).',
 			}),
@@ -384,7 +384,7 @@ export const workspaceToolShape = unionShape(
 					'Treat the query as a regular expression. Defaults to false (a literal substring).',
 			}),
 		),
-		exact: optionalShape(
+		sensitive: optionalShape(
 			booleanShape({
 				description: 'Match case-sensitively. Defaults to true (set false for case-insensitive).',
 			}),
