@@ -1,4 +1,9 @@
-import type { DatabaseDefinition, DatabaseDefinitionRow, DefinitionStoreInterface } from '@src/core'
+import type {
+	ColumnSpec,
+	DatabaseDefinition,
+	DatabaseDefinitionRow,
+	DefinitionStoreInterface,
+} from '@src/core'
 import type { TableInterface } from '@orkestrel/database'
 import {
 	createDatabaseDefinitionStore,
@@ -29,7 +34,9 @@ function fullDefinition(id = 'shop'): DatabaseDefinition {
 				},
 			},
 		},
-		keys: { items: 'id' },
+		primary: { items: 'id' },
+		indexes: { items: [['name'], ['name', 'price']] },
+		version: 3.5,
 	}
 }
 
@@ -58,7 +65,7 @@ const twins: ReadonlyArray<{
 ]
 
 describe.each(twins)('$name — DefinitionStoreInterface conformance', ({ build }) => {
-	it('set→get round-trips the FULL definition (mixed bare-kind and {type,optional} columns, keys)', async () => {
+	it('set→get round-trips the FULL definition (mixed columns, primary, indexes, and version)', async () => {
 		const store = build()
 		const definition = fullDefinition()
 		await store.set(definition)
@@ -94,17 +101,53 @@ describe.each(twins)('$name — DefinitionStoreInterface conformance', ({ build 
 		await expect(store.delete('never-existed')).resolves.toBeUndefined()
 	})
 
-	it('a definition with no `keys` field round-trips WITHOUT gaining one', async () => {
+	it('a definition with no `primary` field round-trips WITHOUT gaining one', async () => {
 		const store = build()
 		const definition: DatabaseDefinition = {
-			id: 'no-keys',
+			id: 'no-primary',
 			driver: 'memory',
 			tables: { items: { columns: { id: 'string' } } },
 		}
 		await store.set(definition)
-		const read = await store.get('no-keys')
+		const read = await store.get('no-primary')
 		expect(read).toEqual(definition)
-		expect(read !== undefined && 'keys' in read).toBe(false)
+		expect(read !== undefined && 'primary' in read).toBe(false)
+	})
+
+	it('isolates stored state from mutable inputs and mutated readonly results', async () => {
+		const columns: Record<string, ColumnSpec> = {
+			id: 'string',
+			name: 'string',
+			price: { type: 'number', optional: true },
+		}
+		const tables: Record<string, { columns: Record<string, ColumnSpec> }> = {
+			items: { columns },
+		}
+		const primary: Record<string, string> = { items: 'id' }
+		const indexes: Record<string, string[][]> = { items: [['name'], ['name', 'price']] }
+		const definition = { id: 'shop', driver: 'memory', tables, primary, indexes, version: 3.5 }
+
+		const store = build()
+		await store.set(definition)
+		columns.name = 'boolean'
+		primary.items = 'name'
+		indexes.items = [['price']]
+		definition.version = 8
+		expect(await store.get('shop')).toEqual(fullDefinition())
+
+		const returned = await store.get('shop')
+		if (
+			returned === undefined ||
+			returned.primary === undefined ||
+			returned.indexes === undefined
+		) {
+			throw new Error('expected a full stored definition')
+		}
+		expect(Reflect.set(returned.tables, 'items', { columns: { changed: 'string' } })).toBe(true)
+		expect(Reflect.set(returned.primary, 'items', 'changed')).toBe(true)
+		expect(Reflect.set(returned.indexes, 'items', [['changed']])).toBe(true)
+		expect(Reflect.set(returned, 'version', 9)).toBe(true)
+		expect(await store.get('shop')).toEqual(fullDefinition())
 	})
 })
 

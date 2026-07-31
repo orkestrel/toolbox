@@ -55,7 +55,7 @@ this guide set.
 
 [`src/database.md`](src/database.md) is a byte-identical mirror of the guide
 for `@orkestrel/database` — a runtime dependency, the typed database layer
-(`DatabaseInterface`, `DriverInterface`, `KeyFunction`, the `Criteria` /
+(`DatabaseInterface`, `DriverInterface`, `KeyFunction`, the `QueryInput` /
 `Condition` query DSL) `createDatabaseTool` wraps. It documents **that
 package's** surface, not anything sourced in this repo; it is kept here so a
 reader of this package can see the primitives it is built from without

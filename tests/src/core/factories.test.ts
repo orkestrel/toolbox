@@ -21,6 +21,7 @@ import {
 	createAgentFunction,
 	createAgentTool,
 	createAnswerTool,
+	DatabaseDefinitionStore,
 	createDatabaseTool,
 	createDescribeTool,
 	createEndpointTool,
@@ -33,6 +34,7 @@ import {
 	createWorkflowTool,
 	createWorkspaceTool,
 	DATABASE_TOOL_NAME,
+	DATABASE_TOOL_MUTATIONS,
 	DESCRIBE_TOOL_NAME,
 	INFER_TOOL_NAME,
 	isToolboxError,
@@ -46,7 +48,7 @@ import {
 	WORKSPACE_TOOL_SUMMARY,
 } from '@src/core'
 import { createTerminalManager, TerminalError } from '@orkestrel/terminal'
-import { createDatabase, createMemoryDriver, generateUUID } from '@orkestrel/database'
+import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { belongsTo, createRelationManager, hasMany, hasThrough } from '@orkestrel/relation'
 import { describe, expect, it } from 'vitest'
 import { createRecorder, createScriptedProvider, waitForDelay } from '../../setup.js'
@@ -1337,8 +1339,8 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 
 // ── createDatabaseTool — create / query / mutate through one operation-discriminated call ────
 
-// Mixed bare-kind and `{type,optional}` column specs — the call-args shape `'create'`/`'migrate'`
-// accept, mirroring stores.test.ts's `fullDefinition` fixture.
+// Mixed bare-kind and `{type,optional}` column specs accepted by the `'create'` call-args shape,
+// mirroring stores.test.ts's `fullDefinition` fixture.
 function itemsTables(): Readonly<Record<string, unknown>> {
 	return {
 		items: {
@@ -1383,6 +1385,79 @@ describe('createDatabaseTool — create', () => {
 		expect(result).toEqual({ id: 'shop', tables: ['items'] })
 	})
 
+	it('uses a configured generator for a row whose primary is omitted', async () => {
+		const tool = createDatabaseTool({ generator: () => 'generated' })
+		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		const added = await tool.execute({
+			operation: 'add',
+			id: 'shop',
+			table: 'items',
+			row: { name: 'generated item', price: 3, active: true },
+		})
+		expect(added).toEqual({ key: 'generated' })
+		expect(
+			await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'generated' }),
+		).toEqual({ row: { id: 'generated', name: 'generated item', price: 3, active: true } })
+	})
+
+	it('persists indexes/version and stamps current schema metadata through a real MemoryDriver', async () => {
+		const driver = createMemoryDriver()
+		const store = createMemoryDefinitionStore()
+		const tool = createDatabaseTool({ drivers: { memory: () => driver }, store })
+		await tool.execute({
+			operation: 'create',
+			id: 'shop',
+			tables: itemsTables(),
+			indexes: { items: [['active'], ['name', 'price']] },
+			version: 2.5,
+		})
+		expect(await store.get('shop')).toEqual({
+			id: 'shop',
+			driver: 'memory',
+			tables: itemsTables(),
+			indexes: { items: [['active'], ['name', 'price']] },
+			version: 2.5,
+		})
+
+		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+		if (driver.metadata === undefined) throw new Error('expected MemoryDriver metadata capability')
+		const metadata = await driver.metadata()
+		expect(metadata?.version).toBe(2.5)
+		expect(metadata?.schema).toEqual([
+			{
+				name: 'items',
+				primary: 'id',
+				columns: [
+					{ name: 'active', storage: 'boolean', optional: false, nullable: false },
+					{ name: 'id', storage: 'text', optional: false, nullable: false },
+					{ name: 'name', storage: 'text', optional: false, nullable: false },
+					{ name: 'price', storage: 'real', optional: true, nullable: false },
+				],
+				indexes: [['active'], ['name', 'price']],
+			},
+		])
+	})
+
+	it('does not publish a handle when real definition-store persistence rejects it', async () => {
+		const backing = createDatabase({
+			driver: createMemoryDriver(),
+			tables: { definitions: { id: stringShape(), definition: numberShape() } },
+		})
+		const store = new DatabaseDefinitionStore(backing.table('definitions'))
+		const tool = createDatabaseTool({ store })
+
+		const createError = await rejectionOf(
+			tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() }),
+		)
+		expect(isToolboxError(createError) ? createError.code : undefined).toBe('DATABASE')
+
+		const lookupError = await rejectionOf(tool.execute({ operation: 'tables', id: 'shop' }))
+		expect(isToolboxError(lookupError) ? lookupError.code : undefined).toBe('TOOL')
+		expect(isToolboxError(lookupError) ? lookupError.message : '').toContain(
+			"unknown database 'shop'",
+		)
+	})
+
 	it('honors name / description overrides', () => {
 		const tool = createDatabaseTool({ name: 'db', description: 'manage databases' })
 		expect(tool.name).toBe('db')
@@ -1423,8 +1498,8 @@ describe('createDatabaseTool — get', () => {
 	})
 })
 
-describe('createDatabaseTool — records (serialized criteria)', () => {
-	it('conditions/order/limit/offset are honored via the SERIALIZED criteria form', async () => {
+describe('createDatabaseTool — records (serialized query)', () => {
+	it('conditions/order/limit/offset are honored via the SERIALIZED query form', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
 		await tool.execute({
@@ -1438,7 +1513,7 @@ describe('createDatabaseTool — records (serialized criteria)', () => {
 			operation: 'records',
 			id: 'shop',
 			table: 'items',
-			criteria: {
+			query: {
 				conditions: [{ column: 'price', operator: 'above', values: [1] }],
 				order: [{ column: 'price', direction: 'descending' }],
 				limit: 2,
@@ -1455,7 +1530,7 @@ describe('createDatabaseTool — records (serialized criteria)', () => {
 })
 
 describe('createDatabaseTool — count', () => {
-	it('counts rows matching criteria', async () => {
+	it('counts rows matching a query', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
 		await tool.execute({
@@ -1468,7 +1543,7 @@ describe('createDatabaseTool — count', () => {
 			operation: 'count',
 			id: 'shop',
 			table: 'items',
-			criteria: { conditions: [{ column: 'active', operator: 'equals', values: [true] }] },
+			query: { conditions: [{ column: 'active', operator: 'equals', values: [true] }] },
 		})
 		expect(result).toEqual({ count: 2 })
 	})
@@ -1635,69 +1710,6 @@ describe('createDatabaseTool — remove', () => {
 	})
 })
 
-describe('createDatabaseTool — migrate', () => {
-	it('adding a column returns the migration plan and the new column is writable/readable afterward', async () => {
-		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
-
-		const items = itemsTables().items
-		if (!isRecord(items) || !isRecord(items.columns)) throw new Error('unreachable')
-		const migratedTables = {
-			items: {
-				columns: {
-					...items.columns,
-					discount: { type: 'number', optional: true },
-				},
-			},
-		}
-		const result = await tool.execute({ operation: 'migrate', id: 'shop', tables: migratedTables })
-		expect(isRecord(result) ? result.migration : undefined).toEqual({
-			from: 0,
-			to: 1,
-			steps: [
-				{
-					operation: 'column.add',
-					table: 'items',
-					column: { name: 'discount', type: 'real', nullable: true },
-				},
-			],
-		})
-
-		await tool.execute({
-			operation: 'update',
-			id: 'shop',
-			table: 'items',
-			key: 'a',
-			changes: { discount: 5 },
-		})
-		const row = await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })
-		expect(isRecord(row) ? row.row : undefined).toEqual(itemRow('a', { discount: 5 }))
-	})
-
-	it('removing a column returns the migration plan and stripped rows read back without the column', async () => {
-		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
-
-		const items = itemsTables().items
-		if (!isRecord(items) || !isRecord(items.columns)) throw new Error('unreachable')
-		const { price: _price, ...remainingColumns } = items.columns
-		const migratedTables = { items: { columns: remainingColumns } }
-		const result = await tool.execute({ operation: 'migrate', id: 'shop', tables: migratedTables })
-		expect(isRecord(result) ? result.migration : undefined).toEqual({
-			from: 0,
-			to: 1,
-			steps: [{ operation: 'column.remove', table: 'items', column: 'price' }],
-		})
-
-		// MemoryDriver.migrate applies `migrateRows` for `column.remove` in place, so storage
-		// itself is stripped (not merely narrowed by the records()/get() contract guard).
-		const row = await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })
-		expect(isRecord(row) ? row.row : undefined).toEqual({ id: 'a', name: 'item-a', active: true })
-	})
-})
-
 describe('createDatabaseTool — destroy', () => {
 	it('drops the database; a subsequent operation throws a typed TOOL "unknown database" error', async () => {
 		const tool = createDatabaseTool()
@@ -1765,7 +1777,20 @@ describe('createDatabaseTool — error paths', () => {
 })
 
 describe('createDatabaseTool — readonly gates mutations, leaves reads open', () => {
-	it('create/add/set/update/remove/migrate/destroy each throw TOOL; tables/get/records/count/aggregate still work', async () => {
+	it('the exported frozen mutation list cannot be changed to bypass readonly', async () => {
+		expect(Object.isFrozen(DATABASE_TOOL_MUTATIONS)).toBe(true)
+		expect(Reflect.set(DATABASE_TOOL_MUTATIONS, '1', 'tables')).toBe(false)
+		expect(Reflect.deleteProperty(DATABASE_TOOL_MUTATIONS, '1')).toBe(false)
+		expect(DATABASE_TOOL_MUTATIONS.includes('add')).toBe(true)
+
+		const tool = createDatabaseTool({ readonly: true, databases: { shop: buildItemsHandle() } })
+		const error = await rejectionOf(
+			tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('b') }),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+	})
+
+	it('create/add/set/update/remove/destroy each throw TOOL; tables/get/records/count/aggregate still work', async () => {
 		const handle = buildItemsHandle()
 		await handle.table('items').add([{ id: 'a', name: 'x', price: 1, active: true }])
 		const tool = createDatabaseTool({ readonly: true, databases: { shop: handle } })
@@ -1776,7 +1801,6 @@ describe('createDatabaseTool — readonly gates mutations, leaves reads open', (
 			{ operation: 'set', id: 'shop', table: 'items', row: itemRow('a') },
 			{ operation: 'update', id: 'shop', table: 'items', key: 'a', changes: { price: 2 } },
 			{ operation: 'remove', id: 'shop', table: 'items', key: 'a' },
-			{ operation: 'migrate', id: 'shop', tables: itemsTables() },
 			{ operation: 'destroy', id: 'shop' },
 		]
 		for (const call of mutations) {
@@ -1829,7 +1853,7 @@ describe('createDatabaseTool — truncation & offset paging', () => {
 				operation: 'records',
 				id: 'shop',
 				table: 'items',
-				criteria: { order: [{ column: 'id', direction: 'ascending' }], offset },
+				query: { order: [{ column: 'id', direction: 'ascending' }], offset },
 			})
 			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
 			expect(result.count).toBe(result.rows.length)
@@ -1849,7 +1873,7 @@ describe('createDatabaseTool — truncation & offset paging', () => {
 			operation: 'records',
 			id: 'shop',
 			table: 'items',
-			criteria: { order: [{ column: 'id', direction: 'ascending' }] },
+			query: { order: [{ column: 'id', direction: 'ascending' }] },
 		})
 		expect(isRecord(first) ? first.truncated : undefined).toBe(true)
 		expect(isRecord(first) ? first.count : undefined).toBe(2)
@@ -1879,6 +1903,20 @@ describe('createDatabaseTool — lazy re-mint over a shared store', () => {
 })
 
 describe('createDatabaseTool — timeout option threads without breaking a normal op', () => {
+	it('rejects negative, fractional, and unsafe timeouts at construction', () => {
+		const invalid: readonly number[] = [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]
+		for (const timeout of invalid) {
+			let error: unknown
+			try {
+				createDatabaseTool({ timeout })
+			} catch (caught) {
+				error = caught
+			}
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(isToolboxError(error) ? error.context?.timeout : undefined).toBe(timeout)
+		}
+	})
+
 	it('a configured timeout does not interfere with an ordinary create/add/records round trip', async () => {
 		const tool = createDatabaseTool({ timeout: 5_000 })
 		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
@@ -1890,7 +1928,7 @@ describe('createDatabaseTool — timeout option threads without breaking a norma
 	})
 })
 
-describe('pressure: createDatabaseTool — 500-row batch add, full paging, migrate, slice update, destroy', () => {
+describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice update, destroy', () => {
 	it('exact counts survive the round trip', async () => {
 		const tool = createDatabaseTool({ limit: 100 })
 		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
@@ -1912,7 +1950,7 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, migra
 				operation: 'records',
 				id: 'shop',
 				table: 'items',
-				criteria: { order: [{ column: 'id', direction: 'ascending' }], offset },
+				query: { order: [{ column: 'id', direction: 'ascending' }], offset },
 			})
 			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
 			collected.push(...result.rows)
@@ -1921,63 +1959,42 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, migra
 		}
 		expect(collected).toHaveLength(total)
 
-		const items = itemsTables().items
-		if (!isRecord(items) || !isRecord(items.columns)) throw new Error('unreachable')
-		const migratedTables = {
-			items: {
-				columns: {
-					...items.columns,
-					tag: { type: 'string', optional: true },
-				},
-			},
-		}
-		const migration = await tool.execute({
-			operation: 'migrate',
-			id: 'shop',
-			tables: migratedTables,
-		})
-		expect(
-			isRecord(migration) && isRecord(migration.migration) ? migration.migration.to : undefined,
-		).toBe(1)
-
 		const sliceIds = Array.from({ length: 25 }, (_unused, index) => String(index).padStart(4, '0'))
 		const updated = await tool.execute({
 			operation: 'update',
 			id: 'shop',
 			table: 'items',
 			key: sliceIds,
-			changes: { tag: 'tagged' },
+			changes: { active: false },
 		})
 		expect(isRecord(updated) && Array.isArray(updated.updated) ? updated.updated : []).toEqual(
 			Array.from({ length: 25 }, () => true),
 		)
 
-		const tagged = await tool.execute({
+		const inactive = await tool.execute({
 			operation: 'count',
 			id: 'shop',
 			table: 'items',
-			criteria: { conditions: [{ column: 'tag', operator: 'equals', values: ['tagged'] }] },
+			query: { conditions: [{ column: 'active', operator: 'equals', values: [false] }] },
 		})
-		expect(tagged).toEqual({ count: 25 })
+		expect(inactive).toEqual({ count: 25 })
 
-		const untaggedRow = await tool.execute({
+		const untouchedRow = await tool.execute({
 			operation: 'get',
 			id: 'shop',
 			table: 'items',
 			key: '0499',
 		})
-		expect(
-			isRecord(untaggedRow) && isRecord(untaggedRow.row) ? 'tag' in untaggedRow.row : false,
-		).toBe(false)
+		expect(isRecord(untouchedRow) ? untouchedRow.row : undefined).toEqual(itemRow('0499'))
 
-		const taggedRow = await tool.execute({
+		const updatedRow = await tool.execute({
 			operation: 'get',
 			id: 'shop',
 			table: 'items',
 			key: '0000',
 		})
-		expect(isRecord(taggedRow) ? taggedRow.row : undefined).toEqual(
-			itemRow('0000', { tag: 'tagged' }),
+		expect(isRecord(updatedRow) ? updatedRow.row : undefined).toEqual(
+			itemRow('0000', { active: false }),
 		)
 
 		const destroyed = await tool.execute({ operation: 'destroy', id: 'shop' })
@@ -1999,7 +2016,6 @@ function buildRelationDatabase(): DatabaseInterface {
 			reps: { id: stringShape(), name: stringShape() },
 			accountReps: { id: stringShape(), accountId: stringShape(), repId: stringShape() },
 		},
-		key: generateUUID,
 	})
 }
 

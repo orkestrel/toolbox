@@ -554,8 +554,8 @@ export const orderShape = objectShape({
 	direction: literalShape(['ascending', 'descending'], { description: 'The sort direction.' }),
 })
 
-/** The SERIALIZED criteria form — conditions, order, and pagination. */
-export const criteriaShape = objectShape({
+/** The SERIALIZED query form — conditions, order, and pagination. */
+export const queryShape = objectShape({
 	conditions: optionalShape(
 		arrayShape(conditionShape, { description: 'The WHERE conditions, folded left to right.' }),
 	),
@@ -568,17 +568,17 @@ export const criteriaShape = objectShape({
 
 /**
  * The shape of {@link import('./factories.js').createDatabaseTool}'s call arguments —
- * discriminated by `operation` into the 12 database operations (`'create'` / `'tables'` /
+ * discriminated by `operation` into the 11 database operations (`'create'` / `'tables'` /
  * `'get'` / `'records'` / `'count'` / `'aggregate'` / `'add'` / `'set'` / `'update'` /
- * `'remove'` / `'migrate'` / `'destroy'`).
+ * `'remove'` / `'destroy'`).
  *
  * @remarks
- * Every arm carries `id` (the database id). `'create'` / `'migrate'` carry `tables` (the
+ * Every arm carries `id` (the database id). `'create'` carries `tables` (the
  * {@link import('./types.js').TableSpec} column DSL, compiled via
  * {@link import('./helpers.js').expandTables}); `'get'` / `'update'` / `'remove'` carry `key`
  * (one key or an array of keys, positional); `'add'` / `'set'` carry `row` (one row or an array of
  * rows); `'update'` also carries `changes` (a loose partial row); `'records'` / `'count'` /
- * `'aggregate'` carry an optional `criteria` (the SERIALIZED form — `values` is ALWAYS an array,
+ * `'aggregate'` carry an optional `query` (the SERIALIZED form — `values` is ALWAYS an array,
  * even for a single-value operator, so a caller never chains method calls or guesses arity).
  */
 export const databaseToolShape = unionShape(
@@ -589,8 +589,25 @@ export const databaseToolShape = unionShape(
 		driver: optionalShape(
 			stringShape({ min: 1, description: 'The registered driver key. Defaults to "memory".' }),
 		),
-		keys: optionalShape(
-			recordShape(stringShape(), { description: 'Table name to its primary-key column.' }),
+		primary: optionalShape(
+			recordShape(stringShape({ min: 1 }), {
+				description: 'Table name to its primary-key column.',
+			}),
+		),
+		indexes: optionalShape(
+			recordShape(
+				arrayShape(
+					arrayShape(stringShape({ min: 1 }), {
+						min: 1,
+						description: 'One nonempty index group of column names.',
+					}),
+					{ description: 'Zero or more index groups declared for the table.' },
+				),
+				{ description: 'Table name to its index column groups.' },
+			),
+		),
+		version: optionalShape(
+			numberShape({ description: 'The schema version for open-time reconciliation.' }),
 		),
 	}),
 	objectShape({
@@ -604,16 +621,16 @@ export const databaseToolShape = unionShape(
 		key: keyShape,
 	}),
 	objectShape({
-		operation: literalShape(['records'], { description: 'List rows matching criteria.' }),
+		operation: literalShape(['records'], { description: 'List rows matching a query.' }),
 		id: stringShape({ min: 1, description: 'The database id.' }),
 		table: stringShape({ min: 1, description: 'The table name.' }),
-		criteria: optionalShape(criteriaShape),
+		query: optionalShape(queryShape),
 	}),
 	objectShape({
-		operation: literalShape(['count'], { description: 'Count rows matching criteria.' }),
+		operation: literalShape(['count'], { description: 'Count rows matching a query.' }),
 		id: stringShape({ min: 1, description: 'The database id.' }),
 		table: stringShape({ min: 1, description: 'The table name.' }),
-		criteria: optionalShape(criteriaShape),
+		query: optionalShape(queryShape),
 	}),
 	objectShape({
 		operation: literalShape(['aggregate'], { description: 'Compute an aggregate over a column.' }),
@@ -623,7 +640,7 @@ export const databaseToolShape = unionShape(
 			description: 'The aggregate function.',
 		}),
 		column: stringShape({ min: 1, description: 'The column to aggregate.' }),
-		criteria: optionalShape(criteriaShape),
+		query: optionalShape(queryShape),
 	}),
 	objectShape({
 		operation: literalShape(['add'], {
@@ -651,11 +668,6 @@ export const databaseToolShape = unionShape(
 		id: stringShape({ min: 1, description: 'The database id.' }),
 		table: stringShape({ min: 1, description: 'The table name.' }),
 		key: keyShape,
-	}),
-	objectShape({
-		operation: literalShape(['migrate'], { description: 'Replace the table layout in place.' }),
-		id: stringShape({ min: 1, description: 'The database id.' }),
-		tables: tableSpecShape,
 	}),
 	objectShape({
 		operation: literalShape(['destroy'], { description: 'Drop a database entirely.' }),

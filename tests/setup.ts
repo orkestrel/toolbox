@@ -6,7 +6,7 @@ import type {
 } from '@orkestrel/agent'
 import type { DatabaseInterface } from '@orkestrel/database'
 import { ProviderAbortError } from '@orkestrel/agent'
-import { createDatabase, createMemoryDriver, generateUUID } from '@orkestrel/database'
+import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 
 /**
  * Create an empty live memory database for core integration tests.
@@ -17,7 +17,6 @@ export function createTestDatabase(): DatabaseInterface {
 	return createDatabase({
 		driver: createMemoryDriver(),
 		tables: {},
-		key: generateUUID,
 	})
 }
 

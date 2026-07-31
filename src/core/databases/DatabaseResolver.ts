@@ -11,14 +11,14 @@ import { expandTables } from '../helpers.js'
  * ```ts
  * import { DatabaseResolver } from '@orkestrel/toolbox'
  *
- * const resolver = new DatabaseResolver(handles, drivers, key, store)
+ * const resolver = new DatabaseResolver(handles, drivers, generator, store)
  * const database = await resolver.resolve('shop')
  * ```
  */
 export class DatabaseResolver {
 	readonly #handles: Map<string, DatabaseInterface>
 	readonly #drivers: Readonly<Record<string, () => DriverInterface>>
-	readonly #key: KeyFunction
+	readonly #generator: KeyFunction | undefined
 	readonly #store: DefinitionStoreInterface | undefined
 
 	/**
@@ -26,18 +26,18 @@ export class DatabaseResolver {
 	 *
 	 * @param handles - Initial live database handles cached by id
 	 * @param drivers - Driver factories keyed by definition driver name
-	 * @param key - Key generator supplied to newly created databases
+	 * @param generator - Optional key generator supplied to newly created databases
 	 * @param store - Optional persistent definition store
 	 */
 	constructor(
 		handles: ReadonlyMap<string, DatabaseInterface>,
 		drivers: Readonly<Record<string, () => DriverInterface>>,
-		key: KeyFunction,
+		generator?: KeyFunction,
 		store?: DefinitionStoreInterface,
 	) {
 		this.#handles = new Map(handles)
 		this.#drivers = drivers
-		this.#key = key
+		this.#generator = generator
 		this.#store = store
 	}
 
@@ -104,8 +104,11 @@ export class DatabaseResolver {
 				const handle = createDatabase({
 					driver: factory(),
 					tables: expandTables(definition.tables),
-					...(definition.keys === undefined ? {} : { keys: definition.keys }),
-					key: this.#key,
+					name: id,
+					...(definition.primary === undefined ? {} : { primary: definition.primary }),
+					...(definition.indexes === undefined ? {} : { indexes: definition.indexes }),
+					...(definition.version === undefined ? {} : { version: definition.version }),
+					...(this.#generator === undefined ? {} : { generator: this.#generator }),
 				})
 				this.set(id, handle)
 				return handle

@@ -262,7 +262,7 @@ describe('workspaceToolShape — the 13-op discriminated union', () => {
 	})
 })
 
-describe('databaseToolShape — the 12-op discriminated union', () => {
+describe('databaseToolShape — the 11-op discriminated union', () => {
 	const contract = createContract(databaseToolShape)
 
 	const valid: ReadonlyArray<readonly [string, Readonly<Record<string, unknown>>]> = [
@@ -272,8 +272,16 @@ describe('databaseToolShape — the 12-op discriminated union', () => {
 				operation: 'create',
 				id: 'db1',
 				tables: {
-					users: { columns: { name: 'string', age: { type: 'integer', optional: true } } },
+					users: {
+						columns: {
+							username: 'string',
+							age: { type: 'integer', optional: true },
+						},
+					},
 				},
+				primary: { users: 'username' },
+				indexes: { users: [['username']] },
+				version: 1.5,
 			},
 		],
 		['tables', { operation: 'tables', id: 'db1' }],
@@ -284,7 +292,7 @@ describe('databaseToolShape — the 12-op discriminated union', () => {
 				operation: 'records',
 				id: 'db1',
 				table: 'users',
-				criteria: {
+				query: {
 					conditions: [{ column: 'age', operator: 'above', values: [18] }],
 					order: [{ column: 'age', direction: 'ascending' }],
 					limit: 10,
@@ -304,14 +312,6 @@ describe('databaseToolShape — the 12-op discriminated union', () => {
 			{ operation: 'update', id: 'db1', table: 'users', key: '1', changes: { name: 'b' } },
 		],
 		['remove', { operation: 'remove', id: 'db1', table: 'users', key: '1' }],
-		[
-			'migrate',
-			{
-				operation: 'migrate',
-				id: 'db1',
-				tables: { users: { columns: { name: 'string' } } },
-			},
-		],
 		['destroy', { operation: 'destroy', id: 'db1' }],
 	]
 
@@ -330,7 +330,7 @@ describe('databaseToolShape — the 12-op discriminated union', () => {
 				operation: 'records',
 				id: 'db1',
 				table: 'users',
-				criteria: {
+				query: {
 					conditions: [{ column: 'age', operator: 'above', values: [18], connector: 'and' }],
 				},
 			}),
@@ -343,7 +343,7 @@ describe('databaseToolShape — the 12-op discriminated union', () => {
 				operation: 'records',
 				id: 'db1',
 				table: 'users',
-				criteria: { conditions: [{ column: 'age', from: 18 }] },
+				query: { conditions: [{ column: 'age', from: 18 }] },
 			}),
 		).toBe(false)
 	})
@@ -354,7 +354,7 @@ describe('databaseToolShape — the 12-op discriminated union', () => {
 				operation: 'records',
 				id: 'db1',
 				table: 'users',
-				criteria: { conditions: [{ column: 'age', operator: 'contains', values: ['x'] }] },
+				query: { conditions: [{ column: 'age', operator: 'contains', values: ['x'] }] },
 			}),
 		).toBe(false)
 	})
@@ -365,7 +365,7 @@ describe('databaseToolShape — the 12-op discriminated union', () => {
 				operation: 'records',
 				id: 'db1',
 				table: 'users',
-				criteria: { order: [{ column: 'age', direction: 'up' }] },
+				query: { order: [{ column: 'age', direction: 'up' }] },
 			}),
 		).toBe(false)
 	})
@@ -402,6 +402,47 @@ describe('databaseToolShape — the 12-op discriminated union', () => {
 				tables: { users: { columns: { name: 'text' } } },
 			}),
 		).toBe(false)
+	})
+
+	it('is() rejects the obsolete create keys and query criteria fields', () => {
+		expect(
+			contract.is({
+				operation: 'create',
+				id: 'db1',
+				tables: { users: { columns: { id: 'string' } } },
+				keys: { users: 'id' },
+			}),
+		).toBe(false)
+		expect(
+			contract.is({
+				operation: 'create',
+				id: 'db1',
+				tables: { users: { columns: { id: 'string' } } },
+				primary: { users: '' },
+			}),
+		).toBe(false)
+		expect(
+			contract.is({
+				operation: 'records',
+				id: 'db1',
+				table: 'users',
+				criteria: { limit: 1 },
+			}),
+		).toBe(false)
+	})
+
+	it('is() accepts empty index lists and rejects empty groups, blank columns, and nonfinite versions', () => {
+		const base = {
+			operation: 'create',
+			id: 'db1',
+			tables: { users: { columns: { id: 'string' } } },
+		}
+		expect(contract.is({ ...base, indexes: { users: [] } })).toBe(true)
+		expect(contract.is({ ...base, indexes: { users: [[]] } })).toBe(false)
+		expect(contract.is({ ...base, indexes: { users: [['']] } })).toBe(false)
+		expect(contract.is({ ...base, indexes: { users: 'id' } })).toBe(false)
+		expect(contract.is({ ...base, version: Number.NaN })).toBe(false)
+		expect(contract.is({ ...base, version: Number.POSITIVE_INFINITY })).toBe(false)
 	})
 
 	it('is() rejects a missing discriminant or an unknown operation', () => {

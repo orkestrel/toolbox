@@ -345,15 +345,15 @@ export const DATABASE_TOOL_NAME = 'database'
  * will advertise in place of {@link DATABASE_TOOL_DESCRIPTION}.
  */
 export const DATABASE_TOOL_SUMMARY =
-	"Create and query a database — one operation per call (create, tables, get, records, count, aggregate, add, set, update, remove, migrate, destroy), chosen by the 'operation' field. Call describe('database') for the full operation list, the criteria form, and the column DSL."
+	"Create and query a database — one operation per call (create, tables, get, records, count, aggregate, add, set, update, remove, destroy), chosen by the 'operation' field. Call describe('database') for the full operation list, the query form, and the column DSL."
 
 /**
  * The DESCRIPTION the upcoming database tool will advertise — a multi-line guide that teaches a
- * small model the operation list, the SERIALIZED criteria form, and the {@link import('./types.js').TableSpec}
+ * small model the operation list, the SERIALIZED query form, and the {@link import('./types.js').TableSpec}
  * column DSL.
  *
  * @remarks
- * The criteria form is deliberately SERIALIZED (never fluent) — every condition is a flat object
+ * The query form is deliberately SERIALIZED (never fluent) — every condition is a flat object
  * `{ column, operator, values, connector? }` where `values` is ALWAYS an array, even for a
  * single-value operator (`{ column: 'age', operator: 'from', values: [18] }`), so a small model
  * never has to chain method calls or guess whether a value is scalar or a list.
@@ -362,25 +362,25 @@ export const DATABASE_TOOL_DESCRIPTION = [
 	'Create and query a database. Every call is ONE operation, chosen by the "operation" field.',
 	'',
 	'Operations (each takes the fields listed):',
-	'- create    { "operation": "create", "id": "<database id>", "tables": { "<table>": { "columns": { "<column>": "string" | "integer" | "number" | "boolean" | { "type": "string", "optional": true } } } } } — define a new database.',
+	'- create    { "operation": "create", "id": "<database id>", "tables": { "<table>": { "columns": { "<column>": "string" | "integer" | "number" | "boolean" | { "type": "string", "optional": true } } } }, "primary"?: { "<table>": "<column>" }, "indexes"?: { "<table>": [["<column>"]] }, "version"?: <number> } — define a new database.',
 	'- tables    { "operation": "tables", "id": "<database id>" } — list a database\'s table names.',
 	'- get       { "operation": "get", "id": "<database id>", "table": "<table>", "key": "<row key>" } — fetch one row by its primary key.',
-	'- records   { "operation": "records", "id": "<database id>", "table": "<table>", "criteria"?: <Criteria> } — list rows matching criteria.',
-	'- count     { "operation": "count", "id": "<database id>", "table": "<table>", "criteria"?: <Criteria> } — count rows matching criteria.',
-	'- aggregate { "operation": "aggregate", "id": "<database id>", "table": "<table>", "column": "<column>", "function": "count" | "sum" | "average" | "minimum" | "maximum", "criteria"?: <Criteria> } — compute an aggregate.',
+	'- records   { "operation": "records", "id": "<database id>", "table": "<table>", "query"?: <Query> } — list rows matching a query.',
+	'- count     { "operation": "count", "id": "<database id>", "table": "<table>", "query"?: <Query> } — count rows matching a query.',
+	'- aggregate { "operation": "aggregate", "id": "<database id>", "table": "<table>", "column": "<column>", "function": "count" | "sum" | "average" | "minimum" | "maximum", "query"?: <Query> } — compute an aggregate.',
 	'- add       { "operation": "add", "id": "<database id>", "table": "<table>", "row": { ... } } — insert a row (fails on a duplicate key).',
 	'- set       { "operation": "set", "id": "<database id>", "table": "<table>", "row": { ... } } — upsert a row.',
-	'- update    { "operation": "update", "id": "<database id>", "table": "<table>", "key": "<row key>", "row": { ... } } — patch an existing row.',
+	'- update    { "operation": "update", "id": "<database id>", "table": "<table>", "key": "<row key>", "changes": { ... } } — patch an existing row.',
 	'- remove    { "operation": "remove", "id": "<database id>", "table": "<table>", "key": "<row key>" } — delete a row by key.',
-	'- migrate   { "operation": "migrate", "id": "<database id>", "tables": { ... } } — replace the table layout in place.',
 	'- destroy   { "operation": "destroy", "id": "<database id>" } — drop a database entirely.',
 	'',
-	'Criteria form — SERIALIZED, never fluent. A condition is a flat object; "values" is ALWAYS an array, even for one value:',
+	'Query form — SERIALIZED, never fluent. A condition is a flat object; "values" is ALWAYS an array, even for one value:',
 	'  { "conditions": [ { "column": "age", "operator": "from", "values": [18], "connector": "and" } ], "order"?: [...], "offset"?: 0, "limit"?: 100 }',
 	'  operators: equals, not, above, below, from, to, between, like, glob, starts, ends, any, none, absent, present.',
 	'  "connector" joins this condition to the next ("and" | "or"); omit on the last condition.',
 	'',
-	'Column DSL (used by "create"/"migrate" "tables"): a column is either a bare type string ("string" | "integer" | "number" | "boolean"), or { "type": "<type>", "optional": true } when the column may be absent from a row.',
+	'Column DSL (used by "create" "tables"): a column is either a bare type string ("string" | "integer" | "number" | "boolean"), or { "type": "<type>", "optional": true } when the column may be absent from a row.',
+	'Schema configuration is creation-time only. Evolve a schema by opening a newly configured target-version database over a versioned persistent driver; reconciliation requires paired metadata/stamp capabilities.',
 	'Example — create a database:',
 	JSON.stringify({
 		operation: 'create',
@@ -391,26 +391,25 @@ export const DATABASE_TOOL_DESCRIPTION = [
 			},
 		},
 	}),
-	'Example — query with criteria:',
+	'Example — query records:',
 	JSON.stringify({
 		operation: 'records',
 		id: 'shop',
 		table: 'products',
-		criteria: { conditions: [{ column: 'price', operator: 'below', values: [50] }] },
+		query: { conditions: [{ column: 'price', operator: 'below', values: [50] }] },
 	}),
 ].join('\n')
 
-/** The default cap on rows a `records` / `remove` call returns (or acts on) when the caller omits `criteria.limit` — the upcoming database tool's default row ceiling. */
+/** The default cap on rows a `records` call returns when the caller omits `query.limit` — the upcoming database tool's default row ceiling. */
 export const DATABASE_TOOL_LIMIT = 1000
 
-/** The database tool's mutating operations — disabled by `DatabaseToolOptions.readonly`. */
-export const DATABASE_TOOL_MUTATIONS = new Set([
+/** The runtime-frozen database-tool mutation names disabled by `DatabaseToolOptions.readonly`. */
+export const DATABASE_TOOL_MUTATIONS: readonly string[] = Object.freeze([
 	'create',
 	'add',
 	'set',
 	'update',
 	'remove',
-	'migrate',
 	'destroy',
 ])
 

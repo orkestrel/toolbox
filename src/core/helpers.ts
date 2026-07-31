@@ -1,6 +1,6 @@
 import type { WorkflowDefinition, WorkflowResult, WorkflowStatus } from '@orkestrel/workflow'
 import type { PromptType } from '@orkestrel/terminal'
-import type { TablesShape } from '@orkestrel/database'
+import type { TableMap } from '@orkestrel/database'
 import type { DatabaseErrorCode } from '@orkestrel/database'
 import type {
 	Include,
@@ -8,8 +8,7 @@ import type {
 	RelationErrorCode,
 	RelationManagerInterface,
 } from '@orkestrel/relation'
-import type { Condition, Connector, Criteria, Direction, TableSchema } from '@orkestrel/database'
-import type { ColumnSchema } from '@orkestrel/database'
+import type { Condition, ConditionConnector, OrderDirection, QueryInput } from '@orkestrel/database'
 import type { ContractShape } from '@orkestrel/contract'
 import type {
 	ToolboxErrorCode,
@@ -20,12 +19,13 @@ import type {
 } from './types.js'
 import type { PhaseDraft, TaskDraft, WorkflowDraft, WorkflowSteps } from './types.js'
 import { isTerminalError } from '@orkestrel/terminal'
-import { isDatabaseError, shapeToColumnType } from '@orkestrel/database'
+import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
 import { ToolboxError } from './errors.js'
 import {
 	booleanShape,
 	integerShape,
+	isFiniteNumber,
 	isNonEmptyString,
 	isRecord,
 	isString,
@@ -276,7 +276,7 @@ export function terminalToolCode(error: unknown): ToolboxErrorCode | undefined {
 
 // === Database-tool foundation (SRC-1 — persistence + the TableSpec DSL; the tool factories land
 // in a later unit) — the config-only `DatabaseDefinition` compiles into a live `@orkestrel/database`
-// `TablesShape`, and its store twins narrow an untrusted persisted blob back to the type.
+// `TableMap`, and its store twins narrow an untrusted persisted blob back to the type.
 
 /** Narrow an unknown value to a {@link ColumnSpec} — a valid {@link import('./types.js').ColumnKind} shorthand, or `{ type, optional }` with a valid `type`. */
 export function isColumnSpec(value: unknown): value is ColumnSpec {
@@ -294,15 +294,15 @@ export function isColumnKind(value: unknown): value is ColumnKind {
 }
 
 /**
- * Compile a {@link TableSpec} into the `@orkestrel/database` {@link TablesShape} it configures —
+ * Compile a {@link TableSpec} into the `@orkestrel/database` {@link TableMap} it configures —
  * each {@link ColumnSpec} maps to the matching primitive shaper (`'string'` → `stringShape()`,
  * `'integer'` → `integerShape()`, `'number'` → `numberShape()`, `'boolean'` → `booleanShape()`),
  * wrapped in `optionalShape` when the column declares `optional: true`. Total, pure.
  *
  * @param spec - The small-model-facing table layout
- * @returns The compiled `TablesShape` a `@orkestrel/database` `createDatabase` call accepts
+ * @returns The compiled `TableMap` a `@orkestrel/database` `createDatabase` call accepts
  */
-export function expandTables(spec: TableSpec): TablesShape {
+export function expandTables(spec: TableSpec): TableMap {
 	const tables: Record<string, Readonly<Record<string, ContractShape>>> = {}
 	for (const [table, definition] of Object.entries(spec)) {
 		const columns: Record<string, ContractShape> = {}
@@ -332,12 +332,14 @@ export function kindShape(kind: ColumnKind): ContractShape {
 
 /**
  * Narrow an unknown value to a {@link DatabaseDefinition} — a non-empty `id` + `driver`, a
- * `tables` record whose every value is `{ columns: record of valid ColumnSpec }`, and an optional
- * `keys` record of strings. The boundary guard a {@link import('./types.js').DefinitionStoreInterface}
- * applies to an untrusted persisted blob before trusting it as a definition (never an `as`).
+ * `tables` record whose every value is `{ columns: record of valid ColumnSpec }`, plus optional
+ * `primary`, `indexes`, and finite `version` schema configuration. The boundary guard a
+ * {@link import('./types.js').DefinitionStoreInterface} applies to an untrusted persisted blob
+ * before trusting it as a definition (never an `as`).
  */
 export function isDatabaseDefinition(value: unknown): value is DatabaseDefinition {
 	if (!isRecord(value)) return false
+	if ('keys' in value) return false
 	if (!isNonEmptyString(value.id) || !isNonEmptyString(value.driver)) return false
 	if (!isRecord(value.tables)) return false
 	for (const table of Object.values(value.tables)) {
@@ -346,12 +348,25 @@ export function isDatabaseDefinition(value: unknown): value is DatabaseDefinitio
 			if (!isColumnSpec(column)) return false
 		}
 	}
-	if (value.keys !== undefined) {
-		if (!isRecord(value.keys)) return false
-		for (const key of Object.values(value.keys)) {
-			if (!isString(key)) return false
+	if (value.primary !== undefined) {
+		if (!isRecord(value.primary)) return false
+		for (const key of Object.values(value.primary)) {
+			if (!isNonEmptyString(key)) return false
 		}
 	}
+	if (value.indexes !== undefined) {
+		if (!isRecord(value.indexes)) return false
+		for (const groups of Object.values(value.indexes)) {
+			if (!Array.isArray(groups)) return false
+			for (const group of groups) {
+				if (!Array.isArray(group) || group.length === 0) return false
+				for (const column of group) {
+					if (!isNonEmptyString(column)) return false
+				}
+			}
+		}
+	}
+	if (value.version !== undefined && !isFiniteNumber(value.version)) return false
 	return true
 }
 
@@ -505,8 +520,8 @@ export function relationModelOf(manager: RelationManagerInterface, name: string)
 // === Database-tool operation leaves (SRC-2 — `createDatabaseTool` itself)
 
 /**
- * Normalize the database tool's parsed SERIALIZED criteria into a live `@orkestrel/database`
- * {@link Criteria} — default each condition's OMITTED `connector` to `'and'`.
+ * Normalize the database tool's parsed SERIALIZED query into a live `@orkestrel/database`
+ * {@link QueryInput} — default each condition's OMITTED `connector` to `'and'`.
  *
  * @remarks
  * The wire form ({@link import('./shapers.js').databaseToolShape}) lets a caller drop `connector`
@@ -514,98 +529,67 @@ export function relationModelOf(manager: RelationManagerInterface, name: string)
  * `@orkestrel/database` table call accepts always carries one, so this fills the gap. `order` /
  * `limit` / `offset` pass through unchanged. Pure and total.
  *
- * @param criteria - The parsed criteria (or `undefined`)
- * @returns The equivalent live `Criteria`, or `undefined` when `criteria` is `undefined`
+ * @param query - The parsed query (or `undefined`)
+ * @returns The equivalent live `QueryInput`, or `undefined` when `query` is `undefined`
  */
-export function criteriaOf(
-	criteria:
+export function queryOf(
+	query:
 		| Readonly<{
 				conditions?: readonly Readonly<{
 					column: string
 					operator: Condition['operator']
 					values: readonly unknown[]
-					connector?: Connector
+					connector?: ConditionConnector
 				}>[]
-				order?: readonly Readonly<{ column: string; direction: Direction }>[]
+				order?: readonly Readonly<{ column: string; direction: OrderDirection }>[]
 				limit?: number
 				offset?: number
 		  }>
 		| undefined,
-): Criteria | undefined {
-	if (criteria === undefined) return undefined
-	const conditions = criteria.conditions?.map((condition) => ({
+): QueryInput | undefined {
+	if (query === undefined) return undefined
+	const conditions = query.conditions?.map((condition) => ({
 		...condition,
 		connector: condition.connector ?? 'and',
 	}))
 	return {
 		...(conditions === undefined ? {} : { conditions }),
-		...(criteria.order === undefined ? {} : { order: criteria.order }),
-		...(criteria.limit === undefined ? {} : { limit: criteria.limit }),
-		...(criteria.offset === undefined ? {} : { offset: criteria.offset }),
+		...(query.order === undefined ? {} : { order: query.order }),
+		...(query.limit === undefined ? {} : { limit: query.limit }),
+		...(query.offset === undefined ? {} : { offset: query.offset }),
 	}
 }
 
 /**
- * Clamp a `'records'` call's criteria to a row cap, and build the PROBE criteria the caller reads
+ * Clamp a `'records'` call's query to a row cap, and build the PROBE query the caller reads
  * with — the pure leaf {@link import('./factories.js').createDatabaseTool}'s `'records'` operation
  * uses to detect truncation without a separate `count` round trip.
  *
  * @remarks
- * The effective limit is `min(criteria?.limit ?? cap, cap)`, floored at `0` (so a caller can never
- * exceed the configured cap by supplying a larger `criteria.limit`). The returned probe criteria
+ * The effective limit is `min(query?.limit ?? cap, cap)`, floored at `0` (so a caller can never
+ * exceed the configured cap by supplying a larger `query.limit`). The returned probe query
  * requests ONE MORE row than the effective limit (`limit: effective + 1`) — if storage returns
  * that many, the caller knows the true result was truncated (`rows.length > effective`) and slices
  * back down to `effective` before returning.
  *
  * @example
  * ```ts
- * import { clampCriteria } from '@src/core'
+ * import { clampQuery } from '@src/core'
  *
- * const { criteria, limit } = clampCriteria(undefined, 100)
- * // limit === 100, criteria.limit === 101 — a probe fetching one extra row
- * const rows = await table.records(criteria)
+ * const { query, limit } = clampQuery(undefined, 100)
+ * // limit === 100, query.limit === 101 — a probe fetching one extra row
+ * const rows = await table.records(query)
  * const truncated = rows.length > limit // true when storage had more than `limit` rows
  * ```
  *
- * @param criteria - The live criteria to clamp (or `undefined`)
+ * @param query - The live query to clamp (or `undefined`)
  * @param cap - The row-count ceiling
- * @returns The PROBE criteria (`limit` bumped by one) and the effective `limit`
+ * @returns The PROBE query (`limit` bumped by one) and the effective `limit`
  */
-export function clampCriteria(
-	criteria: Criteria | undefined,
+export function clampQuery(
+	query: QueryInput | undefined,
 	cap: number,
-): Readonly<{ criteria: Criteria; limit: number }> {
-	const limit = Math.max(0, Math.min(criteria?.limit ?? cap, cap))
-	return { criteria: { ...criteria, limit: limit + 1 }, limit }
-}
-
-/** Map a column NAME + its live `@orkestrel/database` `ContractShape` to a {@link ColumnSchema} — the leaf {@link tableSchema} maps over. */
-export function columnSchema(name: string, shape: ContractShape): ColumnSchema {
-	return {
-		name,
-		type: shapeToColumnType(shape),
-		nullable: shape.type === 'optional' || shape.type === 'nullable',
-	}
-}
-
-/**
- * Build one {@link TableSchema} from a table NAME and its `@orkestrel/database` `TableExport` —
- * the "deployed" schema shape `DatabaseInterface.migrate` diffs against, derived from a LIVE
- * handle's `export()` rather than a re-declared {@link TableSpec}, so it works for ANY handle
- * (config-tracked or caller-supplied).
- *
- * @param name - The table name
- * @param table - The table's `TableExport` (`{ key, columns }`, `@orkestrel/database`)
- * @returns The equivalent {@link TableSchema} (`indexes` empty — this package declares none)
- */
-export function tableSchema(
-	name: string,
-	table: Readonly<{ key: string; columns: Readonly<Record<string, ContractShape>> }>,
-): TableSchema {
-	return {
-		name,
-		primary: table.key,
-		columns: Object.entries(table.columns).map(([column, shape]) => columnSchema(column, shape)),
-		indexes: [],
-	}
+): Readonly<{ query: QueryInput; limit: number }> {
+	const limit = Math.max(0, Math.min(query?.limit ?? cap, cap))
+	return { query: { ...query, limit: limit + 1 }, limit }
 }

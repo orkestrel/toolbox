@@ -2,7 +2,13 @@ import type { ConversationStoreInterface } from '@orkestrel/agent'
 import type { WorkspaceManagerInterface, WorkspaceStoreInterface } from '@orkestrel/workspace'
 import type { TerminalManagerInterface } from '@orkestrel/terminal'
 import type { WorkflowRunnerInterface, WorkflowStoreInterface } from '@orkestrel/workflow'
-import type { DatabaseInterface, DriverInterface, KeyFunction } from '@orkestrel/database'
+import type {
+	DatabaseInterface,
+	DriverInterface,
+	IndexMap,
+	KeyFunction,
+	PrimaryMap,
+} from '@orkestrel/database'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 
 // Toolbox types — one interface per `create*Tool` / `create*Function` factory (AGENTS §5:
@@ -435,28 +441,30 @@ export type ColumnSpec = ColumnKind | Readonly<{ type: ColumnKind; optional?: bo
 /**
  * A database's table layout — one entry per table, each a flat map of column name to
  * {@link ColumnSpec}. The small-model-facing DSL {@link import('./helpers.js').expandTables}
- * compiles into an `@orkestrel/database` `TablesShape`.
+ * compiles into an `@orkestrel/database` `TableMap`.
  */
 export type TableSpec = Readonly<
 	Record<string, Readonly<{ columns: Readonly<Record<string, ColumnSpec>> }>>
 >
 
 /**
- * One database's CONFIG-ONLY definition — `id` + `driver` + {@link TableSpec} (+ optional `keys`),
- * the pure-JSON blueprint the upcoming database / relation tools build a live database from.
+ * One database's CONFIG-ONLY definition — `id` + `driver` + {@link TableSpec}, with optional
+ * `primary`, `indexes`, and `version` schema configuration.
  *
  * @remarks
  * A `DatabaseDefinition` is NEVER a live handle — it is the durable, serializable config a
  * {@link DefinitionStoreInterface} persists and a tool factory turns into a real
  * `@orkestrel/database` `DatabaseInterface` (via `createDatabase` + {@link import('./helpers.js').expandTables})
- * on demand. `keys`, when present, maps a table name to its primary-key column (omitted ⇒ the
- * driver's default primary key).
+ * on demand. `primary` maps table names to primary-key columns; `indexes` maps table names to
+ * index column groups; `version` opts a capable driver into open-time schema reconciliation.
  */
 export interface DatabaseDefinition {
 	readonly id: string
 	readonly driver: string
 	readonly tables: TableSpec
-	readonly keys?: Readonly<Record<string, string>>
+	readonly primary?: PrimaryMap
+	readonly indexes?: IndexMap
+	readonly version?: number
 }
 
 /** One opaque persisted row — the shape a `TableInterface<DatabaseDefinitionRow>`-backed store reads/writes; `definition` is narrowed with {@link import('./helpers.js').isDatabaseDefinition} on read. */
@@ -485,22 +493,26 @@ export interface DefinitionStoreInterface {
  * - `databases` — live `DatabaseInterface` handles to seed the tool's cache with (e.g. a
  *   caller-constructed database it should manage alongside store-backed ones); keyed by the id a
  *   call's `id` field addresses.
- * - `store` — the {@link DefinitionStoreInterface} the `'create'` / `'migrate'` operations persist
- *   their {@link DatabaseDefinition} CONFIG through, and `'destroy'` deletes from; also the source
+ * - `store` — the {@link DefinitionStoreInterface} the `'create'` operation persists its
+ *   {@link DatabaseDefinition} CONFIG through, and `'destroy'` deletes from; also the source
  *   `'get'`/every other operation resolves an id from when it isn't already cached. Omitted means
  *   no persistence — a database created without a store lives only for the tool's lifetime.
  * - `drivers` — registry of driver-name to `() => DriverInterface` factories a `'create'` call's
  *   `driver` field (or a persisted definition's `driver`) resolves against. Defaults to
  *   `{ memory: () => createMemoryDriver() }` (`@orkestrel/database`).
- * - `key` — the `KeyFunction` (`@orkestrel/database`) every minted database is constructed with,
- *   used when a written row lacks its primary key. Defaults to `generateUUID`.
- * - `limit` — the row cap `'records'` / `'remove'` — via {@link import('./helpers.js').clampCriteria}
- *   — enforce when a call's `criteria.limit` is omitted or exceeds it. Defaults to
+ * - `generator` — the optional `KeyFunction` (`@orkestrel/database`) every minted database is
+ *   constructed with, used when a written row lacks its primary key. Omitted delegates to the
+ *   database's default generator.
+ * - `limit` — the `'records'` row cap — via {@link import('./helpers.js').clampQuery}
+ *   — enforce when a call's `query.limit` is omitted or exceeds it. Defaults to
  *   {@link import('./constants.js').DATABASE_TOOL_LIMIT}.
- * - `timeout` — milliseconds; when set, every `@orkestrel/database` call this tool makes is given
- *   a fresh `AbortSignal.timeout(timeout)` per tool call.
+ * - `timeout` — a nonnegative safe-integer number of milliseconds. A fresh
+ *   `AbortSignal.timeout(timeout)` is passed only to table operations whose current database API
+ *   accepts operation options: `records`, `count`, `aggregate`, `add`, `set`, `update`, and
+ *   `remove`. It does not bound store resolution, construction, schema inspection, `get`, or
+ *   `close`, and is not an outer tool-call deadline.
  * - `readonly` — when `true`, every mutating operation (`'create'` / `'add'` / `'set'` /
- *   `'update'` / `'remove'` / `'migrate'` / `'destroy'`) throws a typed `TOOL`
+ *   `'update'` / `'remove'` / `'destroy'`) throws a typed `TOOL`
  *   {@link import('./errors.js').ToolboxError} before doing anything.
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').DATABASE_TOOL_NAME} / {@link import('./constants.js').DATABASE_TOOL_DESCRIPTION}.
@@ -511,7 +523,7 @@ export interface DatabaseToolOptions {
 	readonly databases?: Readonly<Record<string, DatabaseInterface>>
 	readonly store?: DefinitionStoreInterface
 	readonly drivers?: Readonly<Record<string, () => DriverInterface>>
-	readonly key?: KeyFunction
+	readonly generator?: KeyFunction
 	readonly limit?: number
 	readonly timeout?: number
 	readonly readonly?: boolean

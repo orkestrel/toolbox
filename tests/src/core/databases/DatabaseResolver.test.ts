@@ -1,5 +1,5 @@
 import type { DatabaseInterface } from '@orkestrel/database'
-import { createMemoryDriver, generateUUID } from '@orkestrel/database'
+import { createMemoryDriver } from '@orkestrel/database'
 import { createMemoryDefinitionStore, DatabaseResolver, isToolboxError } from '@src/core'
 import { createTestDatabase } from '../../../setup.js'
 import { describe, expect, it } from 'vitest'
@@ -9,7 +9,7 @@ describe('DatabaseResolver', () => {
 		const seeded = createTestDatabase()
 		const added = createTestDatabase()
 		const handles = new Map<string, DatabaseInterface>([['seeded', seeded]])
-		const resolver = new DatabaseResolver(handles, { memory: createMemoryDriver }, generateUUID)
+		const resolver = new DatabaseResolver(handles, { memory: createMemoryDriver })
 
 		expect(resolver.has('seeded')).toBe(true)
 		expect(resolver.get('seeded')).toBe(seeded)
@@ -23,19 +23,37 @@ describe('DatabaseResolver', () => {
 		await added.close()
 	})
 
-	it('constructs and caches a stored definition without mutating caller state', async () => {
+	it('constructs and caches a named stored definition with all schema configuration', async () => {
 		const store = createMemoryDefinitionStore()
-		await store.set({ id: 'shop', driver: 'memory', tables: {} })
+		const driver = createMemoryDriver()
+		await store.set({
+			id: 'shop',
+			driver: 'memory',
+			tables: { items: { columns: { code: 'string', name: 'string' } } },
+			primary: { items: 'code' },
+			indexes: { items: [['name']] },
+			version: 4,
+		})
 		const handles = new Map<string, DatabaseInterface>()
 		const resolver = new DatabaseResolver(
 			handles,
-			{ memory: createMemoryDriver },
-			generateUUID,
+			{ memory: () => driver },
+			() => 'generated',
 			store,
 		)
 
 		const database = await resolver.resolve('shop')
-		expect(database.export()).toEqual({})
+		expect(database.name).toBe('shop')
+		expect(database.export().items?.primary).toBe('code')
+		expect(await database.table('items').add({ name: 'generated row' })).toBe('generated')
+		expect(await database.table('items').get('generated')).toEqual({
+			code: 'generated',
+			name: 'generated row',
+		})
+		if (driver.metadata === undefined) throw new Error('expected MemoryDriver metadata capability')
+		const metadata = await driver.metadata()
+		expect(metadata?.version).toBe(4)
+		expect(metadata?.schema[0]?.indexes).toEqual([['name']])
 		expect(await resolver.resolve('shop')).toBe(database)
 		expect(handles.has('shop')).toBe(false)
 
@@ -43,7 +61,7 @@ describe('DatabaseResolver', () => {
 	})
 
 	it('throws a typed tool error for an unknown database', async () => {
-		const resolver = new DatabaseResolver(new Map(), { memory: createMemoryDriver }, generateUUID)
+		const resolver = new DatabaseResolver(new Map(), { memory: createMemoryDriver })
 
 		let caught: unknown
 		try {

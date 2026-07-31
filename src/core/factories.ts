@@ -40,7 +40,7 @@ import {
 	stringShape,
 } from '@orkestrel/contract'
 import { isTerminalError } from '@orkestrel/terminal'
-import { createDatabase, createMemoryDriver, generateUUID } from '@orkestrel/database'
+import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { createWorkflowContract, WorkflowError } from '@orkestrel/workflow'
 import { MemoryDefinitionStore } from './stores/MemoryDefinitionStore.js'
 import { DatabaseDefinitionStore } from './stores/DatabaseDefinitionStore.js'
@@ -83,10 +83,10 @@ import {
 import { ToolboxError, isToolboxError } from './errors.js'
 import {
 	agentTag,
-	clampCriteria,
+	clampQuery,
 	coerceAnswer,
 	completeDraft,
-	criteriaOf,
+	queryOf,
 	databaseToolCode,
 	expandInclude,
 	expandSteps,
@@ -94,7 +94,6 @@ import {
 	relationManagerOf,
 	relationModelOf,
 	relationToolCode,
-	tableSchema,
 	terminalToolCode,
 	workflowTag,
 	workflowToolSummary,
@@ -990,20 +989,18 @@ export function createDatabaseDefinitionStore(
  * `TOOL` {@link import('./errors.js').ToolboxError}). When a `store` is configured, `'create'`
  * persists the new {@link import('./types.js').DatabaseDefinition} and `'destroy'` deletes it.
  *
- * `'migrate'` re-declares a LIVE handle's tables via `DatabaseInterface.import` (the SAME driver
- * and storage, a NEW typed view) and calls its `migrate` against the OLD deployed schema —
- * derived from the handle's OWN `export()` (via {@link import('./helpers.js').tableSchema}), so it
- * works for any handle, config-tracked or caller-supplied via
- * {@link import('./types.js').DatabaseToolOptions.databases}. `'records'` clamps its `criteria` to
+ * `'records'` clamps its `query` to
  * {@link import('./types.js').DatabaseToolOptions.limit} (default
  * {@link import('./constants.js').DATABASE_TOOL_LIMIT}) via
- * {@link import('./helpers.js').clampCriteria}, reporting `truncated` when storage held more rows
- * than the cap. Every operation's `criteria` is normalized via
- * {@link import('./helpers.js').criteriaOf} (defaults an omitted condition `connector` to `'and'`).
+ * {@link import('./helpers.js').clampQuery}, reporting `truncated` when storage held more rows
+ * than the cap. Every operation's `query` is normalized via
+ * {@link import('./helpers.js').queryOf} (defaults an omitted condition `connector` to `'and'`).
  * When {@link import('./types.js').DatabaseToolOptions.readonly} is `true`, every mutating
- * operation throws a typed `TOOL` `ToolboxError` before doing anything. When
- * {@link import('./types.js').DatabaseToolOptions.timeout} is set, every `@orkestrel/database` call
- * this tool makes is given a fresh `AbortSignal.timeout(timeout)`. A typed `@orkestrel/database`
+ * operation throws a typed `TOOL` `ToolboxError` before doing anything. A configured
+ * {@link import('./types.js').DatabaseToolOptions.timeout} is passed as a fresh
+ * `AbortSignal.timeout(timeout)` only to table operations whose current database API accepts
+ * operation options (`records`, `count`, `aggregate`, `add`, `set`, `update`, and `remove`). It is
+ * not an outer deadline for resolution, construction, schema inspection, `get`, or `close`. A typed `@orkestrel/database`
  * failure (`DatabaseError`) re-surfaces as a typed `DATABASE` `ToolboxError` carrying the
  * original {@link import('@orkestrel/database').DatabaseErrorCode} in `context.code`
  * ({@link import('./helpers.js').databaseToolCode}); an `ToolboxError` thrown by this tool's own
@@ -1037,18 +1034,25 @@ export function createDatabaseDefinitionStore(
  * ```
  */
 export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInterface {
+	if (
+		options.timeout !== undefined &&
+		(options.timeout < 0 || !Number.isSafeInteger(options.timeout))
+	) {
+		throw new ToolboxError('TOOL', 'database timeout must be a nonnegative safe integer', {
+			timeout: options.timeout,
+		})
+	}
 	const contract = createContract(databaseToolShape)
 	const parameters = schemaToParameters(contract.schema)
 	const handles = new Map<string, DatabaseInterface>(Object.entries(options.databases ?? {}))
-	const definitions = new Map<string, DatabaseDefinition>()
 	const drivers = options.drivers ?? { memory: createMemoryDriver }
-	const key = options.key ?? generateUUID
+	const generator = options.generator
 	const cap = options.limit ?? DATABASE_TOOL_LIMIT
 	const store = options.store
 	const resolver =
 		store === undefined
-			? new DatabaseResolver(handles, drivers, key)
-			: new DatabaseResolver(handles, drivers, key, store)
+			? new DatabaseResolver(handles, drivers, generator)
+			: new DatabaseResolver(handles, drivers, generator, store)
 
 	return createTool({
 		name: options.name ?? DATABASE_TOOL_NAME,
@@ -1060,7 +1064,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 			if (call === undefined) {
 				throw new ToolboxError('TOOL', 'malformed database call', { args })
 			}
-			if (options.readonly === true && DATABASE_TOOL_MUTATIONS.has(call.operation)) {
+			if (options.readonly === true && DATABASE_TOOL_MUTATIONS.includes(call.operation)) {
 				throw new ToolboxError(
 					'TOOL',
 					`operation '${call.operation}' is disabled in readonly mode`,
@@ -1089,22 +1093,28 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 							})
 						}
 						const tables = call.tables
-						const keys = call.keys
+						const primary = call.primary
+						const indexes = call.indexes
+						const version = call.version
 						const handle = createDatabase({
 							driver: factory(),
 							tables: expandTables(tables),
-							...(keys === undefined ? {} : { keys }),
-							key,
+							name: call.id,
+							...(primary === undefined ? {} : { primary }),
+							...(indexes === undefined ? {} : { indexes }),
+							...(version === undefined ? {} : { version }),
+							...(generator === undefined ? {} : { generator }),
 						})
-						resolver.set(call.id, handle)
 						const definition: DatabaseDefinition = {
 							id: call.id,
 							driver: name,
 							tables,
-							...(keys === undefined ? {} : { keys }),
+							...(primary === undefined ? {} : { primary }),
+							...(indexes === undefined ? {} : { indexes }),
+							...(version === undefined ? {} : { version }),
 						}
-						definitions.set(call.id, definition)
 						if (store !== undefined) await store.set(definition)
+						resolver.set(call.id, handle)
 						return { id: call.id, tables: Object.keys(tables) }
 					}
 					case 'tables': {
@@ -1126,7 +1136,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 					case 'records': {
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
-						const { criteria: probe, limit } = clampCriteria(criteriaOf(call.criteria), cap)
+						const { query: probe, limit } = clampQuery(queryOf(call.query), cap)
 						const rows = await table.records(probe, read)
 						const truncated = rows.length > limit
 						const sliced = rows.slice(0, limit)
@@ -1135,7 +1145,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 					case 'count': {
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
-						const count = await table.count(criteriaOf(call.criteria), read)
+						const count = await table.count(queryOf(call.query), read)
 						return { count }
 					}
 					case 'aggregate': {
@@ -1144,7 +1154,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						const value = await table.aggregate(
 							call.function,
 							call.column,
-							criteriaOf(call.criteria),
+							queryOf(call.query),
 							read,
 						)
 						return { value }
@@ -1182,40 +1192,6 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						const removed = await table.remove(keys, read)
 						return many ? { removed } : { removed: removed[0] }
 					}
-					case 'migrate': {
-						const handle = await resolver.resolve(call.id)
-						const previous = handle.export()
-						const deployed = Object.entries(previous).map(([name, table]) =>
-							tableSchema(name, table),
-						)
-						const tables = call.tables
-						const keys: Record<string, string> = {}
-						for (const name of Object.keys(tables)) {
-							const existing = previous[name]
-							if (existing !== undefined) keys[name] = existing.key
-						}
-						const declared = expandTables(tables)
-						const migrated = handle.import(
-							declared,
-							Object.keys(keys).length > 0 ? keys : undefined,
-						)
-						const migration = await migrated.migrate(deployed, read)
-						resolver.set(call.id, migrated)
-						const tracked =
-							definitions.get(call.id) ??
-							(store === undefined ? undefined : await store.get(call.id))
-						if (tracked !== undefined) {
-							const updated: DatabaseDefinition = {
-								id: call.id,
-								driver: tracked.driver,
-								tables,
-								...(Object.keys(keys).length > 0 ? { keys } : {}),
-							}
-							definitions.set(call.id, updated)
-							if (store !== undefined) await store.set(updated)
-						}
-						return { migration }
-					}
 					case 'destroy': {
 						const cached = resolver.get(call.id)
 						const persisted =
@@ -1226,7 +1202,6 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 							await cached.close()
 							resolver.delete(call.id)
 						}
-						definitions.delete(call.id)
 						if (store !== undefined) await store.delete(call.id)
 						return { id: call.id, destroyed: cached !== undefined || persisted }
 					}
@@ -1272,7 +1247,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * (positional many-key form, AGENTS §9.2) or a single key. `'find'` and `'links'` clamp their
  * result to {@link import('./types.js').RelationToolOptions.limit} (default
  * {@link import('./constants.js').RELATION_TOOL_LIMIT}) — `'find'` probes one row past the
- * effective limit (mirroring {@link import('./helpers.js').clampCriteria}'s idiom) to report
+ * effective limit (mirroring {@link import('./helpers.js').clampQuery}'s idiom) to report
  * `truncated`; `'links'` (which has no upstream pagination) fetches the FULL linked-key list and
  * slices/truncates it the same way. `'link'` / `'unlink'` write / remove one `through` junction
  * row.

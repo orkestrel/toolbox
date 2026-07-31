@@ -1,4 +1,4 @@
-import type { Criteria, TableSchema } from '@orkestrel/database'
+import type { QueryInput } from '@orkestrel/database'
 import type { WorkflowDraft, WorkflowSteps } from '@src/core'
 import type {
 	TaskResult,
@@ -10,13 +10,12 @@ import type { PromptType } from '@orkestrel/terminal'
 import {
 	agentTag,
 	ToolboxError,
-	clampCriteria,
+	clampQuery,
 	coerceAnswer,
-	columnSchema,
 	completeDraft,
 	completePhaseDraft,
 	completeTaskDraft,
-	criteriaOf,
+	queryOf,
 	databaseToolCode,
 	expandInclude,
 	expandSteps,
@@ -26,7 +25,6 @@ import {
 	isColumnSpec,
 	isDatabaseDefinition,
 	relationToolCode,
-	tableSchema,
 	terminalToolCode,
 	workflowTag,
 	workflowToolSummary,
@@ -41,7 +39,7 @@ import {
 } from '@orkestrel/workflow'
 import { DatabaseError } from '@orkestrel/database'
 import { RelationError } from '@orkestrel/relation'
-import { createContract, integerShape, objectShape, stringShape } from '@orkestrel/contract'
+import { createContract, objectShape } from '@orkestrel/contract'
 import { describe, expect, it } from 'vitest'
 
 // tests/src/core/helpers.test.ts — mirrors src/core/helpers.ts. Pure, deterministic
@@ -416,7 +414,7 @@ describe('isColumnSpec — narrow to a bare ColumnKind or an { type, optional } 
 	})
 })
 
-describe('expandTables — compile a TableSpec into a @orkestrel/database TablesShape', () => {
+describe('expandTables — compile a TableSpec into a @orkestrel/database TableMap', () => {
 	it('maps each ColumnKind to the matching primitive shaper (guards good/bad values)', () => {
 		const tables = expandTables({
 			widgets: {
@@ -464,13 +462,20 @@ describe('isDatabaseDefinition — narrow an untrusted value to a DatabaseDefini
 		id: 'db-1',
 		driver: 'memory',
 		tables: { widgets: { columns: { name: 'string', qty: { type: 'integer', optional: true } } } },
-		keys: { widgets: 'name' },
+		primary: { widgets: 'name' },
+		indexes: { widgets: [['name'], ['name', 'qty']] },
+		version: 2.5,
 	}
 
-	it('accepts a full valid definition, with and without keys', () => {
+	it('accepts a full valid definition, with and without optional schema configuration', () => {
 		expect(isDatabaseDefinition(valid)).toBe(true)
-		const { keys: _keys, ...withoutKeys } = valid
-		expect(isDatabaseDefinition(withoutKeys)).toBe(true)
+		const {
+			primary: _primary,
+			indexes: _indexes,
+			version: _version,
+			...withoutConfiguration
+		} = valid
+		expect(isDatabaseDefinition(withoutConfiguration)).toBe(true)
 	})
 
 	it('rejects a missing or empty id / driver', () => {
@@ -489,9 +494,22 @@ describe('isDatabaseDefinition — narrow an untrusted value to a DatabaseDefini
 		).toBe(false)
 	})
 
-	it('rejects wrong-typed keys values', () => {
-		expect(isDatabaseDefinition({ ...valid, keys: 'nope' })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, keys: { widgets: 42 } })).toBe(false)
+	it('rejects wrong-typed primary values and the obsolete keys field', () => {
+		expect(isDatabaseDefinition({ ...valid, primary: 'nope' })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, primary: { widgets: 42 } })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, primary: { widgets: '' } })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, primary: undefined, keys: { widgets: 'name' } })).toBe(
+			false,
+		)
+	})
+
+	it('accepts empty index lists and rejects malformed groups or nonfinite versions', () => {
+		expect(isDatabaseDefinition({ ...valid, indexes: { widgets: [] } })).toBe(true)
+		expect(isDatabaseDefinition({ ...valid, indexes: { widgets: [[]] } })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, indexes: { widgets: [['']] } })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, indexes: { widgets: 'name' } })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, version: Number.NaN })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, version: Number.NEGATIVE_INFINITY })).toBe(false)
 	})
 
 	it('rejects non-objects', () => {
@@ -529,52 +547,52 @@ describe('databaseToolCode / relationToolCode — classify a caught error into i
 	})
 })
 
-describe('clampCriteria — clamp a records call to a row cap + build the probe criteria', () => {
-	it('an undefined criteria caps at the given cap with a probe of cap+1', () => {
-		const { criteria, limit } = clampCriteria(undefined, 100)
+describe('clampQuery — clamp a records call to a row cap + build the probe query', () => {
+	it('an undefined query caps at the given cap with a probe of cap+1', () => {
+		const { query, limit } = clampQuery(undefined, 100)
 		expect(limit).toBe(100)
-		expect(criteria.limit).toBe(101)
+		expect(query.limit).toBe(101)
 	})
 
 	it('a requested limit below the cap is honored (probe = requested+1)', () => {
-		const { criteria, limit } = clampCriteria({ limit: 10 }, 100)
+		const { query, limit } = clampQuery({ limit: 10 }, 100)
 		expect(limit).toBe(10)
-		expect(criteria.limit).toBe(11)
+		expect(query.limit).toBe(11)
 	})
 
 	it('a requested limit above the cap is clamped down to the cap', () => {
-		const { criteria, limit } = clampCriteria({ limit: 500 }, 100)
+		const { query, limit } = clampQuery({ limit: 500 }, 100)
 		expect(limit).toBe(100)
-		expect(criteria.limit).toBe(101)
+		expect(query.limit).toBe(101)
 	})
 
 	it('a limit of 0 floors at 0 (probe requests exactly 1 row)', () => {
-		const { criteria, limit } = clampCriteria({ limit: 0 }, 100)
+		const { query, limit } = clampQuery({ limit: 0 }, 100)
 		expect(limit).toBe(0)
-		expect(criteria.limit).toBe(1)
+		expect(query.limit).toBe(1)
 	})
 
 	it('preserves conditions / order / offset unchanged', () => {
-		const input: Criteria = {
+		const input: QueryInput = {
 			conditions: [{ column: 'x', operator: 'equals', values: [1], connector: 'and' }],
 			order: [{ column: 'x', direction: 'ascending' }],
 			offset: 5,
 			limit: 10,
 		}
-		const { criteria } = clampCriteria(input, 100)
-		expect(criteria.conditions).toEqual(input.conditions)
-		expect(criteria.order).toEqual(input.order)
-		expect(criteria.offset).toBe(5)
+		const { query } = clampQuery(input, 100)
+		expect(query.conditions).toEqual(input.conditions)
+		expect(query.order).toEqual(input.order)
+		expect(query.offset).toBe(5)
 	})
 })
 
-describe('criteriaOf — normalize parsed wire criteria into a live Criteria', () => {
+describe('queryOf — normalize a parsed wire query into a live QueryInput', () => {
 	it('returns undefined when the input is undefined', () => {
-		expect(criteriaOf(undefined)).toBeUndefined()
+		expect(queryOf(undefined)).toBeUndefined()
 	})
 
 	it('defaults an omitted condition connector to "and", preserving an explicit one', () => {
-		const result = criteriaOf({
+		const result = queryOf({
 			conditions: [
 				{ column: 'a', operator: 'equals', values: [1] },
 				{ column: 'b', operator: 'equals', values: [2], connector: 'or' },
@@ -587,7 +605,7 @@ describe('criteriaOf — normalize parsed wire criteria into a live Criteria', (
 	})
 
 	it('passes order / limit / offset through unchanged, omitting fields not supplied', () => {
-		const result = criteriaOf({
+		const result = queryOf({
 			order: [{ column: 'a', direction: 'descending' }],
 			limit: 5,
 			offset: 2,
@@ -600,44 +618,8 @@ describe('criteriaOf — normalize parsed wire criteria into a live Criteria', (
 		expect('conditions' in (result ?? {})).toBe(false)
 	})
 
-	it('an empty criteria object yields an empty (no-key) result', () => {
-		expect(criteriaOf({})).toEqual({})
-	})
-})
-
-describe('columnSchema — map a column name + ContractShape to a ColumnSchema', () => {
-	it('projects the expected shape for a non-optional column', () => {
-		expect(columnSchema('name', stringShape())).toEqual({
-			name: 'name',
-			type: 'text',
-			nullable: false,
-		})
-	})
-
-	it('projects the expected shape for an integer column', () => {
-		expect(columnSchema('qty', integerShape())).toEqual({
-			name: 'qty',
-			type: 'integer',
-			nullable: false,
-		})
-	})
-})
-
-describe('tableSchema — build a TableSchema from a table name + TableExport', () => {
-	it('projects name/primary/columns/indexes from a live table handle', () => {
-		const result: TableSchema = tableSchema('widgets', {
-			key: 'id',
-			columns: { id: stringShape(), qty: integerShape() },
-		})
-		expect(result).toEqual({
-			name: 'widgets',
-			primary: 'id',
-			columns: [
-				{ name: 'id', type: 'text', nullable: false },
-				{ name: 'qty', type: 'integer', nullable: false },
-			],
-			indexes: [],
-		})
+	it('an empty query object yields an empty (no-key) result', () => {
+		expect(queryOf({})).toEqual({})
 	})
 })
 
