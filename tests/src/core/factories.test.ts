@@ -1609,11 +1609,12 @@ describe('createDatabaseTool — migrate', () => {
 		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
 		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
 
+		const items = itemsTables().items
+		if (!isRecord(items) || !isRecord(items.columns)) throw new Error('unreachable')
 		const migratedTables = {
 			items: {
 				columns: {
-					...(itemsTables().items as Readonly<{ columns: Readonly<Record<string, unknown>> }>)
-						.columns,
+					...items.columns,
 					discount: { type: 'number', optional: true },
 				},
 			},
@@ -1647,9 +1648,9 @@ describe('createDatabaseTool — migrate', () => {
 		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
 		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
 
-		const { price: _price, ...remainingColumns } = (
-			itemsTables().items as Readonly<{ columns: Readonly<Record<string, unknown>> }>
-		).columns
+		const items = itemsTables().items
+		if (!isRecord(items) || !isRecord(items.columns)) throw new Error('unreachable')
+		const { price: _price, ...remainingColumns } = items.columns
 		const migratedTables = { items: { columns: remainingColumns } }
 		const result = await tool.execute({ operation: 'migrate', id: 'shop', tables: migratedTables })
 		expect(isRecord(result) ? result.migration : undefined).toEqual({
@@ -1888,11 +1889,12 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, migra
 		}
 		expect(collected).toHaveLength(total)
 
+		const items = itemsTables().items
+		if (!isRecord(items) || !isRecord(items.columns)) throw new Error('unreachable')
 		const migratedTables = {
 			items: {
 				columns: {
-					...(itemsTables().items as Readonly<{ columns: Readonly<Record<string, unknown>> }>)
-						.columns,
+					...items.columns,
 					tag: { type: 'string', optional: true },
 				},
 			},
@@ -3113,13 +3115,12 @@ describe('createEndpointTool', () => {
 			samples: [{ id: '1', name: 'Ada' }],
 			invoke: (args) => args,
 		})
-		const hostile = JSON.parse('{"id":"1","name":"Ada","__proto__":{"polluted":true}}') as Record<
-			string,
-			unknown
-		>
+		const hostile: unknown = JSON.parse('{"id":"1","name":"Ada","__proto__":{"polluted":true}}')
+		if (!isRecord(hostile)) throw new Error('unreachable')
 		const result = await tool.execute(hostile)
 		expect(isRecord(result) ? result.polluted : undefined).toBeUndefined()
-		expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+		const clean: Record<string, unknown> = {}
+		expect(clean.polluted).toBeUndefined()
 
 		const proxy = new Proxy(
 			{ id: '1', name: 'Ada' },

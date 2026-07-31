@@ -22,7 +22,12 @@ import {
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const WALK_DIRS = ['src', 'guides', 'tests']
-const SELF_SPECIFIERS = ['@orkestrel/toolbox', '@src/core', '@src/server']
+const SELF_SPECIFIERS = [
+	'@orkestrel/toolbox',
+	'@orkestrel/toolbox/server',
+	'@src/core',
+	'@src/server',
+]
 
 function walk(dir: string, acc: Record<string, string>): void {
 	for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
@@ -54,6 +59,7 @@ const manifest = parseManifest(readText('guides/README.md'), 'guides')
 // manifest entry's, per the specifier → module map below.
 const SPECIFIER_MODULES: Readonly<Record<string, string>> = {
 	'@orkestrel/toolbox': 'src/core',
+	'@orkestrel/toolbox/server': 'src/server',
 	'@src/core': 'src/core',
 	'@src/server': 'src/server',
 }

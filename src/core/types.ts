@@ -336,26 +336,27 @@ export interface AgentToolArguments {
 }
 
 /**
- * The error CODE a thrown {@link import('./errors.js').ToolboxError} carries — the SAME
- * two-code shape `@orkestrel/workflow`'s `WorkflowError` uses for its own tool guard, kept
- * distinct per package (AGENTS §14: a thrown, typed, code-bearing error, never a `{ error }`
- * return).
+ * The seven-value machine-readable code a thrown
+ * {@link import('./errors.js').ToolboxError} carries (AGENTS §14: a thrown, typed,
+ * code-bearing error, never a `{ error }` return).
  *
  * @remarks
- * `TOOL` — malformed / unresolvable call args (a missing `task`, no resolvable `provider`).
+ * `TOOL` — malformed calls and package-owned resolution or configuration failures, including
+ * unknown tools, terminals, databases, drivers, relation managers, or models; invalid prompt
+ * choices or include paths; disabled readonly mutations; and invalid infer/endpoint inputs.
  * `DEPTH` — the delegation would exceed {@link import('./constants.js').AGENT_TOOL_DEPTH}, or
  * the resolved agent is already an ancestor (a cycle).
  * `DEADLOCK` — an `ask` call ({@link import('./factories.js').createPromptTool}) would form a
  * prompt cycle (`TerminalManagerInterface.ask`, `@orkestrel/terminal`, rejects with its own
  * `TerminalError('DEADLOCK')`, re-surfaced here).
- * `EXPIRE` — the addressed prompt expired before it was answered.
+ * `EXPIRE` — an `ask` call's addressed prompt expired before it was answered.
  * `ANSWER` — {@link import('./factories.js').createAnswerTool}'s answer call failed to apply
- * (an unknown prompt id, a rejected value, or the terminal itself unknown —
- * `TerminalAnswerResult.error`, `@orkestrel/terminal`).
+ * because the prompt id is unknown or already settled, or the terminal manager rejected the
+ * answer.
  * `DATABASE` — a typed `@orkestrel/database` failure (`DatabaseError`), re-surfaced with the
- * granular {@link import('@orkestrel/database').DatabaseErrorCode} carried in `context`.
+ * granular {@link import('@orkestrel/database').DatabaseErrorCode} carried in `context.code`.
  * `RELATION` — a typed `@orkestrel/relation` failure (`RelationError`), re-surfaced with the
- * granular {@link import('@orkestrel/relation').RelationErrorCode} carried in `context`.
+ * granular {@link import('@orkestrel/relation').RelationErrorCode} carried in `context.code`.
  */
 export type ToolboxErrorCode =
 	| 'TOOL'

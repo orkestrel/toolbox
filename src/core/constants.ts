@@ -40,7 +40,7 @@ export const AGENT_TOOL_DEPTH = 8
 /**
  * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createAgentTool}
  * advertises in place of {@link AGENT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
  * {@link import('./factories.js').createDescribeTool}.
  */
@@ -148,7 +148,7 @@ export const WORKFLOW_TOOL_NESTED_EXAMPLE: WorkflowDefinition = Object.freeze({
 /**
  * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createWorkflowTool}
  * advertises in place of {@link WORKFLOW_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
  * {@link import('./factories.js').createDescribeTool}.
  */
@@ -180,7 +180,7 @@ export const WORKFLOW_TOOL_DESCRIPTION = [
 export const WORKSPACE_TOOL_NAME = 'workspace'
 
 /**
- * A valid `WorkspaceOperation` (`@orkestrel/agent`) object — the canonical example embedded
+ * A valid {@link import('./types.js').WorkspaceOperation} object — the canonical example embedded
  * VERBATIM in {@link WORKSPACE_TOOL_DESCRIPTION}.
  *
  * @remarks
@@ -208,7 +208,7 @@ export const WORKSPACE_TOOL_EXAMPLE: WorkspaceOperation = Object.freeze({
 /**
  * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createWorkspaceTool}
  * advertises in place of {@link WORKSPACE_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
  * {@link import('./factories.js').createDescribeTool}.
  */
@@ -278,7 +278,7 @@ export const PROMPT_TOOL_NAME = 'ask'
 /**
  * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createPromptTool}
  * advertises in place of {@link PROMPT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
  * {@link import('./factories.js').createDescribeTool}.
  */
@@ -308,7 +308,7 @@ export const ANSWER_TOOL_NAME = 'answer'
 /**
  * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createAnswerTool}
  * advertises in place of {@link ANSWER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
  * {@link import('./factories.js').createDescribeTool}.
  */
@@ -463,7 +463,7 @@ export const INFER_TOOL_NAME = 'infer'
 /**
  * The lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createInferTool}
  * advertises in place of {@link INFER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/agent`) advertises `summary ?? description`, so this one-sentence text stands in
+ * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
  * for the full teaching description; the full text stays retrievable via
  * {@link import('./factories.js').createDescribeTool}.
  */
