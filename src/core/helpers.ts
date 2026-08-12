@@ -620,13 +620,15 @@ export function relationModelOf(manager: RelationManagerInterface, name: string)
 export function queryOf(
 	query:
 		| Readonly<{
-				conditions?: readonly Readonly<{
-					column: string
-					operator: Condition['operator']
-					values: readonly unknown[]
-					connector?: ConditionConnector
-				}>[]
-				order?: readonly Readonly<{ column: string; direction: OrderDirection }>[]
+				conditions?: ReadonlyArray<
+					Readonly<{
+						column: string
+						operator: Condition['operator']
+						values: readonly unknown[]
+						connector?: ConditionConnector
+					}>
+				>
+				order?: ReadonlyArray<Readonly<{ column: string; direction: OrderDirection }>>
 				limit?: number
 				offset?: number
 		  }>
