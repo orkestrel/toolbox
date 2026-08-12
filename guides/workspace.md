@@ -5,7 +5,7 @@
 > `replace`, `move` — mints a new `FileInterface` value and puts it back under its path, so a file
 > is a value a caller can hold and compare, never a handle that changes underneath it. `Workspace`
 > is that map; `WorkspaceManager` keeps workspaces by id with one active selection; a
-> `WorkspaceStoreInterface` persists snapshots. Source: [`src/core`](../../src/core). Published
+> `WorkspaceStoreInterface` persists snapshots. Source: [`src/core`](../src/core). Published
 > through `@orkestrel/workspace`.
 >
 > **A workspace is not a filesystem.** There is no disk, no `node:fs`, no watcher, no
@@ -29,7 +29,7 @@ data those three exchange, plus the pure functions that derive it.
 
 ### Contracts
 
-The data shapes, from [`types.ts`](../../src/core/types.ts). Every property is readonly, and an
+The data shapes, from [`types.ts`](../src/core/types.ts). Every property is readonly, and an
 absent optional field is simply absent.
 
 | Name                        | Kind      | Shape / Purpose                                                                                                                                      |
@@ -63,7 +63,7 @@ absent optional field is simply absent.
 
 ### Errors
 
-From [`errors.ts`](../../src/core/errors.ts). A refusal is an exception; everything else this
+From [`errors.ts`](../src/core/errors.ts). A refusal is an exception; everything else this
 package can answer, it answers with a value.
 
 | Name               | Kind     | Signature                                     | Behavior                                                                                 |
@@ -73,7 +73,7 @@ package can answer, it answers with a value.
 
 ### Helpers
 
-The pure leaves, from [`helpers.ts`](../../src/core/helpers.ts). Each one is exported and tested
+The pure leaves, from [`helpers.ts`](../src/core/helpers.ts). Each one is exported and tested
 on its own, and the classes compose them rather than hiding them.
 
 | Name                  | Kind     | Signature                                                     | Behavior                                                                       |
@@ -97,7 +97,7 @@ on its own, and the classes compose them rather than hiding them.
 
 ### Factories
 
-From [`factories.ts`](../../src/core/factories.ts) — the constructor-free way to reach every
+From [`factories.ts`](../src/core/factories.ts) — the constructor-free way to reach every
 class. Each returns the interface, not the class.
 
 | Name                           | Kind     | Signature                                                          | Behavior                                                                                 |
@@ -113,7 +113,7 @@ class. Each returns the interface, not the class.
 ### `Workspace`
 
 The implementing class of `WorkspaceInterface`, from
-[`Workspace.ts`](../../src/core/workspaces/Workspace.ts). One insertion-ordered path map is its
+[`Workspace.ts`](../src/core/workspaces/Workspace.ts). One insertion-ordered path map is its
 whole state, and `files()` and `snapshot()` project fresh arrays out of it rather than exposing a
 view. Its constructor takes one optional `WorkspaceOptions` value. The `seed` iterable seats
 pre-built files by each value's `path`, silently and with the last duplicate path winning. That
@@ -124,7 +124,7 @@ and nothing else. See
 ### `WorkspaceManager`
 
 The implementing class of `WorkspaceManagerInterface`, from
-[`WorkspaceManager.ts`](../../src/core/workspaces/WorkspaceManager.ts). It holds an
+[`WorkspaceManager.ts`](../src/core/workspaces/WorkspaceManager.ts). It holds an
 insertion-ordered id map plus one active id, and resolves `active` through that map on every read
 so the pointer can never go stale. It owns no emitter: observation belongs to each workspace, and
 the manager only forwards listener defaults into the workspaces it creates. See
@@ -133,14 +133,14 @@ the manager only forwards listener defaults into the workspaces it creates. See
 ### `MemoryWorkspaceStore`
 
 The process-local implementation of `WorkspaceStoreInterface`, from
-[`MemoryWorkspaceStore.ts`](../../src/core/workspaces/stores/MemoryWorkspaceStore.ts). A plain map
+[`MemoryWorkspaceStore.ts`](../src/core/workspaces/stores/MemoryWorkspaceStore.ts). A plain map
 behind the async contract: snapshots live as long as the process does. See
 [`## Methods`](#methods) for the contract it satisfies.
 
 ### `DatabaseWorkspaceStore`
 
 The durable implementation of `WorkspaceStoreInterface`, from
-[`DatabaseWorkspaceStore.ts`](../../src/core/workspaces/stores/DatabaseWorkspaceStore.ts). It
+[`DatabaseWorkspaceStore.ts`](../src/core/workspaces/stores/DatabaseWorkspaceStore.ts). It
 writes each snapshot as one opaque column of a `WorkspaceSnapshotRow` through `@orkestrel/database`
 and narrows the column back with `isWorkspaceSnapshot` on the way out, so a row holding anything
 else reads as absent rather than as a broken workspace. How durable it actually is belongs to the
@@ -519,29 +519,29 @@ here reaches outside the process to check.
 
 ## Tests
 
-- [`helpers.test.ts`](../../tests/src/core/helpers.test.ts) — content narrowing, sizing, line
+- [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — content narrowing, sizing, line
   counting, range validity and clamping, offsets, splicing, and escaping.
-- [`factories.test.ts`](../../tests/src/core/factories.test.ts) — derived metadata, frozen values,
+- [`factories.test.ts`](../tests/src/core/factories.test.ts) — derived metadata, frozen values,
   and each factory's working instance.
-- [`Workspace.test.ts`](../../tests/src/core/workspaces/Workspace.test.ts) — the edit surface end
+- [`Workspace.test.ts`](../tests/src/core/workspaces/Workspace.test.ts) — the edit surface end
   to end: state transitions, clamping, the modality matrix over a real binary file, search and
   replace semantics, insertion order, events and listener isolation, and the construction seed.
-- [`WorkspaceManager.test.ts`](../../tests/src/core/workspaces/WorkspaceManager.test.ts) —
+- [`WorkspaceManager.test.ts`](../tests/src/core/workspaces/WorkspaceManager.test.ts) —
   registration, the active pointer, listener defaults and overrides, and the store round trip
   through `open` and `save`.
-- [`MemoryWorkspaceStore.test.ts`](../../tests/src/core/workspaces/stores/MemoryWorkspaceStore.test.ts)
+- [`MemoryWorkspaceStore.test.ts`](../tests/src/core/workspaces/stores/MemoryWorkspaceStore.test.ts)
   and
-  [`DatabaseWorkspaceStore.test.ts`](../../tests/src/core/workspaces/stores/DatabaseWorkspaceStore.test.ts)
+  [`DatabaseWorkspaceStore.test.ts`](../tests/src/core/workspaces/stores/DatabaseWorkspaceStore.test.ts)
   — one shared store contract battery run against both implementations, plus each one's specific
   path.
 
 ## See also
 
-- [`README.md`](../README.md) — the guides index.
+- [`README.md`](README.md) — the guides index.
 - [`emitter.md`](emitter.md) — the dependency mirror for `@orkestrel/emitter`, whose isolation
   guarantees back every workspace event.
 - [`database.md`](database.md) — the dependency mirror for `@orkestrel/database`, the table behind
   `DatabaseWorkspaceStore`.
 - [`contract.md`](contract.md) — the dependency mirror for `@orkestrel/contract`, whose total
   guards back the overload narrowing and the storage-boundary guards.
-- [`AGENTS.md`](../../AGENTS.md) — the repository's coding and documentation contract.
+- [`AGENTS.md`](../AGENTS.md) — the repository's coding and documentation contract.
