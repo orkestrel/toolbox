@@ -4,14 +4,14 @@ A dual-axis index into this repository's guides — by concept, and by directory
 
 ## By concept
 
-| Concept | Spec                               | Source                                                   | Tests                                                                            |
-| ------- | ---------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Concept | Spec                       | Source                                                   | Tests                                                                            |
+| ------- | -------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | Toolbox | [`toolbox.md`](toolbox.md) | [`src/core`](../src/core), [`src/server`](../src/server) | [`tests/src/core`](../tests/src/core), [`tests/src/server`](../tests/src/server) |
 
 ## By directory
 
-| Directory    | Guide                              |
-| ------------ | ---------------------------------- |
+| Directory    | Guide                      |
+| ------------ | -------------------------- |
 | `src/core`   | [`toolbox.md`](toolbox.md) |
 | `src/server` | [`toolbox.md`](toolbox.md) |
 
