@@ -7,6 +7,7 @@ import type {
 	ProviderResult,
 } from '@orkestrel/agent'
 import type { DatabaseInterface } from '@orkestrel/database'
+import type { DatabaseDefinition } from '@src/core'
 import type { JSONRecord } from '@orkestrel/contract'
 import type {
 	TaskControllerInterface,
@@ -27,6 +28,34 @@ export function createTestDatabase(): DatabaseInterface {
 		driver: createMemoryDriver(),
 		tables: {},
 	})
+}
+
+/**
+ * Build the ONE full {@link DatabaseDefinition} fixture the definition-store twins both assert
+ * against — mixed column forms, a `primary` map, single- and multi-column `indexes`, and a
+ * non-integer `version`, so a round-trip proves every field survives rather than only the flat
+ * ones (AGENTS §16.1 — one shared data builder, not a per-file hand-roll).
+ *
+ * @param id - The definition id; defaults to `shop`
+ * @returns A complete definition with every optional field populated
+ */
+export function createTestDefinition(id = 'shop'): DatabaseDefinition {
+	return {
+		id,
+		driver: 'memory',
+		tables: {
+			items: {
+				columns: {
+					id: 'string',
+					price: { type: 'number', optional: true },
+					name: 'string',
+				},
+			},
+		},
+		primary: { items: 'id' },
+		indexes: { items: [['name'], ['name', 'price']] },
+		version: 3.5,
+	}
 }
 
 /**

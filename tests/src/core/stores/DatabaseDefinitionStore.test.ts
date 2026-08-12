@@ -7,38 +7,20 @@ import type {
 import type { TableInterface } from '@orkestrel/database'
 import {
 	createDatabaseDefinitionStore,
-	createMemoryDefinitionStore,
 	DatabaseDefinitionStore,
 	isDatabaseDefinition,
 } from '@src/core'
 import { rawShape, stringShape } from '@orkestrel/contract'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
+import { createTestDefinition } from '../../../setup.js'
 import { describe, expect, it } from 'vitest'
 
-// tests/src/core/stores.test.ts — mirrors src/core/stores/{MemoryDefinitionStore,DatabaseDefinitionStore}.ts.
-// Both twins share the SAME `DefinitionStoreInterface` contract, so every scenario below runs
-// against BOTH twins to pin identical behavior (AGENTS §5 — Stores: point-access, own-id set,
-// no-op delete-of-absent). Database-only scenarios (malformed blob, driver-less construction)
-// follow in their own section.
-
-function fullDefinition(id = 'shop'): DatabaseDefinition {
-	return {
-		id,
-		driver: 'memory',
-		tables: {
-			items: {
-				columns: {
-					id: 'string',
-					price: { type: 'number', optional: true },
-					name: 'string',
-				},
-			},
-		},
-		primary: { items: 'id' },
-		indexes: { items: [['name'], ['name', 'price']] },
-		version: 3.5,
-	}
-}
+// tests/src/core/stores/DatabaseDefinitionStore.test.ts — mirrors src/core/stores/DatabaseDefinitionStore.ts.
+// The store is one half of a twin pair: it shares the `DefinitionStoreInterface` contract with
+// MemoryDefinitionStore, so the conformance scenarios below are the SAME contract scenarios its
+// twin's test runs (AGENTS §5 — Stores: point-access, own-id set, no-op delete-of-absent),
+// asserted here against the driver-pluggable tier. Database-only scenarios (default driver,
+// malformed stored blob) follow in their own sections.
 
 // Builds a fresh DatabaseDefinitionStore PLUS a handle to its underlying table, so a test can
 // write junk directly into storage (bypassing the store's own `set`) to prove a malformed
@@ -56,25 +38,17 @@ function buildDatabaseStoreWithTable(): {
 	return { store: new DatabaseDefinitionStore(table), table }
 }
 
-const twins: ReadonlyArray<{
-	readonly name: string
-	readonly build: () => DefinitionStoreInterface
-}> = [
-	{ name: 'MemoryDefinitionStore', build: () => createMemoryDefinitionStore() },
-	{ name: 'DatabaseDefinitionStore', build: () => createDatabaseDefinitionStore() },
-]
-
-describe.each(twins)('$name — DefinitionStoreInterface conformance', ({ build }) => {
+describe('DatabaseDefinitionStore — DefinitionStoreInterface conformance', () => {
 	it('set→get round-trips the FULL definition (mixed columns, primary, indexes, and version)', async () => {
-		const store = build()
-		const definition = fullDefinition()
+		const store = createDatabaseDefinitionStore()
+		const definition = createTestDefinition()
 		await store.set(definition)
 		expect(await store.get('shop')).toEqual(definition)
 	})
 
 	it('set upserts by id — a second set for the SAME id replaces the first', async () => {
-		const store = build()
-		await store.set(fullDefinition())
+		const store = createDatabaseDefinitionStore()
+		await store.set(createTestDefinition())
 		const replacement: DatabaseDefinition = {
 			id: 'shop',
 			driver: 'memory',
@@ -85,24 +59,24 @@ describe.each(twins)('$name — DefinitionStoreInterface conformance', ({ build 
 	})
 
 	it('get of an absent id resolves undefined', async () => {
-		const store = build()
+		const store = createDatabaseDefinitionStore()
 		expect(await store.get('missing')).toBeUndefined()
 	})
 
 	it('delete removes a stored definition', async () => {
-		const store = build()
-		await store.set(fullDefinition())
+		const store = createDatabaseDefinitionStore()
+		await store.set(createTestDefinition())
 		await store.delete('shop')
 		expect(await store.get('shop')).toBeUndefined()
 	})
 
 	it('delete of an absent id is a silent no-op (does not throw)', async () => {
-		const store = build()
+		const store = createDatabaseDefinitionStore()
 		await expect(store.delete('never-existed')).resolves.toBeUndefined()
 	})
 
 	it('a definition with no `primary` field round-trips WITHOUT gaining one', async () => {
-		const store = build()
+		const store = createDatabaseDefinitionStore()
 		const definition: DatabaseDefinition = {
 			id: 'no-primary',
 			driver: 'memory',
@@ -127,13 +101,13 @@ describe.each(twins)('$name — DefinitionStoreInterface conformance', ({ build 
 		const indexes: Record<string, string[][]> = { items: [['name'], ['name', 'price']] }
 		const definition = { id: 'shop', driver: 'memory', tables, primary, indexes, version: 3.5 }
 
-		const store = build()
+		const store = createDatabaseDefinitionStore()
 		await store.set(definition)
 		columns.name = 'boolean'
 		primary.items = 'name'
 		indexes.items = [['price']]
 		definition.version = 8
-		expect(await store.get('shop')).toEqual(fullDefinition())
+		expect(await store.get('shop')).toEqual(createTestDefinition())
 
 		const returned = await store.get('shop')
 		if (
@@ -147,15 +121,15 @@ describe.each(twins)('$name — DefinitionStoreInterface conformance', ({ build 
 		expect(Reflect.set(returned.primary, 'items', 'changed')).toBe(true)
 		expect(Reflect.set(returned.indexes, 'items', [['changed']])).toBe(true)
 		expect(Reflect.set(returned, 'version', 9)).toBe(true)
-		expect(await store.get('shop')).toEqual(fullDefinition())
+		expect(await store.get('shop')).toEqual(createTestDefinition())
 	})
 })
 
 describe('createDatabaseDefinitionStore — default driver', () => {
 	it('constructs and works with NO driver argument (defaults to an in-memory driver)', async () => {
 		const store = createDatabaseDefinitionStore()
-		await store.set(fullDefinition('default-driver'))
-		expect(await store.get('default-driver')).toEqual(fullDefinition('default-driver'))
+		await store.set(createTestDefinition('default-driver'))
+		expect(await store.get('default-driver')).toEqual(createTestDefinition('default-driver'))
 	})
 })
 
