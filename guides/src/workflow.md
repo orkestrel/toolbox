@@ -1380,7 +1380,7 @@ A successful run fires `start` → `unit`/`settle` per unit → `finish`. A fail
 
 ## Tests
 
-- [`tests/guides/parity.test.ts`](../../tests/guides/src/parity.test.ts) — the `## Surface` ↔ source bijection across `src/core` (value + type exports), plus each behavioral interface's `## Methods` ↔ source-method bijection and each implementing-class ↔ interface method parity.
+- [`tests/guides.test.ts`](../../tests/guides.test.ts) — the `## Surface` ↔ source bijection across `src/core` (value + type exports), plus each behavioral interface's `## Methods` ↔ source-method bijection and each implementing-class ↔ interface method parity.
 - [`tests/policy.test.ts`](../../tests/policy.test.ts) — coding policy rejects private `@src/*` imports in TSDoc examples while accepting legitimate source imports and identical text in ordinary non-TSDoc comments.
 - [`tests/src/core/helpers.test.ts`](../../tests/src/core/helpers.test.ts) — status/lineage/snapshot helpers, bounded silence inheritance, and `scheduleHost` setup/cancellation race arbitration with exact falsy failures, hostile caller signal methods, and throwing cancellation closures after caller abort or host failure.
 - [`tests/src/core/cloners.test.ts`](../../tests/src/core/cloners.test.ts) — immutable activity cloning, hostile/revoked proxy containment, one-read getters, no alias retention, stamp-vs-restore `updated` handling, and exact wrong-storage-key `RESTORE` evidence.
