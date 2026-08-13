@@ -83,7 +83,7 @@
 		"@orkestrel/database": "^0.0.8",
 		"@orkestrel/relation": "^0.0.8",
 		"@orkestrel/server": "^0.0.12",
-		"@orkestrel/terminal": "^0.0.6",
+		"@orkestrel/terminal": "^0.0.7",
 		"@orkestrel/tool": "^0.0.10",
 		"@orkestrel/workflow": "^0.0.11",
 		"@orkestrel/workspace": "^0.0.4"
