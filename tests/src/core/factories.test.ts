@@ -55,13 +55,12 @@ import { createTerminalManager, TerminalError } from '@orkestrel/terminal'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { belongsTo, createRelationManager, hasMany, hasThrough } from '@orkestrel/relation'
 import { describe, expect, it } from 'vitest'
+import { createRecorder, waitForDelay } from '@orkestrel/test'
 import {
-	createRecorder,
 	createTestTaskController,
 	MalformedAgent,
 	RecordingWorkflowStore,
 	ScriptedProvider,
-	waitForDelay,
 } from '../../setup.js'
 
 // tests/src/core/factories.test.ts — mirrors src/core/factories.ts with real
