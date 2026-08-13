@@ -47,11 +47,10 @@ Concrete `DefinitionStoreInterface` implementations (AGENTS' Stores rule, point-
 These implementation classes are available when consumers need direct lifecycle composition.
 The factories `createDatabaseTool` and `createTerminalRoutes` remain the compact entry points.
 
-| API                  | Kind  | Summary                                                                                                                                           |
-| -------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DatabaseResolver`   | class | Resolve and cache a database handle from the tool's live handles, stored definitions, driver registry, and optional generator.                    |
-| `TerminalRoutes`     | class | Own the shared terminal-route options and bound GET/POST handlers projected by `createTerminalRoutes`.                                            |
-| `TerminalConnection` | class | Own one SSE connection's replay, listener subscriptions, keepalive revalidation, self-healing teardown, and exact optional wire-id serialization. |
+| API                | Kind  | Summary                                                                                                                        |
+| ------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `DatabaseResolver` | class | Resolve and cache a database handle from the tool's live handles, stored definitions, driver registry, and optional generator. |
+| `TerminalRoutes`   | class | Own the shared terminal-route options and bound GET/POST handlers projected by `createTerminalRoutes`.                         |
 
 ### Errors
 
@@ -251,12 +250,6 @@ Every `create*Tool` factory returns a plain `ToolInterface` (`@orkestrel/tool`'s
 | -------- | -------------------------- | ----------------------------------------------------------- |
 | `routes` | `readonly TerminalRoute[]` | Project the bound GET stream and POST answer route records. |
 
-#### `TerminalConnection`
-
-| Method | Returns    | Behavior                                                                 |
-| ------ | ---------- | ------------------------------------------------------------------------ |
-| `open` | `Response` | Replay pending prompts, subscribe to live events, and arm the keepalive. |
-
 ### Composing lifecycle entities directly
 
 ```ts
@@ -277,27 +270,12 @@ await resolver.resolve('shop')
 ```
 
 ```ts
-import type { StreamInterface } from '@orkestrel/server'
-import type { TerminalManagerInterface, TimerHandler } from '@orkestrel/terminal'
-import { TerminalConnection, TerminalRoutes } from '@orkestrel/toolbox/server'
+import type { TerminalManagerInterface } from '@orkestrel/terminal'
+import { TerminalRoutes } from '@orkestrel/toolbox/server'
 
 declare const manager: TerminalManagerInterface
-declare const request: Request
-declare const stream: StreamInterface
-declare const accepts: (presented: string | undefined) => boolean
-declare const timer: TimerHandler
 
-new TerminalRoutes(manager).routes()
-const connection = new TerminalConnection(
-	manager,
-	'assistant',
-	request,
-	stream,
-	accepts,
-	timer,
-	15_000,
-)
-connection.open()
+const routes = new TerminalRoutes(manager).routes()
 ```
 
 ## Contract

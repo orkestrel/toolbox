@@ -11,13 +11,9 @@ import { HEADER_TOKEN, serializeExpire, serializePending } from '@orkestrel/term
 /**
  * Own one terminal SSE connection's replay, subscriptions, keepalive, and teardown.
  *
- * @example
- * ```ts
- * import { TerminalConnection } from '@orkestrel/toolbox/server'
- *
- * const connection = new TerminalConnection(manager, name, request, stream, accepts, timer, 15_000)
- * const response = connection.open()
- * ```
+ * Internal to this module: `TerminalRoutes` builds the `accepts` predicate from its own token
+ * option and opens the stream, so no consumer can construct one. Reach this behaviour through
+ * `createTerminalRoutes`.
  */
 export class TerminalConnection {
 	readonly #manager: TerminalManagerInterface
