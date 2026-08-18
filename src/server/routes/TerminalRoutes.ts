@@ -5,7 +5,9 @@ import type {
 	TerminalRoutesOptions,
 	TerminalToken,
 } from '../types.js'
-import { defaultTimer, HEADER_TOKEN, isAnswerPayload } from '@orkestrel/terminal'
+import { defaultTimer, HEADER_TOKEN } from '@orkestrel/terminal'
+import { isFormValues } from '@orkestrel/form'
+import { isNonEmptyString, isRecord } from '@orkestrel/contract'
 import {
 	collectRequestBody,
 	ContentTooLargeError,
@@ -124,11 +126,13 @@ export class TerminalRoutes {
 		} catch {
 			return new Response(null, { status: 400 })
 		}
-		if (!isAnswerPayload(body)) return new Response(null, { status: 422 })
+		if (!isRecord(body) || !isNonEmptyString(body.id) || !isFormValues(body.values)) {
+			return new Response(null, { status: 422 })
+		}
 
-		const result = this.#manager.answer(name, body.id, body.value)
-		if (result.success) return new Response(null, { status: 204 })
-		if (result.error === 'terminal') return new Response(result.error, { status: 404 })
-		return new Response(result.error, { status: 422 })
+		const result = this.#manager.answer(name, body.id, body.values)
+		if (result.success) return Response.json(result)
+		if (result.error.reason === 'terminal') return Response.json(result, { status: 404 })
+		return Response.json(result, { status: 422 })
 	}
 }

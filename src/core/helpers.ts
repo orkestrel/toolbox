@@ -1,5 +1,4 @@
 import type { WorkflowDefinition, WorkflowResult } from '@orkestrel/workflow'
-import type { PromptType } from '@orkestrel/terminal'
 import type { TableMap } from '@orkestrel/database'
 import type { DatabaseErrorCode } from '@orkestrel/database'
 import type {
@@ -288,55 +287,6 @@ export function expandSteps(flat: WorkflowSteps): WorkflowDefinition {
 	})
 }
 
-// === Terminal-tool answer coercion + error-code mapping (the tool's answer surface)
-
-/**
- * Normalize an LLM-supplied answer `value` to the type {@link PromptType} `form` expects, so a
- * caller that only ever emits strings can still answer a typed prompt.
- *
- * @remarks
- * `'confirm'` coerces to a `boolean` — a `boolean` passes through, and the strings `'true'` /
- * `'false'` (case-insensitively) map to it; any other string is truthy-coerced via
- * `Boolean(value)`. `'checkbox'` coerces to `readonly string[]` — an array passes through
- * (stringifying each entry), a comma-separated string splits + trims into one, and any other
- * single (non-comma) string becomes a one-item array. Every other form (`'input'` / `'password'`
- * / `'select'` / `'editor'`) coerces to a plain `string` — a string passes through verbatim; a
- * non-string, non-object scalar (`number` / `boolean`) stringifies via `String(value)`; an
- * object or array (no lossless string form) falls back to `''` rather than serializing garbage.
- * Pure and total — never throws.
- *
- * @param form - The {@link PromptType} the answer is being coerced FOR
- * @param value - The raw, LLM-supplied answer value
- * @returns The coerced answer — `boolean` for `'confirm'`, `readonly string[]` for `'checkbox'`,
- *   `string` otherwise
- */
-export function coerceAnswer(
-	form: PromptType,
-	value: unknown,
-): string | boolean | readonly string[] {
-	if (form === 'confirm') {
-		if (typeof value === 'boolean') return value
-		if (typeof value === 'string') {
-			const lower = value.trim().toLowerCase()
-			if (lower === 'true') return true
-			if (lower === 'false') return false
-		}
-		return Boolean(value)
-	}
-	if (form === 'checkbox') {
-		if (Array.isArray(value)) return value.map((entry) => String(entry))
-		if (typeof value === 'string') {
-			if (value.includes(',')) return value.split(',').map((entry) => entry.trim())
-			return [value]
-		}
-		return [String(value)]
-	}
-	// The remaining text-shaped forms ('input'/'password'/'select'/'editor').
-	if (typeof value === 'string') return value
-	if (typeof value === 'object' && value !== null) return ''
-	return String(value)
-}
-
 /**
  * Map a caught error to the {@link ToolboxErrorCode} the terminal-tool factory should throw
  * with — the pure classification step of that factory's error handling.
@@ -346,8 +296,8 @@ export function coerceAnswer(
  * value returns `undefined`, telling the caller this mapper does not apply (rethrow / handle
  * otherwise). For a genuine `TerminalError`, `'DEADLOCK'` maps to `'DEADLOCK'`, `'EXPIRE'` maps
  * to `'EXPIRE'`, and every other {@link import('@orkestrel/terminal').TerminalErrorCode}
- * (`'TARGET'`, `'CANCEL'`, `'DRIVER'`) maps to the generic `'TOOL'` code. The mapper only
- * classifies — the factory performs the actual throw.
+ * (`'TARGET'`, `'LIMIT'`, `'CANCEL'`, `'DRIVER'`, `'DESTROYED'`) maps to the generic `'TOOL'`
+ * code. The mapper only classifies — the factory performs the actual throw.
  *
  * @param error - The value caught from a terminal-manager operation (`ask` / `answer` / …)
  * @returns The mapped {@link ToolboxErrorCode}, or `undefined` if `error` is not a `TerminalError`

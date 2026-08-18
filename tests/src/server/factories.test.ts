@@ -2,6 +2,7 @@ import type { TerminalRoute } from '@src/server'
 import { DEFAULT_BODY_LIMIT } from '@orkestrel/server'
 import { HEADER_TOKEN } from '@orkestrel/terminal'
 import { createTerminalManager } from '@orkestrel/terminal'
+import { createForm } from '@orkestrel/form'
 import { createTerminalRoutes } from '@src/server'
 import { createTestTimer, readAvailable } from '../../setupServer.js'
 import { describe, expect, it } from 'vitest'
@@ -18,6 +19,10 @@ function findRoute(
 	const route = routes.find((r) => r.method === method)
 	if (route === undefined) throw new Error(`no ${method} route`)
 	return route
+}
+
+function createTextForm(label: string) {
+	return createForm({ fields: [{ control: 'text', name: 'value', label }] })
 }
 
 describe('createTerminalRoutes', () => {
@@ -73,7 +78,7 @@ describe('createTerminalRoutes', () => {
 		const get = findRoute(routes, 'GET')
 
 		// Park a prompt BEFORE opening the stream so it is replayed.
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 
 		const controller = new AbortController()
@@ -90,7 +95,7 @@ describe('createTerminalRoutes', () => {
 		expect(replayed).toContain('name?')
 
 		// Live pending: ask a second prompt after the stream opened.
-		const asked2 = manager.ask('human', 'assistant', 'input', { message: 'again?' })
+		const asked2 = manager.ask('human', 'assistant', createTextForm('again?'))
 		asked2.catch(() => {})
 		const live = await readAvailable(response)
 		expect(live).toContain('again?')
@@ -110,13 +115,13 @@ describe('createTerminalRoutes', () => {
 		await readAvailable(response)
 	})
 
-	it('POST 204s and resolves the parked ask on a valid answer', async () => {
+	it('POST 200s and resolves the parked ask on a valid answer', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager)
 		const post = findRoute(routes, 'POST')
 
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		const pending = manager.pending('assistant')
 		const id = pending[0]?.id
 		if (id === undefined) throw new Error('expected a parked prompt')
@@ -124,12 +129,46 @@ describe('createTerminalRoutes', () => {
 		const response = await post.handler(
 			new Request('http://x/terminals/assistant', {
 				method: 'POST',
-				body: JSON.stringify({ id, value: 'Ada' }),
+				body: JSON.stringify({ id, values: { value: 'Ada' } }),
 			}),
 			{ params: { name: 'assistant' } },
 		)
-		expect(response.status).toBe(204)
-		await expect(asked).resolves.toBe('Ada')
+		expect(response.status).toBe(200)
+		await expect(asked).resolves.toEqual({ value: 'Ada' })
+	})
+
+	it('POST 422 preserves rejected form errors in the response body', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const routes = createTerminalRoutes(manager)
+		const post = findRoute(routes, 'POST')
+		const asked = manager.ask(
+			'human',
+			'assistant',
+			createForm({
+				fields: [{ control: 'text', name: 'value', rule: { required: true } }],
+			}),
+		)
+		const [form] = manager.pending('assistant')
+		if (form === undefined) throw new Error('expected a parked form')
+
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id: form.id, values: {} }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+
+		expect(response.status).toBe(422)
+		expect(await response.json()).toMatchObject({
+			error: {
+				reason: 'rejected',
+				errors: [{ field: 'value', message: 'This field is required', rule: 'required' }],
+			},
+		})
+		manager.answer('assistant', form.id, { value: 'Ada' })
+		await expect(asked).resolves.toEqual({ value: 'Ada' })
 	})
 
 	it('POST 422s on a malformed body', async () => {
@@ -166,7 +205,7 @@ describe('createTerminalRoutes', () => {
 		const response = await post.handler(
 			new Request('http://x/terminals/ghost', {
 				method: 'POST',
-				body: JSON.stringify({ id: 'x', value: 1 }),
+				body: JSON.stringify({ id: 'x', values: { value: 1 } }),
 			}),
 			{ params: { name: 'ghost' } },
 		)
@@ -181,7 +220,7 @@ describe('createTerminalRoutes', () => {
 		const response = await post.handler(
 			new Request('http://x/terminals/assistant', {
 				method: 'POST',
-				body: JSON.stringify({ id: 'x', value: 1 }),
+				body: JSON.stringify({ id: 'x', values: { value: 1 } }),
 			}),
 			{ params: { name: 'assistant' } },
 		)
@@ -214,7 +253,7 @@ describe('createTerminalRoutes', () => {
 		expect(response.status).toBe(200)
 
 		// Park a prompt so a live frame is available before the tick.
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'still valid?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('still valid?'))
 		asked.catch(() => {})
 		const live = await readAvailable(response)
 		expect(live).toContain('still valid?')
@@ -291,7 +330,7 @@ describe('createTerminalRoutes', () => {
 		const routes = createTerminalRoutes(manager, { token: () => acceptable })
 		const post = findRoute(routes, 'POST')
 
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 		const before = manager.pending('assistant')
 
@@ -299,7 +338,7 @@ describe('createTerminalRoutes', () => {
 		const response = await post.handler(
 			new Request('http://x/terminals/assistant', {
 				method: 'POST',
-				body: JSON.stringify({ id: 'x', value: 1 }),
+				body: JSON.stringify({ id: 'x', values: { value: 1 } }),
 			}),
 			{ params: { name: 'assistant' } },
 		)
@@ -332,14 +371,14 @@ describe('createTerminalRoutes', () => {
 		})
 		const post = findRoute(routes, 'POST')
 
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 		const before = manager.pending('assistant')
 
 		const response = await post.handler(
 			new Request('http://x/terminals/assistant', {
 				method: 'POST',
-				body: JSON.stringify({ id: 'x', value: 1 }),
+				body: JSON.stringify({ id: 'x', values: { value: 1 } }),
 			}),
 			{ params: { name: 'assistant' } },
 		)
@@ -376,7 +415,7 @@ describe('createTerminalRoutes', () => {
 		expect(response.status).toBe(200)
 
 		// Park a prompt so a live frame is available before the tick.
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'still valid?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('still valid?'))
 		asked.catch(() => {})
 		const live = await readAvailable(response)
 		expect(live).toContain('still valid?')
@@ -480,7 +519,7 @@ describe('pressure: mount churn — 50 sequential GET connect→abort cycles, no
 		// Park exactly one prompt AFTER the fresh stream opened, so it arrives as a LIVE `pending`
 		// event — if any prior cycle's `pendingHandler` had leaked (not truly `off`'d), this single
 		// `ask` would fan out into MULTIPLE `event: pending` frames on the fresh stream.
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'churn-check' })
+		const asked = manager.ask('human', 'assistant', createTextForm('churn-check'))
 		asked.catch(() => {})
 
 		const text = await readAvailable(fresh)
@@ -509,12 +548,12 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 		expect(manager.pending('assistant')).toEqual(before)
 	})
 
-	it('valid JSON but an empty object fails isAnswerPayload — 422, manager state untouched', async () => {
+	it('valid JSON but an empty object fails form-values payload — 422, manager state untouched', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager)
 		const post = findRoute(routes, 'POST')
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 		const before = manager.pending('assistant')
 		const response = await post.handler(
@@ -525,12 +564,12 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 		expect(manager.pending('assistant')).toEqual(before)
 	})
 
-	it('{ id: 1 } (id not a string) fails isAnswerPayload — 422, manager state untouched', async () => {
+	it('{ id: 1 } (id not a string) fails form-values payload — 422, manager state untouched', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager)
 		const post = findRoute(routes, 'POST')
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 		const before = manager.pending('assistant')
 		const response = await post.handler(
@@ -544,12 +583,12 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 		expect(manager.pending('assistant')).toEqual(before)
 	})
 
-	it("{ id: 'x' } (missing value key) fails isAnswerPayload — 422, manager state untouched", async () => {
+	it("{ id: 'x' } (missing values key) fails form-values payload — 422, manager state untouched", async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager)
 		const post = findRoute(routes, 'POST')
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 		const before = manager.pending('assistant')
 		const response = await post.handler(
@@ -570,7 +609,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 		const response = await post.handler(
 			new Request('http://x/terminals/ghost', {
 				method: 'POST',
-				body: JSON.stringify({ id: 'x', value: 'ok' }),
+				body: JSON.stringify({ id: 'x', values: { value: 'ok' } }),
 			}),
 			{ params: { name: 'ghost' } },
 		)
@@ -582,14 +621,14 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 		manager.add('assistant')
 		const routes = createTerminalRoutes(manager, { token: 'secret' })
 		const post = findRoute(routes, 'POST')
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 		const before = manager.pending('assistant')
 		const response = await post.handler(
 			new Request('http://x/terminals/assistant', {
 				method: 'POST',
 				headers: { [HEADER_TOKEN]: 'wrong-token' },
-				body: JSON.stringify({ id: 'x', value: 'ok' }),
+				body: JSON.stringify({ id: 'x', values: { value: 'ok' } }),
 			}),
 			{ params: { name: 'assistant' } },
 		)
@@ -604,7 +643,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 		const routes = createTerminalRoutes(manager, { token: 'secret', timer: churn.timer })
 		const post = findRoute(routes, 'POST')
 
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 		const pending = manager.pending('assistant')
 		const id = pending[0]?.id
@@ -620,7 +659,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 			new Request('http://x/terminals/assistant', {
 				method: 'POST',
 				headers: { [HEADER_TOKEN]: 'secret' },
-				body: JSON.stringify({ id, value: 'Ada' }),
+				body: JSON.stringify({ id, values: { value: 'Ada' } }),
 			}),
 			{ params: { name: 'assistant' } },
 		)
@@ -654,7 +693,7 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 		const routes = createTerminalRoutes(manager, { limit: 16 })
 		const post = findRoute(routes, 'POST')
 
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 		const before = manager.pending('assistant')
 
@@ -693,7 +732,7 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 		const routes = createTerminalRoutes(manager, { limit: 16 })
 		const post = findRoute(routes, 'POST')
 
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		asked.catch(() => {})
 		const before = manager.pending('assistant')
 
@@ -716,7 +755,7 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 		const routes = createTerminalRoutes(manager)
 		const post = findRoute(routes, 'POST')
 
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'name?' })
+		const asked = manager.ask('human', 'assistant', createTextForm('name?'))
 		const pending = manager.pending('assistant')
 		const id = pending[0]?.id
 		if (id === undefined) throw new Error('expected a parked prompt')
@@ -724,12 +763,12 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 		const response = await post.handler(
 			new Request('http://x/terminals/assistant', {
 				method: 'POST',
-				body: JSON.stringify({ id, value: 'Ada' }),
+				body: JSON.stringify({ id, values: { value: 'Ada' } }),
 			}),
 			{ params: { name: 'assistant' } },
 		)
-		expect(response.status).toBe(204)
-		await expect(asked).resolves.toBe('Ada')
+		expect(response.status).toBe(200)
+		await expect(asked).resolves.toEqual({ value: 'Ada' })
 	})
 })
 
@@ -763,7 +802,7 @@ describe('self-heal: consumer-side stream close (no signal abort) tears down on 
 		if (reader === undefined) throw new Error('expected a streaming body')
 		await reader.cancel()
 
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'self-heal' })
+		const asked = manager.ask('human', 'assistant', createTextForm('self-heal'))
 		asked.catch(() => {})
 
 		expect(manager.emitter.count('pending')).toBe(baselinePending)
@@ -823,7 +862,7 @@ describe('self-heal: consumer-side stream close (no signal abort) tears down on 
 		if (reader === undefined) throw new Error('expected a streaming body')
 		await reader.cancel()
 
-		const asked = manager.ask('human', 'assistant', 'input', { message: 'self-heal-then-abort' })
+		const asked = manager.ask('human', 'assistant', createTextForm('self-heal-then-abort'))
 		asked.catch(() => {})
 
 		expect(manager.emitter.count('pending')).toBe(baselinePending)

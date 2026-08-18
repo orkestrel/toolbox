@@ -1,5 +1,5 @@
 import type {
-	PendingPrompt,
+	PendingForm,
 	TerminalManagerInterface,
 	TimerCancel,
 	TimerHandler,
@@ -26,14 +26,14 @@ export class TerminalConnection {
 	readonly #presented: string | undefined
 	#cancel: TimerCancel | undefined
 	readonly #destroyHandler: () => void
-	readonly #pendingHandler: (prompt: PendingPrompt) => void
+	readonly #pendingHandler: (form: PendingForm) => void
 	readonly #expireHandler: (to: string, id: string) => void
 	readonly #tickHandler: () => void
 
 	/**
 	 * Create a terminal stream connection.
 	 *
-	 * @param manager - Terminal manager supplying pending prompts and lifecycle events
+	 * @param manager - Terminal manager supplying pending forms and lifecycle events
 	 * @param name - Terminal endpoint streamed by this connection
 	 * @param request - Request whose abort signal owns the connection lifetime
 	 * @param stream - Open SSE stream
@@ -65,7 +65,7 @@ export class TerminalConnection {
 	}
 
 	/**
-	 * Open the connection by replaying pending prompts, subscribing, and arming keepalive handling.
+	 * Open the connection by replaying pending forms, subscribing, and arming keepalive handling.
 	 *
 	 * @returns The SSE response
 	 */
@@ -75,8 +75,8 @@ export class TerminalConnection {
 			return this.#stream.response
 		}
 		if (this.#cancel !== undefined) return this.#stream.response
-		for (const prompt of this.#manager.pending(this.#name)) {
-			this.#write(serializePending(prompt))
+		for (const form of this.#manager.pending(this.#name)) {
+			this.#write(serializePending(form))
 		}
 		this.#manager.emitter.on('pending', this.#pendingHandler)
 		this.#manager.emitter.on('expire', this.#expireHandler)
@@ -93,13 +93,13 @@ export class TerminalConnection {
 		})
 	}
 
-	#pending(prompt: PendingPrompt): void {
-		if (prompt.to !== this.#name) return
+	#pending(form: PendingForm): void {
+		if (form.to !== this.#name) return
 		if (this.#stream.closed) {
 			this.#destroy()
 			return
 		}
-		this.#write(serializePending(prompt))
+		this.#write(serializePending(form))
 	}
 
 	#expire(to: string, id: string): void {

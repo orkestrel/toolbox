@@ -261,21 +261,27 @@ export const PROMPT_TOOL_NAME = 'ask'
  * {@link import('./factories.js').createDescribeTool}.
  */
 export const PROMPT_TOOL_SUMMARY =
-	"Ask another terminal a question and BLOCK until it answers; the call resolves with the answered value. Call describe('ask') for the required fields."
+	"Ask another terminal a multi-field form and BLOCK until it answers; the call resolves with the values record. Call describe('ask') for the schema."
 
-/** The full prompt protocol {@link import('./factories.js').createPromptTool} advertises. */
+/** The full form protocol {@link import('./factories.js').createPromptTool} advertises. */
 export const PROMPT_TOOL_DESCRIPTION = [
-	'Ask another terminal a question and block until it answers. This call does not return until the addressed terminal answers, or the prompt fails.',
+	'Ask another terminal a multi-field form and block until it answers. This call does not return until the addressed terminal answers, or the form expires.',
 	'',
 	'Required:',
-	'  to      - the terminal name to ask.',
-	'  form    - the prompt kind: one of "input", "password", "confirm", "select", "checkbox", "editor".',
-	'  message - the question shown to the answering terminal.',
-	'Optional:',
-	'  options - form-specific options (e.g. choices for "select"/"checkbox").',
-	'A cycle (two terminals asking each other) or an expired prompt fails the call with a typed error.',
+	'  to     - the terminal name to ask.',
+	'  schema - an @orkestrel/form schema: each field declares `control` and `name`, plus optional `label`, `rule`, `default`, and `choices`; `fields` is an ordered array and each `name` must be unique.',
+	'The result is one values object keyed by those field names. A cycle or expired form fails with a typed error.',
 	'Example:',
-	JSON.stringify({ to: 'reviewer', form: 'confirm', message: 'Approve the release?' }),
+	JSON.stringify({
+		to: 'reviewer',
+		schema: {
+			label: 'Release review',
+			fields: [
+				{ control: 'confirm', name: 'approved', label: 'Approve the release?' },
+				{ control: 'editor', name: 'notes', label: 'Review notes' },
+			],
+		},
+	}),
 ].join('\n')
 
 /**
@@ -292,19 +298,19 @@ export const ANSWER_TOOL_NAME = 'answer'
  * {@link import('./factories.js').createDescribeTool}.
  */
 export const ANSWER_TOOL_SUMMARY =
-	"List prompts addressed to this terminal, or answer one by id. Call describe('answer') for the required fields."
+	"List forms addressed to this terminal, or answer one by id with a values record. Call describe('answer') for the required fields."
 
 /** The pending/answer protocol {@link import('./factories.js').createAnswerTool} advertises. */
 export const ANSWER_TOOL_DESCRIPTION = [
-	'List the prompts currently addressed to this terminal, or answer one of them by id. Every call is ONE operation, chosen by the "operation" field.',
+	'List the forms currently addressed to this terminal, or answer one of them by id. Every call is ONE operation, chosen by the "operation" field.',
 	'',
 	'Operations:',
-	'- pending { "operation": "pending" } — list every prompt currently addressed to this terminal (id, form, message, options, time).',
-	'- answer  { "operation": "answer", "id": "<prompt id>", "value": <answer value> } — answer the prompt with that id; "value" must match the prompt\'s form (a string for "input"/"password"/"editor", a boolean for "confirm", a choice for "select", an array of choices for "checkbox").',
-	'Example — list pending prompts:',
+	'- pending { "operation": "pending" } — list every form currently addressed to this terminal (id, from, schema).',
+	'- answer  { "operation": "answer", "id": "<form id>", "values": { "<field name>": <field value> } } — answer every required field with the value its control accepts.',
+	'Example — list pending forms:',
 	JSON.stringify({ operation: 'pending' }),
 	'Example — answer one:',
-	JSON.stringify({ operation: 'answer', id: 'abc123', value: true }),
+	JSON.stringify({ operation: 'answer', id: 'abc123', values: { approved: true, notes: 'Ready' } }),
 ].join('\n')
 
 /**

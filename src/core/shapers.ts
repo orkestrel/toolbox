@@ -14,132 +14,42 @@ import {
 import { MAX_TIMER_MS } from '@orkestrel/workflow'
 
 // === Prompt / answer shapes (createPromptTool / createAnswerTool call args)
-//
-// `validate` is DECLARATIVE-ONLY here — a `Validator` is a function and cannot cross a JSON
-// Schema / contract boundary, so `promptToolShape`'s inline `validate` field keeps only the
-// primitive (`boolean` / `number` / `string`) rule fields `ValidationRules`
-// (`@orkestrel/terminal`) accepts; `custom` (a bare `Validator`) is DROPPED — mirrors
-// `serializeValidationRules`'s own function-stripping (`@orkestrel/terminal`).
 
 /**
- * The shape of {@link import('./factories.js').createPromptTool}'s call arguments — `to` (the
- * terminal identity to address), `form` (which of the six {@link import('@orkestrel/terminal').PromptType}
- * forms to ask), `message`, an optional `timeout` override, and every per-form optional field
- * FLATTENED onto one object (mirrors `workspaceToolShape`'s flat-arm style, but a single shared
- * shape rather than a discriminated union — `form` alone does not vary the REQUIRED fields, only
- * which of the optional ones apply, so a flat shape stays faithful without duplicating `to` /
- * `message` / `timeout` across six near-identical arms).
+ * The shape of {@link import('./factories.js').createPromptTool}'s call arguments — `to` names the
+ * terminal identity and `schema` carries the complete multi-field form document.
  *
  * @remarks
- * `choices` backs `'select'` / `'checkbox'`; `default` backs `'input'` / `'confirm'` / `'select'`
- * (a string for the first two forms' text default, `'true'`/`'false'` string for confirm — the
- * contract layer cannot vary a field's type by a sibling field's value, so `default` stays a
- * string and the handler coerces per form); `mask` backs `'password'`; `min` / `max` backs
- * `'checkbox'`; `validate` (declarative only) backs the four text-shaped forms
- * (`'input'` / `'password'` / `'confirm'` / `'editor'`).
+ * The contract first requires exact JSON. The handler then delegates schema parsing and semantic
+ * validation to `@orkestrel/form`'s `parseForm`, so Toolbox does not duplicate the form schema.
  */
 export const promptToolShape = objectShape({
-	to: stringShape({ min: 1, description: 'The terminal identity to address the prompt to.' }),
-	form: literalShape(['input', 'password', 'confirm', 'select', 'checkbox', 'editor'], {
-		description: 'Which prompt form to ask.',
+	to: stringShape({ min: 1, description: 'The terminal identity to address the form to.' }),
+	schema: jsonShape({
+		description:
+			'The @orkestrel/form schema to ask, with form metadata and one or more typed fields.',
 	}),
-	message: stringShape({ min: 1, description: "The prompt's question." }),
-	default: optionalShape(
-		stringShape({
-			description:
-				"The default answer if the responder submits blank — 'input' / 'editor' text, 'confirm' 'true'/'false', or a 'select' choice value.",
-		}),
-	),
-	choices: optionalShape(
-		arrayShape(
-			objectShape({
-				name: stringShape({
-					min: 1,
-					description: 'The choice label shown to the answering party.',
-				}),
-				value: stringShape({
-					min: 1,
-					description: 'The value submitted when this choice is picked.',
-				}),
-				description: optionalShape(
-					stringShape({ description: 'An optional one-line elaboration.' }),
-				),
-			}),
-			{ description: "The selectable choices for 'select' / 'checkbox'." },
-		),
-	),
-	mask: optionalShape(
-		stringShape({
-			min: 1,
-			description: "The mask character 'password' renders in place of input.",
-		}),
-	),
-	min: optionalShape(
-		integerShape({ min: 0, description: "The minimum number of 'checkbox' selections required." }),
-	),
-	max: optionalShape(
-		integerShape({ min: 0, description: "The maximum number of 'checkbox' selections allowed." }),
-	),
-	validate: optionalShape(
-		objectShape({
-			required: optionalShape(booleanShape({ description: 'Reject an empty (trimmed) input.' })),
-			minimum: optionalShape(
-				integerShape({
-					min: 0,
-					description: 'Reject an input shorter than this many characters.',
-				}),
-			),
-			maximum: optionalShape(
-				integerShape({
-					min: 0,
-					description: 'Reject an input longer than this many characters.',
-				}),
-			),
-			pattern: optionalShape(
-				stringShape({
-					description: 'Reject an input that fails this regular-expression source.',
-				}),
-			),
-			email: optionalShape(booleanShape({ description: 'Require a valid email-address shape.' })),
-			url: optionalShape(booleanShape({ description: 'Require a valid URL shape.' })),
-			numeric: optionalShape(booleanShape({ description: 'Require a numeric value.' })),
-			integer: optionalShape(booleanShape({ description: 'Require an integer value.' })),
-			alphanumeric: optionalShape(
-				booleanShape({ description: 'Require letters and digits only.' }),
-			),
-		}),
-	),
-	timeout: optionalShape(
-		integerShape({ min: 0, description: 'Milliseconds to wait before the prompt expires.' }),
-	),
 })
 
 /**
  * The shape of {@link import('./factories.js').createAnswerTool}'s call arguments — discriminated
- * by `operation`: `'pending'` lists the prompts addressed to this tool's terminal, `'answer'`
- * resolves one by `id` with a `value`.
+ * by `operation`: `'pending'` lists the forms addressed to this tool's terminal, while `'answer'`
+ * resolves one by `id` with a complete `values` record.
  *
  * @remarks
- * `value`'s type varies by the ORIGINAL prompt's form (`string` for `'input'` / `'password'` /
- * `'select'` / `'editor'`, `boolean` for `'confirm'`, `readonly string[]` for `'checkbox'`) —
- * `unionShape(stringShape(), booleanShape(), arrayShape(stringShape()))` expresses that
- * union directly, so `value` is typed as the full `string | boolean | readonly string[]` union
- * here (no lossy string-only fallback needed).
+ * `values` is first bounded to exact JSON. The handler then narrows it with the originating Form
+ * package's `isFormValues` guard before the terminal manager applies it to the parked live form.
  */
 export const answerToolShape = unionShape(
 	objectShape({
 		operation: literalShape(['pending'], {
-			description: 'List the prompts currently addressed to this terminal.',
+			description: 'List the forms currently addressed to this terminal.',
 		}),
 	}),
 	objectShape({
-		operation: literalShape(['answer'], { description: 'Answer one pending prompt by id.' }),
-		id: stringShape({ min: 1, description: 'The id of the pending prompt to answer.' }),
-		value: unionShape(
-			stringShape({ description: 'A text / select / editor answer.' }),
-			booleanShape({ description: 'A confirm answer.' }),
-			arrayShape(stringShape(), { description: 'A checkbox answer — the checked values.' }),
-		),
+		operation: literalShape(['answer'], { description: 'Answer one pending form by id.' }),
+		id: stringShape({ min: 1, description: 'The id of the pending form to answer.' }),
+		values: jsonShape({ description: 'The form answers keyed by field name.' }),
 	}),
 )
 

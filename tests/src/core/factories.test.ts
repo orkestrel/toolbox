@@ -5,6 +5,7 @@ import type { WorkflowDraft } from '@src/core'
 import type { DatabaseInterface } from '@orkestrel/database'
 import type { WorkflowDefinition, WorkflowFunction, WorkflowFunctions } from '@orkestrel/workflow'
 import type { TerminalManagerInterface, TimerCancel, TimerHandler } from '@orkestrel/terminal'
+import type { FieldControl, FormSchema, FormValues } from '@orkestrel/form'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 import { createAgent, createAgentRegistry, createMemoryConversationStore } from '@orkestrel/agent'
 import { createMemoryWorkspaceStore, createWorkspaceManager } from '@orkestrel/workspace'
@@ -14,7 +15,7 @@ import {
 	createMemoryWorkflowStore,
 	createWorkflowRunner,
 	isWorkflowError,
-	restoreWorkflow,
+	createRestoredWorkflow,
 	WorkflowError,
 } from '@orkestrel/workflow'
 import {
@@ -87,6 +88,37 @@ function readSummary(value: unknown): { status: string; count: number } | undefi
 
 function rejectTerminalAsk(..._args: readonly unknown[]): Promise<never> {
 	return Promise.reject(new TerminalError('DRIVER', 'driver failed'))
+}
+
+function buildFormSchema(control: FieldControl, label: string): FormSchema {
+	if (control === 'confirm') {
+		return { fields: [{ control: 'confirm', name: 'value', label }] }
+	}
+	if (control === 'select' || control === 'checkbox') {
+		return {
+			fields: [
+				{
+					control,
+					name: 'value',
+					label,
+					choices: [
+						{ label: 'X', value: 'x' },
+						{ label: 'Y', value: 'y' },
+					],
+				},
+			],
+		}
+	}
+	if (control === 'text') return { fields: [{ control: 'text', name: 'value', label }] }
+	throw new Error(`unsupported test form control '${control}'`)
+}
+
+function createAskCall(
+	to: string,
+	control: FieldControl,
+	label: string,
+): Readonly<Record<string, unknown>> {
+	return { to, schema: buildFormSchema(control, label) }
 }
 
 function buildWorkflowLineageFixture(depth: number): readonly string[] {
@@ -963,7 +995,7 @@ describe('createWorkflowTool — optional native durable store', () => {
 		await tool.execute({ ...simpleDefinition('restorable') })
 		const persisted = await store.get('restorable')
 		expect(persisted?.phases[0]?.tasks[0]?.status).toBe('completed')
-		expect(persisted === undefined ? undefined : restoreWorkflow(persisted).status).toBe(
+		expect(persisted === undefined ? undefined : createRestoredWorkflow(persisted).status).toBe(
 			'completed',
 		)
 	})
@@ -1467,7 +1499,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		expect(askTool.name).toBe(PROMPT_TOOL_NAME)
 		expect(answerTool.name).toBe(ANSWER_TOOL_NAME)
 
-		const pending = askTool.execute({ to: 'reviewer', form: 'confirm', message: 'Approve?' })
+		const pending = askTool.execute(createAskCall('reviewer', 'confirm', 'Approve?'))
 
 		// Give the ask a tick to park, then list + answer through the answer tool.
 		await waitForDelay(0)
@@ -1477,9 +1509,9 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
 		expect(typeof id).toBe('string')
 
-		const ack = await answerTool.execute({ operation: 'answer', id, value: 'true' })
+		const ack = await answerTool.execute({ operation: 'answer', id, values: { value: true } })
 		expect(ack).toEqual({ answered: id })
-		expect(await pending).toBe(true)
+		expect(await pending).toEqual({ value: true })
 	})
 
 	it('DEADLOCK: a prompt cycle maps to a typed DEADLOCK ToolboxError', async () => {
@@ -1489,11 +1521,11 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const askFromA = createPromptTool({ manager, from: 'a' })
 		const askFromB = createPromptTool({ manager, from: 'b' })
 
-		const aAsksB = Promise.resolve(askFromA.execute({ to: 'b', form: 'confirm', message: 'ok?' }))
+		const aAsksB = Promise.resolve(askFromA.execute(createAskCall('b', 'confirm', 'ok?')))
 		aAsksB.catch(() => {})
 		await waitForDelay(0)
 
-		const error = await rejectionOf(askFromB.execute({ to: 'a', form: 'confirm', message: 'ok?' }))
+		const error = await rejectionOf(askFromB.execute(createAskCall('a', 'confirm', 'ok?')))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEADLOCK')
 	})
 
@@ -1501,9 +1533,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const manager = createTerminalManager()
 		manager.add('agent')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
-			askTool.execute({ to: 'ghost', form: 'input', message: 'name?' }),
-		)
+		const error = await rejectionOf(askTool.execute(createAskCall('ghost', 'text', 'name?')))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		const known = isToolboxError(error) ? error.context?.known : undefined
 		expect(known).toEqual(['agent'])
@@ -1516,9 +1546,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('reviewer', { timeout: 10, timer: fake.timer })
 		const askTool = createPromptTool({ manager, from: 'agent' })
 
-		const pending = rejectionOf(
-			askTool.execute({ to: 'reviewer', form: 'input', message: 'name?' }),
-		)
+		const pending = rejectionOf(askTool.execute(createAskCall('reviewer', 'text', 'name?')))
 		await waitForDelay(0)
 		fake.fire(0)
 		const error = await pending
@@ -1533,7 +1561,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 
 		const pending = Promise.resolve(
-			askTool.execute({ to: 'reviewer', form: 'confirm', message: 'Approve?' }),
+			askTool.execute(createAskCall('reviewer', 'confirm', 'Approve?')),
 		)
 		pending.catch(() => {})
 		await waitForDelay(0)
@@ -1541,29 +1569,99 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const listed = await answerTool.execute({ operation: 'pending' })
 		expect(Array.isArray(listed)).toBe(true)
 		const first = Array.isArray(listed) ? listed[0] : undefined
-		expect(first).toMatchObject({ from: 'agent', form: 'confirm', message: 'Approve?' })
+		expect(first).toMatchObject({
+			from: 'agent',
+			schema: { fields: [{ control: 'confirm', name: 'value', label: 'Approve?' }] },
+		})
 
 		// Answer it so the outstanding ask settles and doesn't leak between tests.
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
-		await answerTool.execute({ operation: 'answer', id, value: true })
+		await answerTool.execute({ operation: 'answer', id, values: { value: true } })
 	})
 
-	it("answer tool 'answer' with a confirm prompt accepts a string 'true' (coercion) and resolves", async () => {
+	it("answer tool 'answer' applies a typed values record and resolves", async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 
-		const pending = askTool.execute({ to: 'reviewer', form: 'confirm', message: 'Approve?' })
+		const pending = askTool.execute(createAskCall('reviewer', 'confirm', 'Approve?'))
 		await waitForDelay(0)
 		const listed = await answerTool.execute({ operation: 'pending' })
 		const first = Array.isArray(listed) ? listed[0] : undefined
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
 
-		const ack = await answerTool.execute({ operation: 'answer', id, value: 'true' })
+		const ack = await answerTool.execute({ operation: 'answer', id, values: { value: true } })
 		expect(ack).toEqual({ answered: id })
-		expect(await pending).toBe(true)
+		expect(await pending).toEqual({ value: true })
+	})
+
+	it('select asks and answers end to end with a settled values record', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+		const asked = Promise.resolve(
+			askTool.execute(createAskCall('reviewer', 'select', 'Choose one')),
+		)
+		await waitForDelay(0)
+		const [form] = manager.pending('reviewer')
+		if (form === undefined) throw new Error('expected a parked form')
+
+		await answerTool.execute({ operation: 'answer', id: form.id, values: { value: 'x' } })
+
+		await expect(asked).resolves.toEqual({ value: 'x' })
+	})
+
+	it('checkbox asks and answers end to end with a settled values record', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+		const asked = Promise.resolve(
+			askTool.execute(createAskCall('reviewer', 'checkbox', 'Choose many')),
+		)
+		await waitForDelay(0)
+		const [form] = manager.pending('reviewer')
+		if (form === undefined) throw new Error('expected a parked form')
+
+		await answerTool.execute({ operation: 'answer', id: form.id, values: { value: ['x', 'y'] } })
+
+		await expect(asked).resolves.toEqual({ value: ['x', 'y'] })
+	})
+
+	it('a rejected answer keeps its field errors in the typed ANSWER ToolboxError', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+		const asked = Promise.resolve(
+			askTool.execute({
+				to: 'reviewer',
+				schema: {
+					fields: [{ control: 'text', name: 'value', rule: { required: true } }],
+				},
+			}),
+		)
+		await waitForDelay(0)
+		const [form] = manager.pending('reviewer')
+		if (form === undefined) throw new Error('expected a parked form')
+
+		const error = await rejectionOf(
+			answerTool.execute({ operation: 'answer', id: form.id, values: {} }),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('ANSWER')
+		expect(isToolboxError(error) ? error.context?.reason : undefined).toBe('rejected')
+		expect(isToolboxError(error) ? error.context?.errors : undefined).toEqual([
+			{ field: 'value', message: 'This field is required', rule: 'required' },
+		])
+
+		await answerTool.execute({ operation: 'answer', id: form.id, values: { value: 'Ada' } })
+		await expect(asked).resolves.toEqual({ value: 'Ada' })
 	})
 
 	it('unknown id maps to a typed ANSWER ToolboxError', async () => {
@@ -1571,7 +1669,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('reviewer')
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 		const error = await rejectionOf(
-			answerTool.execute({ operation: 'answer', id: 'ghost-id', value: true }),
+			answerTool.execute({ operation: 'answer', id: 'ghost-id', values: { value: true } }),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('ANSWER')
 		expect(isToolboxError(error) ? error.context?.reason : undefined).toBe('unknown')
@@ -1587,13 +1685,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 
 		// Passing `from`/`to` in args is simply ignored — the shapes don't even accept them, and the
 		// handler never reads them: an ask still parks under the FIXED `from`, never `spoof`.
-		const pending = Promise.resolve(
-			askTool.execute({
-				to: 'reviewer',
-				form: 'confirm',
-				message: 'ok?',
-			}),
-		)
+		const pending = Promise.resolve(askTool.execute(createAskCall('reviewer', 'confirm', 'ok?')))
 		pending.catch(() => {})
 		await waitForDelay(0)
 
@@ -1601,33 +1693,65 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const first = Array.isArray(listed) ? listed[0] : undefined
 		expect(first).toMatchObject({ from: 'agent' })
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
-		await answerTool.execute({ operation: 'answer', id, value: true })
+		await answerTool.execute({ operation: 'answer', id, values: { value: true } })
 	})
 
-	it('empty choices (select) THROWS a typed TOOL ToolboxError naming the choices requirement, without parking', async () => {
+	it('a select schema with malformed choices throws a typed TOOL ToolboxError without parking', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({ to: 'reviewer', form: 'select', message: 'pick one', choices: [] }),
+			askTool.execute({
+				to: 'reviewer',
+				schema: {
+					fields: [
+						{ control: 'select', name: 'value', label: 'pick one', choices: 'not-an-array' },
+					],
+				},
+			}),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(error instanceof Error ? error.message : '').toContain('choice')
+		expect(error instanceof Error ? error.message : '').toBe('malformed form schema')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
-	it('empty choices (checkbox, choices omitted) THROWS a typed TOOL ToolboxError, without parking', async () => {
+	it('a checkbox schema with omitted choices throws a typed TOOL ToolboxError without parking', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({ to: 'reviewer', form: 'checkbox', message: 'pick some' }),
+			askTool.execute({
+				to: 'reviewer',
+				schema: { fields: [{ control: 'checkbox', name: 'value', label: 'pick some' }] },
+			}),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(error instanceof Error ? error.message : '').toContain('choice')
+		expect(error instanceof Error ? error.message : '').toBe('malformed form schema')
 		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it('a select schema with no enabled choices throws typed TOOL without parking', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const execution = Promise.resolve(
+			askTool.execute({
+				to: 'reviewer',
+				schema: { fields: [{ control: 'select', name: 'value', choices: [] }] },
+			}),
+		)
+		execution.catch(() => {})
+		await waitForDelay(0)
+
+		expect(manager.pending('reviewer')).toEqual([])
+		const error = await rejectionOf(execution)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(error instanceof Error ? error.message : '').toBe(
+			"select field 'value' has no enabled choices",
+		)
 	})
 
 	it('a generic non-TARGET/DEADLOCK/EXPIRE TerminalError surfaces as TOOL with the generic asking-failed message', async () => {
@@ -1651,15 +1775,14 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 			},
 			ask: rejectTerminalAsk,
 			pending: () => [],
-			answer: () => ({ success: false, error: 'unknown' }),
+			answer: () => ({ success: false, error: { reason: 'unknown' } }),
 			open: async () => undefined,
 			save: async () => false,
 			remove: () => false,
-			clear: () => {},
 			destroy: () => {},
 		}
 		const askTool = createPromptTool({ manager: stub, from: 'a' })
-		const error = await rejectionOf(askTool.execute({ to: 'b', form: 'input', message: 'name?' }))
+		const error = await rejectionOf(askTool.execute(createAskCall('b', 'text', 'name?')))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		const message = error instanceof Error ? error.message : ''
 		expect(message).toContain('failed')
@@ -1675,95 +1798,128 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(askTool.execute({ form: 'input', message: 'hi' }))
+		const error = await rejectionOf(askTool.execute({ schema: buildFormSchema('text', 'hi') }))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
-	it('missing `form` throws typed TOOL, nothing parks', async () => {
+	it('missing `schema` throws typed TOOL, nothing parks', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(askTool.execute({ to: 'reviewer', message: 'hi' }))
+		const error = await rejectionOf(askTool.execute({ to: 'reviewer' }))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
-	it('missing `message` throws typed TOOL, nothing parks', async () => {
-		const manager = createTerminalManager()
-		manager.add('agent')
-		manager.add('reviewer')
-		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(askTool.execute({ to: 'reviewer', form: 'input' }))
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(manager.pending('reviewer')).toEqual([])
-	})
-
-	it("unknown form 'wizard' throws typed TOOL, nothing parks", async () => {
+	it('a malformed schema throws typed TOOL, nothing parks', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({ to: 'reviewer', form: 'wizard', message: 'hi' }),
+			askTool.execute({ to: 'reviewer', schema: { fields: 'not-an-array' } }),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
-	// FINDING: a numeric `message` is NOT schema-invalid — `@orkestrel/contract`'s string parser
-	// (`parseString`) coerces a finite number to its string form before validation, so
-	// `message: 42` parses successfully as `'42'` and the ask genuinely parks (it does not throw).
-	// Pinning the ACTUAL documented contract behavior here instead of the originally-assumed
-	// rejection (which would hang the ask forever, since nothing ever answers it).
-	it('a numeric `message` is COERCED to its string form by the contract layer (not rejected) — the ask parks normally', async () => {
+	it('an unknown field control throws typed TOOL, nothing parks', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(
+			askTool.execute({
+				to: 'reviewer',
+				schema: { fields: [{ control: 'wizard', name: 'value', label: 'hi' }] },
+			}),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it('a multi-field schema parks and resolves every field in one values record', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
-		const pending = Promise.resolve(askTool.execute({ to: 'reviewer', form: 'input', message: 42 }))
+		const pending = Promise.resolve(
+			askTool.execute({
+				to: 'reviewer',
+				schema: {
+					label: 'Profile',
+					fields: [
+						{ control: 'text', name: 'name', label: 'Name' },
+						{ control: 'confirm', name: 'approved', label: 'Approved' },
+					],
+				},
+			}),
+		)
 		pending.catch(() => {})
 		await waitForDelay(0)
 		expect(manager.pending('reviewer')).toHaveLength(1)
 		const listed = await answerTool.execute({ operation: 'pending' })
 		const first = Array.isArray(listed) ? listed[0] : undefined
-		expect(first).toMatchObject({ message: '42' })
+		expect(first).toMatchObject({ schema: { label: 'Profile' } })
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
-		await answerTool.execute({ operation: 'answer', id, value: 'ok' })
-		expect(await pending).toBe('ok')
+		await answerTool.execute({
+			operation: 'answer',
+			id,
+			values: { name: 'Ada', approved: true },
+		})
+		expect(await pending).toEqual({ name: 'Ada', approved: true })
 	})
 
-	it('an OBJECT `message` (not string/finite-number coercible) throws typed TOOL, nothing parks', async () => {
-		const manager = createTerminalManager()
-		manager.add('agent')
-		manager.add('reviewer')
-		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(askTool.execute({ to: 'reviewer', form: 'input', message: {} }))
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(manager.pending('reviewer')).toEqual([])
-	})
-
-	it('negative `timeout` throws typed TOOL, nothing parks', async () => {
+	it('an object field label throws typed TOOL, nothing parks', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({ to: 'reviewer', form: 'input', message: 'hi', timeout: -5 }),
+			askTool.execute({
+				to: 'reviewer',
+				schema: { fields: [{ control: 'text', name: 'value', label: {} }] },
+			}),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
-	it('`choices` as a bare string (not an array of {name, value}) throws typed TOOL, nothing parks', async () => {
+	it('a schema with duplicate field names throws typed TOOL, nothing parks', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({ to: 'reviewer', form: 'select', message: 'pick one', choices: 'a,b' }),
+			askTool.execute({
+				to: 'reviewer',
+				schema: {
+					fields: [
+						{ control: 'text', name: 'value' },
+						{ control: 'confirm', name: 'value' },
+					],
+				},
+			}),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(manager.pending('reviewer')).toEqual([])
+	})
+
+	it('choices supplied as a bare string throw typed TOOL without parking', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const error = await rejectionOf(
+			askTool.execute({
+				to: 'reviewer',
+				schema: {
+					fields: [{ control: 'select', name: 'value', label: 'pick one', choices: 'a,b' }],
+				},
+			}),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
@@ -1779,7 +1935,7 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		for (const name of NAMES) manager.add(name)
 	}
 
-	it('30 interleaved asks across a lower→upper bipartite split (no cycle) all resolve with the coerced value', async () => {
+	it('30 interleaved asks across a lower→upper bipartite split all resolve with form values', async () => {
 		const manager = createTerminalManager()
 		buildTerminals(manager)
 		const askTools = new Map(NAMES.map((name) => [name, createPromptTool({ manager, from: name })]))
@@ -1789,42 +1945,32 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 
 		const lower = NAMES.slice(0, 5)
 		const upper = NAMES.slice(5, 10)
-		const forms: ReadonlyArray<'input' | 'confirm' | 'checkbox'> = ['input', 'confirm', 'checkbox']
-
 		// 30 asks, each strictly lower → upper (bipartite — never a reverse edge, so no cycle can
 		// ever close regardless of how many are held pending simultaneously).
 		type Ask = {
 			readonly from: string
 			readonly to: string
-			readonly form: 'input' | 'confirm' | 'checkbox'
+			readonly control: FieldControl
+			readonly values: FormValues
 		}
 		const asks: Ask[] = []
 		for (let i = 0; i < 30; i++) {
 			const from = lower[i % 5]
 			const to = upper[(i + Math.floor(i / 5)) % 5]
-			const form = forms[i % 3]
-			if (from === undefined || to === undefined || form === undefined)
-				throw new Error('unreachable')
-			asks.push({ from, to, form })
+			if (from === undefined || to === undefined) throw new Error('unreachable')
+			const control = i % 3 === 0 ? 'text' : i % 3 === 1 ? 'confirm' : 'checkbox'
+			const values: FormValues = {
+				value: control === 'text' ? 'answered' : control === 'confirm' ? true : ['x'],
+			}
+			asks.push({ from, to, control, values })
 		}
 
-		const pendingAsks = asks.map(({ from, to, form }) => {
+		const pendingAsks = asks.map(({ from, to, control }) => {
 			const askTool = askTools.get(from)
 			if (askTool === undefined) throw new Error('unreachable')
-			const message = `${form} question from ${from} to ${to}`
-			const args: Record<string, unknown> =
-				form === 'checkbox'
-					? {
-							to,
-							form,
-							message,
-							choices: [
-								{ name: 'x', value: 'x' },
-								{ name: 'y', value: 'y' },
-							],
-						}
-					: { to, form, message }
-			const promise = Promise.resolve(askTool.execute(args))
+			const promise = Promise.resolve(
+				askTool.execute(createAskCall(to, control, `question from ${from} to ${to}`)),
+			)
 			promise.catch(() => {})
 			return promise
 		})
@@ -1834,22 +1980,27 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		// Gather every parked prompt id (per upper terminal) up front, then answer them in a
 		// SHUFFLED-but-deterministic order (reverse of discovery order) — first-write-wins /
 		// ordering must not matter to correctness.
-		const allPending: Array<{ readonly to: string; readonly id: string; readonly form: string }> =
-			[]
+		const allPending: Array<{
+			readonly to: string
+			readonly id: string
+			readonly values: FormValues
+		}> = []
 		for (const to of upper) {
 			const answerTool = answerTools.get(to)
 			if (answerTool === undefined) throw new Error('unreachable')
 			const listed = await answerTool.execute({ operation: 'pending' })
 			if (!Array.isArray(listed)) throw new Error('expected an array')
-			for (const entry of listed) {
+			const addressed = asks.filter((ask) => ask.to === to)
+			for (const [index, entry] of listed.entries()) {
 				if (
 					entry !== null &&
 					typeof entry === 'object' &&
 					'id' in entry &&
 					typeof entry.id === 'string'
 				) {
-					const form = 'form' in entry && typeof entry.form === 'string' ? entry.form : ''
-					allPending.push({ to, id: entry.id, form })
+					const ask = addressed[index]
+					if (ask === undefined) throw new Error('unreachable')
+					allPending.push({ to, id: entry.id, values: ask.values })
 				}
 			}
 		}
@@ -1859,17 +2010,16 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		for (const entry of shuffled) {
 			const answerTool = answerTools.get(entry.to)
 			if (answerTool === undefined) throw new Error('unreachable')
-			const value = entry.form === 'confirm' ? true : entry.form === 'checkbox' ? 'x,y' : 'answered'
-			const ack = await answerTool.execute({ operation: 'answer', id: entry.id, value })
+			const ack = await answerTool.execute({
+				operation: 'answer',
+				id: entry.id,
+				values: entry.values,
+			})
 			expect(ack).toEqual({ answered: entry.id })
 		}
 
 		const settled = await Promise.all(pendingAsks)
-		const expected = asks.map((ask) => {
-			if (ask.form === 'confirm') return true
-			if (ask.form === 'checkbox') return ['x', 'y']
-			return 'answered'
-		})
+		const expected = asks.map((ask) => ask.values)
 		expect(settled).toEqual(expected)
 	})
 
@@ -1882,11 +2032,11 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		const askB = askTools.get('t1')
 		if (askA === undefined || askB === undefined) throw new Error('unreachable')
 
-		const first = Promise.resolve(askA.execute({ to: 't1', form: 'confirm', message: 'ok?' }))
+		const first = Promise.resolve(askA.execute(createAskCall('t1', 'confirm', 'ok?')))
 		first.catch(() => {})
 		await waitForDelay(0)
 
-		const error = await rejectionOf(askB.execute({ to: 't0', form: 'confirm', message: 'ok?' }))
+		const error = await rejectionOf(askB.execute(createAskCall('t0', 'confirm', 'ok?')))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEADLOCK')
 		const context = isToolboxError(error) ? error.context : undefined
 		const path = context !== undefined && 'path' in context ? context.path : undefined
@@ -1903,13 +2053,11 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		const askFromT1 = createPromptTool({ manager, from: 't1' })
 
 		// A second, ordinary ask (no timer) stays pending throughout — proves the expiry is scoped
-		// to the one prompt whose broker was configured with the fake timer, not global.
-		const other = Promise.resolve(
-			askFromT1.execute({ to: 't2', form: 'input', message: 'still waiting' }),
-		)
+		// to the one form whose broker was configured with the fake timer, not global.
+		const other = Promise.resolve(askFromT1.execute(createAskCall('t2', 'text', 'still waiting')))
 		other.catch(() => {})
 
-		const expiring = rejectionOf(askFromT0.execute({ to: 't9', form: 'input', message: 'name?' }))
+		const expiring = rejectionOf(askFromT0.execute(createAskCall('t9', 'text', 'name?')))
 		await waitForDelay(0)
 		fake.fire(0)
 		const error = await expiring

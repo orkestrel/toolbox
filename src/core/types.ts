@@ -409,12 +409,12 @@ export interface DescribeToolArguments {
  * `from`, and the advertised tool overrides.
  *
  * @remarks
- * - `manager` — the terminal manager whose `ask(from, to, form, options)` the tool's handler
- *   calls; BLOCKS the calling agent turn until the addressed terminal answers (or the ask
+ * - `manager` — the terminal manager whose `ask(from, to, form)` the tool's handler calls with a
+ *   live `@orkestrel/form` form; BLOCKS the calling agent turn until the addressed terminal answers (or the ask
  *   rejects — a cycle throws `TerminalError('DEADLOCK')`, re-surfaced as a typed `DEADLOCK`
  *   {@link import('./errors.js').ToolboxError}; an expired prompt re-surfaces as `EXPIRE`).
  * - `from` — the terminal identity this tool asks AS; the model supplies the `to` target and the
- *   prompt form per call.
+ *   complete form schema per call.
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').PROMPT_TOOL_NAME} / {@link import('./constants.js').PROMPT_TOOL_DESCRIPTION}.
  */
@@ -431,9 +431,9 @@ export interface PromptToolOptions {
  * terminal name `to`, and the advertised tool overrides.
  *
  * @remarks
- * - `manager` — the terminal manager whose `pending(to)` / `answer(to, id, value)` the tool's
- *   handler calls — `pending` lists the prompts currently addressed to `to`, `answer` resolves
- *   one by `id`. A failed `answer` (`TerminalAnswerResult.error`) re-surfaces as a typed
+ * - `manager` — the terminal manager whose `pending(to)` / `answer(to, id, values)` the tool's
+ *   handler calls — `pending` lists the forms currently addressed to `to`, `answer` resolves
+ *   one by `id`. A failed `answer` (`TerminalAnswerError`) re-surfaces as a typed
  *   `ANSWER` {@link import('./errors.js').ToolboxError}.
  * - `to` — the terminal identity this tool lists / answers prompts FOR.
  * - `name` / `description` — advertised tool overrides; default to

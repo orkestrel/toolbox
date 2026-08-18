@@ -48,6 +48,7 @@ import {
 	stringShape,
 } from '@orkestrel/contract'
 import { isTerminalError } from '@orkestrel/terminal'
+import { createForm, isFormError, isFormValues, parseForm } from '@orkestrel/form'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { createWorkflowContract } from '@orkestrel/workflow'
 import { MemoryDefinitionStore } from './stores/MemoryDefinitionStore.js'
@@ -92,7 +93,6 @@ import { ToolboxError, isToolboxError } from './errors.js'
 import {
 	agentTag,
 	clampQuery,
-	coerceAnswer,
 	completeDraft,
 	deriveWorkflowDepth,
 	extendLineage,
@@ -812,19 +812,18 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
 }
 
 /**
- * Build an LLM-callable prompt tool — the ASK side of the terminal seam. Asks
- * {@link import('./types.js').PromptToolOptions.to} a question and BLOCKS until it answers,
- * returning the resolved answer value.
+ * Build an LLM-callable form tool — the ASK side of the terminal seam. Asks
+ * a multi-field form and BLOCKS until it answers, returning the resolved values record.
  *
  * @remarks
  * The universal tool-handler contract (AGENTS §14): validates the call args against
- * {@link import('./shapers.js').promptToolShape}, dispatches to the matching
- * `TerminalManagerInterface.ask` overload (`@orkestrel/terminal`) for the call's `form`, and
- * RETURNS the resolved answer on success. `from` is FIXED at construction
+ * {@link import('./shapers.js').promptToolShape}, parses the call's schema through
+ * `@orkestrel/form`, constructs the live form, and passes it to `TerminalManagerInterface.ask`.
+ * `from` is FIXED at construction
  * ({@link import('./types.js').PromptToolOptions.from}) — never read from the model-supplied
- * args — so a model cannot spoof which terminal is asking. A prompt CYCLE rejects with
+ * args — so a model cannot spoof which terminal is asking. A form CYCLE rejects with
  * `TerminalError('DEADLOCK')`, re-surfaced as a typed `DEADLOCK`
- * {@link import('./errors.js').ToolboxError}; an expired prompt re-surfaces as `EXPIRE`; an
+ * {@link import('./errors.js').ToolboxError}; an expired form re-surfaces as `EXPIRE`; an
  * unknown `to` (or any other `TerminalError`) re-surfaces as `TOOL`, naming the unknown terminal
  * plus the known ones (`manager.terminals()`).
  *
@@ -859,72 +858,43 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 			if (call === undefined) {
 				throw new ToolboxError('TOOL', 'malformed ask call', { args })
 			}
-			if (
-				(call.form === 'select' || call.form === 'checkbox') &&
-				(call.choices ?? []).length === 0
-			) {
-				throw new ToolboxError('TOOL', 'select/checkbox requires at least one choice', {
-					to: call.to,
-					form: call.form,
-				})
+			const schema = parseForm(call.schema)
+			if (schema === undefined) {
+				throw new ToolboxError('TOOL', 'malformed form schema', { schema: call.schema })
+			}
+			for (const field of schema.fields) {
+				if (
+					(field.control === 'select' || field.control === 'checkbox') &&
+					!field.choices.some((choice) => choice.disabled !== true)
+				) {
+					throw new ToolboxError(
+						'TOOL',
+						`${field.control} field '${field.name}' has no enabled choices`,
+						{ control: field.control, field: field.name },
+					)
+				}
 			}
 			try {
-				switch (call.form) {
-					case 'input':
-						return await options.manager.ask(options.from, call.to, call.form, {
-							message: call.message,
-							...(call.default === undefined ? {} : { default: call.default }),
-							...(call.validate === undefined ? {} : { validate: call.validate }),
-						})
-					case 'editor':
-						return await options.manager.ask(options.from, call.to, call.form, {
-							message: call.message,
-							...(call.default === undefined ? {} : { default: call.default }),
-							...(call.validate === undefined ? {} : { validate: call.validate }),
-						})
-					case 'password':
-						return await options.manager.ask(options.from, call.to, call.form, {
-							message: call.message,
-							...(call.mask === undefined ? {} : { mask: call.mask }),
-							...(call.validate === undefined ? {} : { validate: call.validate }),
-						})
-					case 'confirm':
-						return await options.manager.ask(options.from, call.to, call.form, {
-							message: call.message,
-							...(call.default === undefined ? {} : { default: call.default === 'true' }),
-						})
-					case 'select':
-						return await options.manager.ask(options.from, call.to, call.form, {
-							message: call.message,
-							choices: call.choices ?? [],
-							...(call.default === undefined ? {} : { default: call.default }),
-						})
-					case 'checkbox':
-						return await options.manager.ask(options.from, call.to, call.form, {
-							message: call.message,
-							choices: call.choices ?? [],
-							...(call.min === undefined ? {} : { min: call.min }),
-							...(call.max === undefined ? {} : { max: call.max }),
-						})
-				}
+				return await options.manager.ask(options.from, call.to, createForm(schema))
 			} catch (error) {
+				if (isFormError(error) && error.code === 'ABANDONED') {
+					throw new ToolboxError('EXPIRE', `form to '${call.to}' expired before it was answered`, {
+						to: call.to,
+					})
+				}
 				const code = terminalToolCode(error)
 				if (code === undefined) throw error
 				if (code === 'DEADLOCK') {
 					throw new ToolboxError(
 						'DEADLOCK',
-						`asking '${call.to}' would form a prompt cycle`,
+						`asking '${call.to}' would create a form cycle`,
 						isTerminalError(error) ? error.context : { from: options.from, to: call.to },
 					)
 				}
 				if (code === 'EXPIRE') {
-					throw new ToolboxError(
-						'EXPIRE',
-						`prompt to '${call.to}' expired before it was answered`,
-						{
-							to: call.to,
-						},
-					)
+					throw new ToolboxError('EXPIRE', `form to '${call.to}' expired before it was answered`, {
+						to: call.to,
+					})
 				}
 				if (isTerminalError(error) && error.code === 'TARGET') {
 					throw new ToolboxError('TOOL', `unknown terminal '${call.to}'`, {
@@ -939,24 +909,22 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 }
 
 /**
- * Build an LLM-callable answer tool — the ANSWER side of the terminal seam. Lists the prompts
+ * Build an LLM-callable answer tool — the ANSWER side of the terminal seam. Lists the forms
  * currently addressed to {@link import('./types.js').AnswerToolOptions.to}, or answers one of
  * them by id.
  *
  * @remarks
  * The universal tool-handler contract (AGENTS §14): validates the call args against
  * {@link import('./shapers.js').answerToolShape} (discriminated by `operation`). `'pending'`
- * returns a compact list (`{ id, from, form, message }`) of every prompt currently addressed to
- * `to` (`TerminalManagerInterface.pending`, `@orkestrel/terminal`). `'answer'` looks the prompt
- * up by `id` (an unknown id throws a typed `ANSWER` {@link import('./errors.js').ToolboxError}),
- * normalizes the model-supplied `value` to the prompt's own form
- * ({@link import('./helpers.js').coerceAnswer}), and applies it via
+ * returns a compact list (`{ id, from, schema }`) of every form currently addressed to `to`.
+ * `'answer'` looks the form up by `id`, narrows the supplied `values` through `@orkestrel/form`,
+ * and applies it via
  * `TerminalManagerInterface.answer` — a rejected / unknown / unresolvable outcome
  * (`TerminalAnswerResult.error`) re-surfaces as a typed `ANSWER` `ToolboxError`; success returns
  * `{ answered: id }`. `to` is FIXED at construction
  * ({@link import('./types.js').AnswerToolOptions.to}) — never read from the model-supplied args —
  * so a model cannot spoof which terminal it is answering for. Concurrent answerers racing on one
- * endpoint are FIRST-WRITE-WINS — a late answer to an already-settled prompt returns a typed
+ * endpoint are FIRST-WRITE-WINS — a late answer to an already-settled form returns a typed
  * `ANSWER` `ToolboxError` (surfaced as a 422 over HTTP).
  *
  * @param options - The live manager, the fixed `to` identity, and advertised overrides (see
@@ -973,7 +941,7 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
  * manager.add('reviewer')
  * const tool = createAnswerTool({ manager, to: 'reviewer' })
  * const tools = createToolManager()
- * tools.add(tool) // the reviewer terminal can now list/answer prompts addressed to it
+ * tools.add(tool) // the reviewer terminal can now list/answer forms addressed to it
  * ```
  */
 export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
@@ -990,27 +958,33 @@ export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 				throw new ToolboxError('TOOL', 'malformed answer call', { args })
 			}
 			if (call.operation === 'pending') {
-				return options.manager.pending(options.to).map((prompt) => ({
-					id: prompt.id,
-					from: prompt.from,
-					form: prompt.form,
-					message: prompt.message,
+				return options.manager.pending(options.to).map((form) => ({
+					id: form.id,
+					from: form.from,
+					schema: form.schema,
 				}))
 			}
-			const prompt = options.manager.pending(options.to).find((entry) => entry.id === call.id)
-			if (prompt === undefined) {
-				throw new ToolboxError('ANSWER', `unknown prompt '${call.id}'`, {
+			const form = options.manager.pending(options.to).find((entry) => entry.id === call.id)
+			if (form === undefined) {
+				throw new ToolboxError('ANSWER', `unknown form '${call.id}'`, {
 					id: call.id,
 					reason: 'unknown',
 				})
 			}
-			const coerced = coerceAnswer(prompt.form, call.value)
-			const result = options.manager.answer(options.to, call.id, coerced)
+			if (!isFormValues(call.values)) {
+				throw new ToolboxError('TOOL', 'malformed form values', { values: call.values })
+			}
+			const result = options.manager.answer(options.to, call.id, call.values)
 			if (!result.success) {
-				throw new ToolboxError('ANSWER', `failed to answer prompt '${call.id}': ${result.error}`, {
-					id: call.id,
-					reason: result.error,
-				})
+				throw new ToolboxError(
+					'ANSWER',
+					`failed to answer form '${call.id}': ${result.error.reason}`,
+					{
+						id: call.id,
+						reason: result.error.reason,
+						...(result.error.reason === 'rejected' ? { errors: result.error.errors } : {}),
+					},
+				)
 			}
 			return { answered: call.id }
 		},
