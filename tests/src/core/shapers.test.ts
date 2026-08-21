@@ -1,6 +1,8 @@
 import {
 	agentToolShape,
+	answerToolShape,
 	databaseToolShape,
+	promptToolShape,
 	relationToolShape,
 	workflowDraftShape,
 	workflowStepsShape,
@@ -8,7 +10,7 @@ import {
 } from '@src/core'
 import type { AgentToolArguments, WorkspaceOperation } from '@src/core'
 import { createContract, isRecord } from '@orkestrel/contract'
-import type { Infer } from '@orkestrel/contract'
+import type { Infer, JSONValue } from '@orkestrel/contract'
 import { MAX_TIMER_MS } from '@orkestrel/workflow'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 
@@ -16,6 +18,114 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 // (`createContract`, `@orkestrel/contract`) into a lockstep guard/parser/schema/generator
 // (AGENTS §14); these tests pin the guard accept/reject behavior, the parser soundness, and
 // the JSON Schema shape each `create*Tool` factory advertises.
+
+describe('promptToolShape — createPromptTool call args', () => {
+	const contract = createContract(promptToolShape)
+
+	it('Infer<typeof promptToolShape> stays structurally locked to { to: string, schema: JSONValue } — no hand-written call-args type exists for this factory (factories.ts createPromptTool reads `call.to` / `call.schema` off the inferred shape directly), so the lock pins the inferred shape itself against drift (AGENTS §5)', () => {
+		expectTypeOf<Infer<typeof promptToolShape>>().toEqualTypeOf<{
+			readonly to: string
+			readonly schema: JSONValue
+		}>()
+	})
+
+	it('is() accepts a valid to + schema call', () => {
+		expect(contract.is({ to: 'terminal-1', schema: { title: 'Form' } })).toBe(true)
+	})
+
+	it('is() rejects an empty to', () => {
+		expect(contract.is({ to: '', schema: { title: 'Form' } })).toBe(false)
+	})
+
+	it('is() rejects a missing schema', () => {
+		expect(contract.is({ to: 'terminal-1' })).toBe(false)
+	})
+
+	it('is() rejects a wrong-typed to', () => {
+		expect(contract.is({ to: 42, schema: { title: 'Form' } })).toBe(false)
+	})
+
+	it('is() rejects a schema slot carrying a non-JSON value (a function) — guides/toolbox.md claims the schema slot carries the whole @orkestrel/form document as exact JSON', () => {
+		expect(contract.is({ to: 'terminal-1', schema: () => undefined })).toBe(false)
+	})
+
+	it('generate() produces a value its own guard accepts (round-trip)', () => {
+		const generated = contract.generate()
+		expect(contract.is(generated)).toBe(true)
+		expect(contract.parse(generated)).toEqual(generated)
+	})
+
+	it('the compiled JSON Schema requires to and schema', () => {
+		expect(contract.schema.type).toBe('object')
+		const properties = contract.schema.properties
+		expect(isRecord(properties) ? Object.keys(properties).sort() : []).toEqual(['schema', 'to'])
+		expect(contract.schema.required).toEqual(['to', 'schema'])
+	})
+})
+
+describe('answerToolShape — createAnswerTool call args', () => {
+	const contract = createContract(answerToolShape)
+
+	it('Infer<typeof answerToolShape> stays structurally locked to the pending/answer discriminated union — no hand-written call-args type exists for this factory (factories.ts createAnswerTool reads `call.id` / `call.values` off the inferred shape directly), so the lock pins the inferred shape itself against drift (AGENTS §5)', () => {
+		expectTypeOf<Infer<typeof answerToolShape>>().toEqualTypeOf<
+			| { readonly operation: 'pending' }
+			| { readonly operation: 'answer'; readonly id: string; readonly values: JSONValue }
+		>()
+	})
+
+	it('is() accepts a valid pending arm', () => {
+		expect(contract.is({ operation: 'pending' })).toBe(true)
+	})
+
+	it('is() accepts a valid answer arm', () => {
+		expect(contract.is({ operation: 'answer', id: 'form-1', values: { name: 'x' } })).toBe(true)
+	})
+
+	it('is() rejects an unknown operation', () => {
+		expect(contract.is({ operation: 'reject' })).toBe(false)
+	})
+
+	it('is() rejects an answer arm missing id or values', () => {
+		expect(contract.is({ operation: 'answer', values: { name: 'x' } })).toBe(false)
+		expect(contract.is({ operation: 'answer', id: 'form-1' })).toBe(false)
+	})
+
+	it('is() rejects an answer arm with an empty id', () => {
+		expect(contract.is({ operation: 'answer', id: '', values: { name: 'x' } })).toBe(false)
+	})
+
+	it('is() rejects an answer arm whose values carries a non-JSON value (a function) — guides/toolbox.md claims values is a record as exact JSON', () => {
+		expect(
+			contract.is({ operation: 'answer', id: 'form-1', values: { name: () => undefined } }),
+		).toBe(false)
+	})
+
+	it('generate() produces a value its own guard accepts (round-trip)', () => {
+		const generated = contract.generate()
+		expect(contract.is(generated)).toBe(true)
+		expect(contract.parse(generated)).toEqual(generated)
+	})
+
+	it('the compiled JSON Schema is an anyOf union whose answer arm requires id and values', () => {
+		const anyOf = contract.schema.anyOf
+		expect(Array.isArray(anyOf)).toBe(true)
+		const arms: readonly unknown[] = Array.isArray(anyOf) ? anyOf : []
+		const answer = arms.find((arm) => {
+			const properties = isRecord(arm) ? arm.properties : undefined
+			const operation = isRecord(properties) ? properties.operation : undefined
+			const constValue = isRecord(operation) ? operation.const : undefined
+			const enumValues = isRecord(operation) ? operation.enum : undefined
+			return constValue === 'answer' || (Array.isArray(enumValues) && enumValues.includes('answer'))
+		})
+		const answerProps = isRecord(answer) ? answer.properties : undefined
+		expect(isRecord(answerProps) ? Object.keys(answerProps).sort() : []).toEqual([
+			'id',
+			'operation',
+			'values',
+		])
+		expect(isRecord(answer) ? answer.required : undefined).toEqual(['operation', 'id', 'values'])
+	})
+})
 
 describe('agentToolShape — createAgentTool call args', () => {
 	const contract = createContract(agentToolShape)
