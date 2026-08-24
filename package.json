@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/toolbox",
-	"version": "0.0.8",
+	"version": "0.0.9",
 	"description": "Concrete LLM-callable tools for the @orkestrel line — workflow authoring, workspace editing, sub-agent delegation, and more, over the @orkestrel/tool runtime, with pluggable stores. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
@@ -80,7 +80,7 @@
 		"test:distribution": "vitest run --config vite.config.ts --no-cache --reporter=dot --project distribution"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.17",
+		"@orkestrel/agent": "^0.0.18",
 		"@orkestrel/contract": "^0.0.13",
 		"@orkestrel/database": "^0.0.11",
 		"@orkestrel/form": "^0.0.2",
