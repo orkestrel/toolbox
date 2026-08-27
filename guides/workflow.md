@@ -292,7 +292,7 @@ import {
 	resolveTaskSilence,
 } from '@orkestrel/workflow'
 
-const input = { progress: { current: 2, total: 10, unit: 'files' } }
+const input = { progress: { progress: 2, total: 10, message: 'Indexing files' } }
 if (isTaskActivityInput(input)) {
 	const activity = cloneTaskActivity(input, Date.now())
 	isTaskActivity(activity) // true
@@ -338,7 +338,7 @@ The shape VALUES `createWorkflowContract` compiles into the four lockstep output
 | `WorkflowInput`                | type      | `Partial<WorkflowContext>` — the minimal data to create a workflow context.                                                                                                                                                             |
 | `PhaseInput`                   | type      | `Partial<PhaseContext>` — the minimal data to create a phase context.                                                                                                                                                                   |
 | `TaskInput`                    | interface | `Partial<TaskContext>` + `{ metadata? }` — plus the open consumer bag stored + snapshotted, never interpreted.                                                                                                                          |
-| `TaskProgress`                 | interface | `{ current, total?, unit? }` — determinate progress when `total` is present, otherwise an indeterminate current count.                                                                                                                  |
+| `TaskProgress`                 | interface | `{ progress, total?, message? }` — the reported count, a `total` when the work's size is known, and observer-facing text for the reported state.                                                                                        |
 | `TaskOperation`                | interface | `{ id, name, started }` — one flat nested operation claimed active when the complete frame was accepted.                                                                                                                                |
 | `TaskConstraint`               | interface | `{ id, name, started }` — one constraint claimed active when the complete frame was accepted, without supervisor policy.                                                                                                                |
 | `TaskActivityInput`            | interface | `{ note?, progress?, operations?, constraints? }` — one whole-frame replacement; omitted collections mean empty.                                                                                                                        |
@@ -969,7 +969,7 @@ Core retains one bounded, current reporter claim—not a journal:
 ```ts
 const result = controller.report({
 	note: 'Indexing',
-	progress: { current: 240, total: 1_000, unit: 'files' },
+	progress: { progress: 240, total: 1_000, message: '240 of 1,000 sources' },
 	operations: [{ id: 'scan', name: 'Scan sources', started: Date.now() }],
 	constraints: [{ id: 'rate', name: 'Provider rate limit', started: Date.now() }],
 })
@@ -979,7 +979,7 @@ await controller.wait() // checkpoint workflow + phase + task gates, or cancella
 controller.pulse() // healthy but unchanged: restamp liveness without replacing the frame
 ```
 
-Every accepted `report` replaces the complete frame. Omitted `note` / `progress` clear them and omitted collections become empty. Core rejects the whole report with a `MUTATION` failure—preserving the prior frame—for empty present text, non-finite or negative numbers, `total < current`, or duplicate ids within operations or constraints. Accepted progress, items, arrays, and frames are copied and frozen; getters, events, and snapshots therefore expose no mutable caller-owned reference. There are no caps, truncation, clamping, history, provider fields, or raw-log retention.
+Every accepted `report` replaces the complete frame. Omitted `note` / `progress` clear them and omitted collections become empty. Core rejects the whole report with a `MUTATION` failure—preserving the prior frame—for empty present text, non-finite or negative numbers, `total < progress`, or duplicate ids within operations or constraints. Accepted progress, items, arrays, and frames are copied and frozen; getters, events, and snapshots therefore expose no mutable caller-owned reference. There are no caps, truncation, clamping, history, provider fields, or raw-log retention.
 
 Activity is attempt-owned. `start` seeds the first empty frame; retry entry replaces it with another empty frame. A `TaskController` captures the runner's explicit claimed attempt and folded signal; ownership requires both the runner token and the live task's persisted attempt to match. A public or reentrant `start` therefore invalidates an older handle immediately: late `report` returns `TRANSITION`, late `pulse` returns `false`, handler settlement is ignored, and no settlement checkpoint is attributed to the stale attempt. Pending snapshots omit activity; running/completed/failed snapshots require the accepted frame; skipped/stopped snapshots may omit it or retain the last accepted reporter claim. Start, report, and pulse stamps use the greater of the host clock and the prior activity stamp, so a restored future timestamp never regresses. Restore never arms a silence timer merely because a frame was persisted.
 
