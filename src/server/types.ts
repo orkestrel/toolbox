@@ -2,9 +2,9 @@ import type { TimerHandler } from '@orkestrel/terminal'
 
 // Server-package types — the structural route contract this barrel returns, kept LOCAL (never
 // imports `@orkestrel/router`) so a consumer mounts the two returned routes against ANY router
-// that accepts this shape (AGENTS §5: types are the source of truth).
+// that accepts this shape; these types are the source of truth.
 
-/** The HTTP method literal a {@link TerminalRoute} declares — the exact 7-literal union `@orkestrel/router`'s `Method` accepts. */
+/** The HTTP method literal a {@link TerminalRoute} declares — the same union `@orkestrel/router`'s `Method` accepts. */
 export type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS'
 
 /**

@@ -54,7 +54,7 @@ export const answerToolShape = unionShape(
 )
 
 // Toolbox shapes — the shape VALUE each `create*Tool` factory (factories.ts) compiles into
-// the lockstep guard + parser + JSON Schema outputs (AGENTS §14). `agentToolShape` MUST agree
+// the lockstep guard + parser + JSON Schema outputs. `agentToolShape` MUST agree
 // with the hand-written `AgentToolArguments` (types.ts), which is the source of truth.
 // `workflowStepsShape` / `workflowDraftShape` are Toolbox's authoring boundary over the current
 // `@orkestrel/workflow` definition contract. `workspaceToolShape` is Toolbox's operation boundary
@@ -71,7 +71,7 @@ export const answerToolShape = unionShape(
 export const agentToolShape = objectShape({
 	task: stringShape({
 		min: 1,
-		description: 'The instructions the sub-agent should carry out.',
+		description: 'The instructions the sub-agent carries out.',
 	}),
 	provider: optionalShape(
 		stringShape({
@@ -236,8 +236,8 @@ export const workflowStepsShape = objectShape({
 
 /**
  * The shape of a {@link import('./types.js').WorkspaceOperation} — a descriptive tagged union
- * over the 13 workspace edit / read / navigation operations, discriminated by the `operation`
- * literal (never a bare `kind`; AGENTS §4.4). Each variant leads with its `operation`
+ * over the workspace edit, read, and navigation operations, discriminated by the `operation`
+ * literal (never a bare `kind`). Each variant leads with its `operation`
  * discriminant then its FLAT fields, every field via `stringShape` / `optionalShape` /
  * `integerShape({ min: 1 })` / `booleanShape`, each carrying a strong field-level `description`.
  *
@@ -407,7 +407,7 @@ export const tableSpecShape = recordShape(
 	{ description: 'Table name to its column layout.' },
 )
 
-/** One key value — a string or number; the array form (multiple keys, positional) resolves FIRST per AGENTS §9.2. */
+/** One key value — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
 export const keyShape = unionShape(
 	arrayShape(unionShape(stringShape(), numberShape()), {
 		description: 'Multiple row keys, positional — a miss at an index is undefined there.',
@@ -416,12 +416,12 @@ export const keyShape = unionShape(
 	numberShape({ description: 'One row key.' }),
 )
 
-/** A loose row — a flat object of column name to JSON value; the array form (multiple rows) resolves FIRST per AGENTS §9.2. */
+/** A loose row — a flat object of column name to JSON value; the array form (multiple rows) resolves FIRST, so an array argument is read as many rows rather than one. */
 export const rowShape = recordShape(jsonShape(), {
 	description: 'A row as a flat object of column name to value.',
 })
 
-/** One or many loose rows — the array form resolves FIRST per AGENTS §9.2. */
+/** One or many loose rows — the array form resolves FIRST, so an array argument is read as many rows rather than one. */
 export const rowsShape = unionShape(
 	arrayShape(rowShape, { description: 'Multiple rows.' }),
 	rowShape,
@@ -595,7 +595,7 @@ export const databaseToolShape = unionShape(
 // flat-args ergonomic lever), expanded into a live `Include` by
 // {@link import('./helpers.js').expandInclude}.
 
-/** One key value — a string or number; the array form (multiple keys, positional) resolves FIRST per AGENTS §9.2. */
+/** One key value — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
 export const relationKeyShape = unionShape(
 	arrayShape(unionShape(stringShape(), numberShape()), {
 		description: 'Multiple row keys, positional — a miss at an index is undefined there.',

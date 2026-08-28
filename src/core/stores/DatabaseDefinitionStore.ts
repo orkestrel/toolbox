@@ -4,7 +4,7 @@ import type {
 	DefinitionStoreInterface,
 } from '../types.js'
 import type { TableInterface } from '@orkestrel/database'
-import { isDatabaseDefinition } from '../helpers.js'
+import { isDatabaseDefinition } from '../validators.js'
 
 /**
  * A {@link DefinitionStoreInterface} backed by one table of the `@orkestrel/database` layer — a
@@ -29,12 +29,12 @@ import { isDatabaseDefinition } from '../helpers.js'
  * - **`set(definition)` upserts under the definition's OWN `id`** (no separate id param) — it
  *   writes the row `{ id: definition.id, definition }`.
  * - **`get(id)` resolves the stored definition for an id**, narrowing the opaque JSON column back
- *   to a {@link DatabaseDefinition} ({@link import('../helpers.js').isDatabaseDefinition} — the
- *   AGENTS §14 boundary narrow for an untrusted storage read), or `undefined` if none is stored
+ *   to a {@link DatabaseDefinition} ({@link import('../validators.js').isDatabaseDefinition} — the
+ *   boundary narrow for an untrusted storage read), or `undefined` if none is stored
  *   or the stored blob is malformed.
  * - **`delete(id)` drops a definition by id**; an absent id is a no-op (no throw).
  *
- * The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the §22 method
+ * The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the method
  * bijection with {@link DefinitionStoreInterface}).
  *
  * @example
@@ -60,22 +60,39 @@ export class DatabaseDefinitionStore implements DefinitionStoreInterface {
 		this.#table = table
 	}
 
-	/** Resolve the persisted definition for `id`, narrowing the opaque JSON column back to a `DatabaseDefinition`. */
+	/**
+	 * Resolves the persisted definition for `id`, narrowing the opaque JSON column back to a
+	 * {@link DatabaseDefinition}.
+	 *
+	 * @param id - The database id to read
+	 * @returns The stored {@link DatabaseDefinition}, or `undefined` when none is stored or the
+	 *   stored blob is malformed
+	 */
 	async get(id: string): Promise<DatabaseDefinition | undefined> {
 		const row = await this.#table.get(id)
 		if (row === undefined) return undefined
 		// The definition crosses back as an untrusted storage read (a structured clone / a JSON
-		// row), so narrow the opaque JSON column with the boundary guard rather than a cast (AGENTS
-		// §14); a malformed blob resolves `undefined`, never a broken definition.
+		// row), so narrow the opaque JSON column with the boundary guard rather than a cast; a
+		// malformed blob resolves `undefined`, never a broken definition.
 		return isDatabaseDefinition(row.definition) ? row.definition : undefined
 	}
 
-	/** Insert or replace under the definition's OWN `id` (no separate id param) — the row is `{ id, definition }`. */
+	/**
+	 * Inserts or replaces a definition under its OWN `id` — the written row is `{ id, definition }`.
+	 *
+	 * @param definition - The config to persist; its own `id` is the row key (no separate id param)
+	 * @returns A promise settling once the row is written
+	 */
 	async set(definition: DatabaseDefinition): Promise<void> {
 		await this.#table.set({ id: definition.id, definition })
 	}
 
-	/** Drop a definition by id; an absent id is a no-op (no throw). */
+	/**
+	 * Drops the definition stored under `id`.
+	 *
+	 * @param id - The database id to drop; an absent id is a no-op, never a throw
+	 * @returns A promise settling once no row is stored under `id`
+	 */
 	async delete(id: string): Promise<void> {
 		await this.#table.remove(id)
 	}

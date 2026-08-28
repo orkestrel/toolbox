@@ -1,8 +1,8 @@
 import { openStream } from '@orkestrel/server'
 import { createTerminalManager } from '@orkestrel/terminal'
-// `TerminalConnection` is internal: `TerminalRoutes` builds its `accepts` and `stream`,
-// so it is not barrelled and the test reaches it by its real path.
-import { TerminalConnection } from '../../../../src/server/routes/TerminalConnection.js'
+// `TerminalConnection` is internal: it is not exported from the `@orkestrel/toolbox/server`
+// barrel, so the test reaches it by its real path.
+import { TerminalConnection } from '../../../../src/server/terminals/TerminalConnection.js'
 import { createTestTimer, readAvailable } from '../../../setupServer.js'
 import { describe, expect, it } from 'vitest'
 

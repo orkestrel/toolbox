@@ -11,8 +11,7 @@ import { HEADER_TOKEN, serializeExpire, serializePending } from '@orkestrel/term
 /**
  * Own one terminal SSE connection's replay, subscriptions, keepalive, and teardown.
  *
- * Internal to this module: `TerminalRoutes` builds the `accepts` predicate from its own token
- * option and opens the stream, so no consumer can construct one. Reach this behaviour through
+ * Not exported from the `@orkestrel/toolbox/server` barrel — reach this behaviour through
  * `createTerminalRoutes`.
  */
 export class TerminalConnection {

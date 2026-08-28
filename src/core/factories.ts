@@ -106,10 +106,10 @@ import {
 	relationModelOf,
 	relationToolCode,
 	terminalToolCode,
-	isAgentFunction,
 	workflowTag,
 	workflowToolSummary,
 } from './helpers.js'
+import { isAgentFunction } from './validators.js'
 import {
 	agentToolShape,
 	answerToolShape,
@@ -395,7 +395,7 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
  * - the full nested {@link WorkflowDefinition} — the advanced escape-hatch, accepted as the draft
  *   super-set.
  *
- * The universal tool-handler contract (AGENTS §14): returns the plain run summary
+ * The universal tool-handler contract: returns the plain run summary
  * (`{ status, count, durable?, fault? }`) on success, THROWS a typed `ToolboxError` on Toolbox
  * boundary failures — malformed authored args (`TOOL`), or an over-deep / cyclic nested run
  * (`DEPTH`) — and preserves genuine runner `WorkflowError`s. The `ToolManagerInterface` isolates every throw into the canonical tool result's
@@ -532,11 +532,11 @@ export function createWorkflowTool(
  *
  * NO-ACTIVE RULE (the ergonomic seam): a WRITING op (write / splice / prepend / append / move /
  * remove / replace) run when `manager.active` is `undefined` AUTO-CREATES + activates a default
- * workspace (`manager.add()`) so the model can just start writing; a pure-READ op (read / list /
+ * workspace (`manager.add()`) so the model can start writing; a pure-READ op (read / list /
  * has / search) against no active workspace returns the EMPTY result (`undefined` / `[]` /
  * `false`), never creating one and never throwing.
  *
- * The handler conforms to the universal tool-handler contract (AGENTS §14): it `contract.parse`s
+ * The handler conforms to the universal tool-handler contract: it `contract.parse`s
  * the args, THROWS a `TOOL` `ToolboxError` when no operation arm matched (a malformed / unknown
  * operation), else `switch`es on `op.operation` and RETURNS the plain result — letting a
  * `WorkspaceError` raised by the live workspace (`MODALITY` / `PATTERN` / `RANGE`) PROPAGATE
@@ -665,7 +665,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
  * from `registry` and runs it to completion for ONE delegated `task`.
  *
  * @remarks
- * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').agentToolShape}, assembles an `AgentJobInput` (`task` seeds the
  * sub-agent's conversation as a single `user` message; `provider` / `tools` / `system` fall
  * back to the tool's own {@link import('./types.js').AgentToolOptions} defaults), rehydrates the sub-agent via
@@ -768,7 +768,7 @@ export function createAgentTool(
  * up via `tools.tool(name)` and returns its full `description` (falling back to `summary` when a
  * tool has no `description` of its own, then a placeholder when it has neither).
  *
- * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').describeToolShape}, RETURNS the plain description string on
  * success, THROWS a typed `TOOL` {@link import('./errors.js').ToolboxError} on a malformed call
  * or an unknown tool name.
@@ -816,7 +816,7 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
  * a multi-field form and BLOCKS until it answers, returning the resolved values record.
  *
  * @remarks
- * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').promptToolShape}, parses the call's schema through
  * `@orkestrel/form`, constructs the live form, and passes it to `TerminalManagerInterface.ask`.
  * `from` is FIXED at construction
@@ -914,7 +914,7 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
  * them by id.
  *
  * @remarks
- * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').answerToolShape} (discriminated by `operation`). `'pending'`
  * returns a compact list (`{ id, from, schema }`) of every form currently addressed to `to`.
  * `'answer'` looks the form up by `id`, narrows the supplied `values` through `@orkestrel/form`,
@@ -1041,11 +1041,11 @@ export function createDatabaseDefinitionStore(
 
 /**
  * Build an LLM-callable database tool — create, query, and mutate `@orkestrel/database`
- * databases through one `operation`-discriminated call (AGENTS §14, matching
+ * databases through one `operation`-discriminated call (matching
  * {@link createWorkspaceTool}'s single-tool-many-operations shape).
  *
  * @remarks
- * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').databaseToolShape}, dispatches to the matching operation, and
  * RETURNS a plain result on success. A database is resolved lazily and cached for the tool's
  * lifetime — `'create'` mints one from `tables` ({@link import('./helpers.js').expandTables}) and
@@ -1291,11 +1291,11 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 
 /**
  * Build an LLM-callable relation tool — traverse and edit `@orkestrel/relation` relationships
- * through one `operation`-discriminated call (AGENTS §14, matching {@link createDatabaseTool}'s
+ * through one `operation`-discriminated call (matching {@link createDatabaseTool}'s
  * single-tool-many-operations shape).
  *
  * @remarks
- * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').relationToolShape}, resolves the addressed
  * {@link import('@orkestrel/relation').RelationManagerInterface} — an explicit `manager` field
  * must match a key of {@link import('./types.js').RelationToolOptions.managers}, an OMITTED one
@@ -1310,7 +1310,8 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * at {@link import('./types.js').RelationToolOptions.depth} (default
  * {@link import('./constants.js').RELATION_TOOL_DEPTH}) — a path exceeding the cap, or carrying an
  * empty segment, throws a typed `TOOL` error. `'load'` dispatches on whether `key` is an array
- * (positional many-key form, AGENTS §9.2) or a single key. `'find'` and `'links'` clamp their
+ * (positional many-key form — an array key is read as many keys rather than one) or a single key.
+ * `'find'` and `'links'` clamp their
  * result to {@link import('./types.js').RelationToolOptions.limit} (default
  * {@link import('./constants.js').RELATION_TOOL_LIMIT}) — `'find'` probes one row past the
  * effective limit (mirroring {@link import('./helpers.js').clampQuery}'s idiom) to report
@@ -1424,7 +1425,7 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * {@link createEndpointTool}, wraps one CONCRETE endpoint).
  *
  * @remarks
- * The universal tool-handler contract (AGENTS §14): validates the call args against
+ * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').inferToolShape} (`samples` non-empty, `format` / `enum` optional
  * booleans, `candidates` an optional array), infers a schema via `@orkestrel/contract`'s
  * `samplesToSchema`, wraps a non-object root as `{ value: <schema> }` via `schemaToObject` (mirrors
@@ -1445,7 +1446,7 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * string slot is `valid: false`, full stop. `coercible` answers a SEPARATE question — "would the
  * NORMALIZING parse accept this value", i.e. would {@link createEndpointTool}'s default enforcement
  * admit it (`checker.parse(candidate) !== undefined`) — computed for every candidate regardless of
- * `valid`; by the house parse/guard round-trip guarantee (AGENTS §14), a `valid: true` entry is
+ * `valid`; by the house parse/guard round-trip guarantee, a `valid: true` entry is
  * ALWAYS also `coercible: true`. `@orkestrel/contract` 0.0.7's `explain` mirrors the normalizing
  * `parse`'s leniency, not `is`'s strictness — so a strictly-invalid but coercible candidate (`7`
  * against a string slot) yields `{ valid: false, coercible: true, faults: [] }`: EMPTY faults, since
@@ -1558,7 +1559,7 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * WITHOUT re-validation — the pre-0.0.7 behavior, preserved as an explicit opt-out. Either way,
  * `invoke`'s return flows back as the tool call's plain result; a throw PROPAGATES uncaught,
  * isolated by the `ToolManagerInterface` (`@orkestrel/tool`) into the canonical error envelope
- * (AGENTS §14) — never caught or re-wrapped here.
+ * — never caught or re-wrapped here.
  *
  * @param definition - The endpoint's identity, non-empty samples, and local handler (see
  *   {@link import('./types.js').EndpointDefinition})

@@ -1,7 +1,7 @@
 import type { WorkflowDefinition } from '@orkestrel/workflow'
 import type { WorkflowSteps, WorkspaceOperation } from './types.js'
 
-// Toolbox constants — UPPER_SNAKE, `Object.freeze`d, every member exported (AGENTS §5).
+// Toolbox constants — UPPER_SNAKE, `Object.freeze`d, every member exported.
 // Toolbox owns the workflow tool's authoring text/examples/depth bound and the workspace tool's
 // name/description. The current workflow text describes Toolbox's authoring layer over
 // `@orkestrel/workflow`'s named-function and runner-owned persistence APIs; the workspace text
@@ -45,7 +45,7 @@ export const AGENT_TOOL_DESCRIPTION = [
 	'Delegate a task to a sub-agent and return its result. Every call runs ONE sub-agent turn to completion.',
 	'',
 	'Required:',
-	'  task     - the instructions the sub-agent should carry out.',
+	'  task     - the instructions the sub-agent carries out.',
 	'Optional overrides (default to the values this tool was configured with):',
 	'  provider - the registry key of the model/provider the sub-agent runs against.',
 	'  tools    - registry keys of the tools loaded into the sub-agent (replaces the default list, not merged).',

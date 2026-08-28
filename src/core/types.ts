@@ -10,16 +10,20 @@ import type {
 	WorkflowStoreInterface,
 } from '@orkestrel/workflow'
 import type {
+	Condition,
+	ConditionConnector,
 	DatabaseInterface,
 	DriverInterface,
 	IndexMap,
 	KeyFunction,
+	OrderDirection,
 	PrimaryMap,
+	QueryInput,
 } from '@orkestrel/database'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 
-// Toolbox types — one interface per `create*Tool` / `create*Function` factory (AGENTS §5:
-// types are the SOURCE OF TRUTH; implementation conforms to them, never the reverse). The
+// Toolbox types — one interface per `create*Tool` / `create*Function` factory; these types are
+// the SOURCE OF TRUTH and the implementation conforms to them, never the reverse. The
 // workflow-authoring family (WorkflowSteps/WorkflowStep/WorkflowDraft/PhaseDraft/TaskDraft),
 // WorkflowToolResult, and adapter options are OWNED here and consume the current
 // `@orkestrel/workflow` contracts. WorkspaceOperation remains Toolbox's model-facing operation
@@ -212,9 +216,9 @@ export interface WorkspaceToolOptions {
 
 /**
  * One operation an agent invokes through {@link import('./factories.js').createWorkspaceTool} — a
- * FLAT, descriptive tagged union over the 13 workspace edit / read / navigation actions,
- * discriminated by the `operation` literal (AGENTS §4.8: a discriminant is named for its axis —
- * the action being performed — NEVER `kind`).
+ * FLAT, descriptive tagged union over the workspace edit, read, and navigation actions,
+ * discriminated by the `operation` literal (a discriminant is named for its axis — the action
+ * being performed — NEVER `kind`).
  *
  * @remarks
  * This is the SOURCE OF TRUTH the tool contract is typed to
@@ -360,9 +364,8 @@ export interface AgentToolArguments {
 }
 
 /**
- * The seven-value machine-readable code a thrown
- * {@link import('./errors.js').ToolboxError} carries (AGENTS §14: a thrown, typed,
- * code-bearing error, never a `{ error }` return).
+ * The machine-readable code a thrown {@link import('./errors.js').ToolboxError} carries — a
+ * thrown, typed, code-bearing error, never a `{ error }` return.
  *
  * @remarks
  * `TOOL` — malformed calls and package-owned resolution or configuration failures, including
@@ -446,7 +449,7 @@ export interface AnswerToolOptions {
 	readonly description?: string
 }
 
-// === Database definition (config-only, for the upcoming database / relation tools)
+// === Database definition (config-only)
 
 /** One column's declared type — a primitive shorthand, or `integer` for a whole-number `number`. */
 export type ColumnKind = 'string' | 'integer' | 'number' | 'boolean'
@@ -486,14 +489,14 @@ export interface DatabaseDefinition {
 	readonly version?: number
 }
 
-/** One opaque persisted row — the shape a `TableInterface<DatabaseDefinitionRow>`-backed store reads/writes; `definition` is narrowed with {@link import('./helpers.js').isDatabaseDefinition} on read. */
+/** One opaque persisted row — the shape a `TableInterface<DatabaseDefinitionRow>`-backed store reads/writes; `definition` is narrowed with {@link import('./validators.js').isDatabaseDefinition} on read. */
 export interface DatabaseDefinitionRow {
 	readonly id: string
 	readonly definition: unknown
 }
 
 /**
- * The point-access persistence seam (AGENTS §5 — Stores) for {@link DatabaseDefinition} configs —
+ * The point-access persistence seam for {@link DatabaseDefinition} configs —
  * the twin of `@orkestrel/terminal`'s `TerminalStoreInterface`, storing a database's CONFIG-ONLY
  * blueprint (never a live handle). Every primitive is async; `delete` of an absent id is a no-op.
  */
@@ -504,13 +507,50 @@ export interface DefinitionStoreInterface {
 }
 
 /**
- * Options for {@link import('./factories.js').createDatabaseTool} — SRC-2 of the 3-unit database
- * / relation spine, built over the SRC-1 foundation ({@link DatabaseDefinition},
- * {@link DefinitionStoreInterface}, {@link import('./helpers.js').expandTables}).
+ * The SERIALIZED wire query a database-tool call carries — the parsed form of
+ * {@link import('./shapers.js').queryShape}, which
+ * {@link import('./helpers.js').queryOf} normalizes into a live `@orkestrel/database`
+ * {@link QueryInput}.
+ *
+ * @remarks
+ * Every condition is FLAT and its `values` is ALWAYS an array, even for a single-value operator.
+ * `connector` is optional because the LAST condition joins nothing forward; `queryOf` defaults an
+ * omitted one to `'and'`. `order` / `limit` / `offset` carry over to the live query unchanged.
+ */
+export interface DatabaseQueryInput {
+	readonly conditions?: ReadonlyArray<
+		Readonly<{
+			column: string
+			operator: Condition['operator']
+			values: readonly unknown[]
+			connector?: ConditionConnector
+		}>
+	>
+	readonly order?: ReadonlyArray<Readonly<{ column: string; direction: OrderDirection }>>
+	readonly limit?: number
+	readonly offset?: number
+}
+
+/**
+ * The PROBE query and effective row limit {@link import('./helpers.js').clampQuery} returns.
+ *
+ * @remarks
+ * `limit` is the effective ceiling — `min(query?.limit ?? cap, cap)`, floored at `0`. `query`
+ * requests one row MORE than that, so a caller detects truncation from the returned row count
+ * without a separate `count` round trip.
+ */
+export interface ClampedQuery {
+	readonly query: QueryInput
+	readonly limit: number
+}
+
+/**
+ * Options for {@link import('./factories.js').createDatabaseTool} — the live handles, definition
+ * store, driver registry, key generator, row cap, timeout, and readonly gate the tool composes.
  *
  * @remarks
  * - `databases` — live `DatabaseInterface` handles to seed the tool's cache with (e.g. a
- *   caller-constructed database it should manage alongside store-backed ones); keyed by the id a
+ *   caller-constructed database it manages alongside store-backed ones); keyed by the id a
  *   call's `id` field addresses.
  * - `store` — the {@link DefinitionStoreInterface} the `'create'` operation persists its
  *   {@link DatabaseDefinition} CONFIG through, and `'destroy'` deletes from; also the source
@@ -549,8 +589,7 @@ export interface DatabaseToolOptions {
 }
 
 /**
- * Options for {@link import('./factories.js').createRelationTool} — SRC-3 (the final unit) of
- * the 3-unit database / relation spine.
+ * Options for {@link import('./factories.js').createRelationTool}.
  *
  * @remarks
  * - `managers` — the live `RelationManagerInterface` (`@orkestrel/relation`) registry a call's

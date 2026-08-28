@@ -1,6 +1,6 @@
 import type { TerminalManagerInterface } from '@orkestrel/terminal'
 import type { TerminalRoute, TerminalRoutesOptions } from './types.js'
-import { TerminalRoutes } from './routes/TerminalRoutes.js'
+import { TerminalRoutes } from './terminals/TerminalRoutes.js'
 
 /**
  * Build the GET SSE stream and POST answer routes that bridge a terminal manager onto the wire.

@@ -7,14 +7,14 @@ import type {
 	RelationErrorCode,
 	RelationManagerInterface,
 } from '@orkestrel/relation'
-import type { Condition, ConditionConnector, OrderDirection, QueryInput } from '@orkestrel/database'
+import type { QueryInput } from '@orkestrel/database'
 import type { ContractShape } from '@orkestrel/contract'
 import type {
-	AgentFunction,
 	ToolboxErrorCode,
+	ClampedQuery,
 	ColumnKind,
 	ColumnSpec,
-	DatabaseDefinition,
+	DatabaseQueryInput,
 	TableSpec,
 	WorkflowToolResult,
 	WorkflowLineage,
@@ -24,13 +24,10 @@ import { isTerminalError } from '@orkestrel/terminal'
 import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
 import { ToolboxError } from './errors.js'
+import { isWorkflowLineage } from './validators.js'
 import {
-	attempt,
 	booleanShape,
 	integerShape,
-	isFiniteNumber,
-	isNonEmptyString,
-	isRecord,
 	isString,
 	numberShape,
 	optionalShape,
@@ -73,27 +70,6 @@ export function agentTag(name: string): string {
 }
 
 /**
- * Narrow an unknown value to a valid alternating workflow lineage.
- *
- * @param value - The value to inspect
- * @returns Whether `value` is a unique, nonempty-tagged workflow/agent chain
- */
-export function isWorkflowLineage(value: unknown): value is WorkflowLineage {
-	const inspected = attempt(() => {
-		if (!Array.isArray(value)) return false
-		const seen = new Set<string>()
-		for (const [index, tag] of value.entries()) {
-			if (!isString(tag)) return false
-			const prefix = index % 2 === 0 ? 'workflow:' : 'agent:'
-			if (!tag.startsWith(prefix) || tag.length === prefix.length || seen.has(tag)) return false
-			seen.add(tag)
-		}
-		return true
-	})
-	return inspected.success && inspected.value
-}
-
-/**
  * Build a validated, copied, and frozen workflow lineage value.
  *
  * @param lineage - The configured chain; omitted means a direct root
@@ -130,31 +106,9 @@ export function deriveWorkflowDepth(lineage: WorkflowLineage): number {
 }
 
 /**
- * Narrow an unknown callable to Toolbox's frozen contextual agent adapter metadata.
- *
- * @param value - The value to inspect
- * @returns Whether it is a frozen {@link AgentFunction} with a frozen valid lineage
- */
-export function isAgentFunction(value: unknown): value is AgentFunction {
-	const inspected = attempt(() => {
-		if (typeof value !== 'function' || !Object.isFrozen(value)) return false
-		const category = Reflect.getOwnPropertyDescriptor(value, 'category')
-		const lineage = Reflect.getOwnPropertyDescriptor(value, 'lineage')
-		return (
-			category?.value === 'agent' &&
-			lineage !== undefined &&
-			'value' in lineage &&
-			Object.isFrozen(lineage.value) &&
-			isWorkflowLineage(lineage.value)
-		)
-	})
-	return inspected.success && inspected.value
-}
-
-/**
- * Build the plain success summary {@link import('./factories.js').createWorkflowTool} returns on
- * a completed run — the universal tool-handler contract (AGENTS §14): return a plain value on
- * success, appearing identically over BOTH the agent loop and MCP.
+ * Builds the plain success summary {@link import('./factories.js').createWorkflowTool} returns on
+ * a completed run — the universal tool-handler contract: return a plain value on success,
+ * appearing identically over BOTH the agent loop and MCP.
  *
  * @remarks
  * The summary is LEAN: the workflow's terminal `status`, settled-task count, and exact optional
@@ -288,8 +242,8 @@ export function expandSteps(flat: WorkflowSteps): WorkflowDefinition {
 }
 
 /**
- * Map a caught error to the {@link ToolboxErrorCode} the terminal-tool factory should throw
- * with — the pure classification step of that factory's error handling.
+ * Maps a caught error to the {@link ToolboxErrorCode} the terminal-tool factory throws with — the
+ * pure classification step of that factory's error handling.
  *
  * @remarks
  * Narrows `error` with {@link isTerminalError} (`@orkestrel/terminal`) first: a non-`TerminalError`
@@ -309,24 +263,9 @@ export function terminalToolCode(error: unknown): ToolboxErrorCode | undefined {
 	return 'TOOL'
 }
 
-// === Database-tool foundation (SRC-1 — persistence + the TableSpec DSL; the tool factories land
-// in a later unit) — the config-only `DatabaseDefinition` compiles into a live `@orkestrel/database`
-// `TableMap`, and its store twins narrow an untrusted persisted blob back to the type.
-
-/** Narrow an unknown value to a {@link ColumnSpec} — a valid {@link import('./types.js').ColumnKind} shorthand, or `{ type, optional }` with a valid `type`. */
-export function isColumnSpec(value: unknown): value is ColumnSpec {
-	if (isColumnKind(value)) return true
-	if (!isRecord(value)) return false
-	return (
-		isColumnKind(value.type) &&
-		(value.optional === undefined || typeof value.optional === 'boolean')
-	)
-}
-
-/** Narrow an unknown value to a {@link import('./types.js').ColumnKind}. */
-export function isColumnKind(value: unknown): value is ColumnKind {
-	return value === 'string' || value === 'integer' || value === 'number' || value === 'boolean'
-}
+// === Database-tool foundation — the config-only `DatabaseDefinition` compiles into a live
+// `@orkestrel/database` `TableMap`, and its store twins narrow an untrusted persisted blob back to
+// the type.
 
 /**
  * Compile a {@link TableSpec} into the `@orkestrel/database` {@link TableMap} it configures —
@@ -341,8 +280,8 @@ export function expandTables(spec: TableSpec): TableMap {
 	const tables: Record<string, Readonly<Record<string, ContractShape>>> = {}
 	for (const [table, definition] of Object.entries(spec)) {
 		const columns: Record<string, ContractShape> = {}
-		for (const [column, kind] of Object.entries(definition.columns)) {
-			columns[column] = columnShape(kind)
+		for (const [column, columnSpec] of Object.entries(definition.columns)) {
+			columns[column] = columnShape(columnSpec)
 		}
 		tables[table] = columns
 	}
@@ -366,49 +305,10 @@ export function kindShape(kind: ColumnKind): ContractShape {
 }
 
 /**
- * Narrow an unknown value to a {@link DatabaseDefinition} — a non-empty `id` + `driver`, a
- * `tables` record whose every value is `{ columns: record of valid ColumnSpec }`, plus optional
- * `primary`, `indexes`, and finite `version` schema configuration. The boundary guard a
- * {@link import('./types.js').DefinitionStoreInterface} applies to an untrusted persisted blob
- * before trusting it as a definition (never an `as`).
- */
-export function isDatabaseDefinition(value: unknown): value is DatabaseDefinition {
-	if (!isRecord(value)) return false
-	if ('keys' in value) return false
-	if (!isNonEmptyString(value.id) || !isNonEmptyString(value.driver)) return false
-	if (!isRecord(value.tables)) return false
-	for (const table of Object.values(value.tables)) {
-		if (!isRecord(table) || !isRecord(table.columns)) return false
-		for (const column of Object.values(table.columns)) {
-			if (!isColumnSpec(column)) return false
-		}
-	}
-	if (value.primary !== undefined) {
-		if (!isRecord(value.primary)) return false
-		for (const key of Object.values(value.primary)) {
-			if (!isNonEmptyString(key)) return false
-		}
-	}
-	if (value.indexes !== undefined) {
-		if (!isRecord(value.indexes)) return false
-		for (const groups of Object.values(value.indexes)) {
-			if (!Array.isArray(groups)) return false
-			for (const group of groups) {
-				if (!Array.isArray(group) || group.length === 0) return false
-				for (const column of group) {
-					if (!isNonEmptyString(column)) return false
-				}
-			}
-		}
-	}
-	if (value.version !== undefined && !isFiniteNumber(value.version)) return false
-	return true
-}
-
-/**
- * Map a caught error to the {@link ToolboxErrorCode} the upcoming database tool should throw
- * with — the pure classification step of that factory's error handling, mirroring
- * {@link terminalToolCode}'s idiom for `@orkestrel/database`.
+ * Maps a caught error to the granular {@link DatabaseErrorCode} (`@orkestrel/database`) the code
+ * {@link import('./factories.js').createDatabaseTool} throws with — the pure classification step
+ * of that factory's error handling, mirroring {@link terminalToolCode}'s idiom for
+ * `@orkestrel/database`.
  *
  * @param error - The value caught from a `@orkestrel/database` table operation
  * @returns The granular {@link DatabaseErrorCode}, or `undefined` if `error` is not a `DatabaseError`
@@ -418,9 +318,10 @@ export function databaseToolCode(error: unknown): DatabaseErrorCode | undefined 
 }
 
 /**
- * Map a caught error to the {@link ToolboxErrorCode} the upcoming relation tool should throw
- * with — the pure classification step of that factory's error handling, mirroring
- * {@link terminalToolCode}'s idiom for `@orkestrel/relation`.
+ * Maps a caught error to the granular {@link RelationErrorCode} (`@orkestrel/relation`) the code
+ * {@link import('./factories.js').createRelationTool} throws with — the pure classification step
+ * of that factory's error handling, mirroring {@link terminalToolCode}'s idiom for
+ * `@orkestrel/relation`.
  *
  * @param error - The value caught from a `@orkestrel/relation` operation
  * @returns The granular {@link RelationErrorCode}, or `undefined` if `error` is not a `RelationError`
@@ -567,23 +468,7 @@ export function relationModelOf(manager: RelationManagerInterface, name: string)
  * @param query - The parsed query (or `undefined`)
  * @returns The equivalent live `QueryInput`, or `undefined` when `query` is `undefined`
  */
-export function queryOf(
-	query:
-		| Readonly<{
-				conditions?: ReadonlyArray<
-					Readonly<{
-						column: string
-						operator: Condition['operator']
-						values: readonly unknown[]
-						connector?: ConditionConnector
-					}>
-				>
-				order?: ReadonlyArray<Readonly<{ column: string; direction: OrderDirection }>>
-				limit?: number
-				offset?: number
-		  }>
-		| undefined,
-): QueryInput | undefined {
+export function queryOf(query: DatabaseQueryInput | undefined): QueryInput | undefined {
 	if (query === undefined) return undefined
 	const conditions = query.conditions?.map((condition) => ({
 		...condition,
@@ -623,10 +508,7 @@ export function queryOf(
  * @param cap - The row-count ceiling
  * @returns The PROBE query (`limit` bumped by one) and the effective `limit`
  */
-export function clampQuery(
-	query: QueryInput | undefined,
-	cap: number,
-): Readonly<{ query: QueryInput; limit: number }> {
+export function clampQuery(query: QueryInput | undefined, cap: number): ClampedQuery {
 	const limit = Math.max(0, Math.min(query?.limit ?? cap, cap))
 	return { query: { ...query, limit: limit + 1 }, limit }
 }

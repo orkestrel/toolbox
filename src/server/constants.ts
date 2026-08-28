@@ -1,5 +1,5 @@
 // Server-package constants — UPPER_SNAKE, `Object.freeze`d where structural, every member
-// exported (AGENTS §5).
+// exported.
 
 /**
  * The default `:name`-templated path {@link import('./factories.js').createTerminalRoutes}
