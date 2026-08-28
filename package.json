@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/toolbox",
-	"version": "0.0.10",
+	"version": "0.0.11",
 	"description": "Concrete LLM-callable tools for the @orkestrel line — workflow authoring, workspace editing, sub-agent delegation, and more, over the @orkestrel/tool runtime, with pluggable stores. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
@@ -88,7 +88,7 @@
 		"@orkestrel/database": "^0.0.12",
 		"@orkestrel/form": "^0.0.3",
 		"@orkestrel/relation": "^0.0.10",
-		"@orkestrel/server": "^0.0.16",
+		"@orkestrel/server": "^0.0.17",
 		"@orkestrel/terminal": "^0.0.13",
 		"@orkestrel/tool": "^0.0.12",
 		"@orkestrel/workflow": "^0.0.16",
@@ -98,7 +98,7 @@
 		"@microsoft/api-extractor": "^7.59.0",
 		"@orkestrel/guide": "^0.0.15",
 		"@orkestrel/probe": "^0.0.10",
-		"@orkestrel/scaffold": "^0.0.58",
+		"@orkestrel/scaffold": "^0.0.59",
 		"@orkestrel/test": "^0.0.11",
 		"@types/node": "^26.4.0",
 		"@vitest/browser-playwright": "^4.1.11",
