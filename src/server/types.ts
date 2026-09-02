@@ -4,8 +4,8 @@ import type { TimerHandler } from '@orkestrel/terminal'
 // imports `@orkestrel/router`) so a consumer mounts the two returned routes against ANY router
 // that accepts this shape; these types are the source of truth.
 
-/** The HTTP method literal a {@link TerminalRoute} declares — the same union `@orkestrel/router`'s `Method` accepts. */
-export type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS'
+/** The HTTP method literal a {@link TerminalRoute} declares — the same union `@orkestrel/router`'s `Method` type accepts. */
+export type TerminalRouteMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS'
 
 /**
  * The minimal route-dispatch context a {@link TerminalRoute} handler reads — exactly the frozen,
@@ -22,7 +22,7 @@ export interface TerminalRouteContext {
  * `(request, context) => Response | Promise<Response>` handler keyed by `method` + `path`.
  */
 export interface TerminalRoute {
-	readonly method: Method
+	readonly method: TerminalRouteMethod
 	readonly path: string
 	readonly handler: (
 		request: Request,
@@ -31,7 +31,7 @@ export interface TerminalRoute {
 }
 
 /**
- * The `token` gate a {@link TerminalRoutesOptions} may configure — a plain string compared for
+ * The `token` gate {@link TerminalBridgeOptions} may configure — a plain string compared for
  * equality against the `x-orkestrel-token` header, OR a validator function the consumer fully
  * controls, enabling expiry/rotation (a JWT `exp` check, a revocation-list lookup, anything
  * time-varying) that a fixed string cannot express. `undefined` disables the auth check entirely.
@@ -39,7 +39,8 @@ export interface TerminalRoute {
 export type TerminalToken = string | ((value: string | undefined) => boolean)
 
 /**
- * Options for {@link import('./factories.js').createTerminalRoutes}.
+ * Options for a {@link import('./terminals/TerminalBridge.js').TerminalBridge} and for the
+ * {@link import('./factories.js').createTerminalRoutes} factory that projects its routes.
  *
  * @remarks
  * - `path` — the shared `:name`-templated path both the GET (SSE) and POST (answer) routes
@@ -63,7 +64,7 @@ export type TerminalToken = string | ((value: string | undefined) => boolean)
  *   a body exceeding it is rejected `413` and `manager.answer` is never called. Defaults to
  *   `@orkestrel/server`'s own `DEFAULT_BODY_LIMIT` (1 MiB).
  */
-export interface TerminalRoutesOptions {
+export interface TerminalBridgeOptions {
 	readonly path?: string
 	readonly token?: TerminalToken
 	readonly keepalive?: number

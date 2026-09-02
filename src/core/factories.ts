@@ -73,7 +73,7 @@ import {
 	INFER_TOOL_DESCRIPTION,
 	INFER_TOOL_NAME,
 	INFER_TOOL_SUMMARY,
-	MAX_WORKFLOW_DEPTH,
+	MAX_WORKFLOW_CHAIN,
 	PROMPT_TOOL_DESCRIPTION,
 	PROMPT_TOOL_NAME,
 	PROMPT_TOOL_SUMMARY,
@@ -91,24 +91,24 @@ import {
 } from './constants.js'
 import { ToolboxError, isToolboxError } from './errors.js'
 import {
-	agentTag,
 	clampQuery,
 	completeDraft,
-	deriveWorkflowDepth,
-	extendLineage,
-	lineageOf,
-	queryOf,
 	databaseToolCode,
+	deriveWorkflowDepth,
 	expandInclude,
 	expandSteps,
-	expandTables,
-	relationManagerOf,
-	relationModelOf,
+	extendLineage,
+	inferTerminalCode,
+	normalizeLineage,
+	normalizeQuery,
 	relationToolCode,
-	terminalToolCode,
-	workflowTag,
-	workflowToolSummary,
+	resolveRelationManager,
+	resolveRelationModel,
+	summarizeWorkflow,
+	tagAgent,
+	tagWorkflow,
 } from './helpers.js'
+import { expandTables } from './compilers.js'
 import { isAgentFunction } from './validators.js'
 import {
 	agentToolShape,
@@ -185,7 +185,7 @@ export function createToolFunction(tools: ToolManagerInterface, name: string): W
  * Composes into a caller's registry like any other behavior; the pure workflow runner has no
  * knowledge of agents itself. A root adapter derives its workflow lineage from the controller,
  * while a contextual adapter requires an exact match. Repeated agents, repeated workflows, and
- * targets deeper than {@link import('./constants.js').MAX_WORKFLOW_DEPTH} are rejected before
+ * targets deeper than {@link import('./constants.js').MAX_WORKFLOW_CHAIN} are rejected before
  * agent or runner activity. When {@link import('./types.js').AgentFunctionOptions.runner} is
  * supplied, the adapter binds a recursion-safe {@link createWorkflowTool} onto the agent's
  * `context.tools`, propagating opaque leaves, raw agents, lineage, and the native store. The
@@ -216,7 +216,7 @@ export function createAgentFunction(
 	agent: AgentInterface,
 	options?: AgentFunctionOptions,
 ): AgentFunction {
-	const lineage = lineageOf(options?.lineage)
+	const lineage = normalizeLineage(options?.lineage)
 	if (lineage.length > 0 && !lineage.at(-1)?.startsWith('workflow:')) {
 		throw new ToolboxError('TOOL', 'agent function lineage must end with a workflow tag')
 	}
@@ -229,7 +229,7 @@ export function createAgentFunction(
 	}
 	return Object.freeze(
 		Object.assign(async (controller: TaskControllerInterface) => {
-			const workflow = workflowTag(controller.task.phase.workflow.id)
+			const workflow = tagWorkflow(controller.task.phase.workflow.id)
 			const current = lineage.length === 0 ? extendLineage(lineage, workflow) : lineage
 			if (current.at(-1) !== workflow) {
 				throw new ToolboxError('DEPTH', 'agent function workflow does not match its lineage', {
@@ -239,14 +239,14 @@ export function createAgentFunction(
 			}
 			const depth = deriveWorkflowDepth(current)
 			// Reject over-depth or re-entry before the agent, tool registry, or runner becomes active.
-			if (depth > MAX_WORKFLOW_DEPTH) {
+			if (depth > MAX_WORKFLOW_CHAIN) {
 				throw new ToolboxError('DEPTH', `agent '${agent.id}' exceeds max workflow depth`, {
 					agent: agent.id,
 					depth,
-					max: MAX_WORKFLOW_DEPTH,
+					max: MAX_WORKFLOW_CHAIN,
 				})
 			}
-			const tag = agentTag(agent.id)
+			const tag = tagAgent(agent.id)
 			if (current.includes(tag)) {
 				throw new ToolboxError('DEPTH', `agent '${agent.id}' is already an ancestor (cycle)`, {
 					agent: agent.id,
@@ -318,7 +318,7 @@ export function createWorkflowFunctions(
 	runner: WorkflowRunnerInterface,
 	options?: WorkflowToolOptions,
 ): WorkflowFunctions {
-	const lineage = lineageOf(options?.lineage)
+	const lineage = normalizeLineage(options?.lineage)
 	if (lineage.length > 0 && !lineage.at(-1)?.startsWith('workflow:')) {
 		throw new ToolboxError('TOOL', 'workflow functions lineage must end with a workflow tag')
 	}
@@ -431,7 +431,7 @@ export function createWorkflowTool(
 	const strict = createWorkflowContract()
 	const draft = createWorkflowDraftContract()
 	const steps: ContractInterface<WorkflowSteps> = createContract(workflowStepsShape)
-	const lineage = lineageOf(options?.lineage)
+	const lineage = normalizeLineage(options?.lineage)
 	if (lineage.length > 0 && !lineage.at(-1)?.startsWith('agent:')) {
 		throw new ToolboxError('TOOL', 'workflow tool lineage must end with an agent tag')
 	}
@@ -474,7 +474,7 @@ export function createWorkflowTool(
 					workflow: definition.id,
 				})
 			}
-			const tag = workflowTag(target.id)
+			const tag = tagWorkflow(target.id)
 			if (lineage.includes(tag)) {
 				throw new ToolboxError('DEPTH', `workflow '${target.id}' is already an ancestor (cycle)`, {
 					workflow: target.id,
@@ -483,11 +483,11 @@ export function createWorkflowTool(
 			}
 			const targetLineage = extendLineage(lineage, tag)
 			const depth = deriveWorkflowDepth(targetLineage)
-			if (depth > MAX_WORKFLOW_DEPTH) {
-				throw new ToolboxError('DEPTH', `nested workflow exceeds max depth ${MAX_WORKFLOW_DEPTH}`, {
+			if (depth > MAX_WORKFLOW_CHAIN) {
+				throw new ToolboxError('DEPTH', `nested workflow exceeds max depth ${MAX_WORKFLOW_CHAIN}`, {
 					workflow: target.id,
 					depth,
-					max: MAX_WORKFLOW_DEPTH,
+					max: MAX_WORKFLOW_CHAIN,
 				})
 			}
 			const registry =
@@ -503,7 +503,7 @@ export function createWorkflowTool(
 				...(registry === undefined ? {} : { functions: registry }),
 				...(store === undefined ? {} : { store }),
 			})
-			return workflowToolSummary(result)
+			return summarizeWorkflow(result)
 		},
 	})
 }
@@ -730,7 +730,7 @@ export function createAgentTool(
 					max: AGENT_TOOL_DEPTH,
 				})
 			}
-			const tag = agentTag(provider)
+			const tag = tagAgent(provider)
 			if (ancestry.includes(tag)) {
 				throw new ToolboxError('DEPTH', `agent '${provider}' is already an ancestor (cycle)`, {
 					provider,
@@ -825,7 +825,7 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
  * `TerminalError('DEADLOCK')`, re-surfaced as a typed `DEADLOCK`
  * {@link import('./errors.js').ToolboxError}; an expired form re-surfaces as `EXPIRE`; an
  * unknown `to` (or any other `TerminalError`) re-surfaces as `TOOL`, naming the unknown terminal
- * plus the known ones (`manager.terminals()`).
+ * and how many brokers the manager holds (`manager.count`).
  *
  * @param options - The live manager, the fixed `from` identity, and advertised overrides (see
  *   {@link import('./types.js').PromptToolOptions})
@@ -882,7 +882,7 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 						to: call.to,
 					})
 				}
-				const code = terminalToolCode(error)
+				const code = inferTerminalCode(error)
 				if (code === undefined) throw error
 				if (code === 'DEADLOCK') {
 					throw new ToolboxError(
@@ -899,7 +899,7 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 				if (isTerminalError(error) && error.code === 'TARGET') {
 					throw new ToolboxError('TOOL', `unknown terminal '${call.to}'`, {
 						to: call.to,
-						known: options.manager.terminals(),
+						count: options.manager.count,
 					})
 				}
 				throw new ToolboxError('TOOL', `asking '${call.to}' failed`, { to: call.to })
@@ -1048,7 +1048,7 @@ export function createDatabaseDefinitionStore(
  * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').databaseToolShape}, dispatches to the matching operation, and
  * RETURNS a plain result on success. A database is resolved lazily and cached for the tool's
- * lifetime — `'create'` mints one from `tables` ({@link import('./helpers.js').expandTables}) and
+ * lifetime — `'create'` mints one from `tables` ({@link import('./compilers.js').expandTables}) and
  * a registered `driver` key ({@link import('./types.js').DatabaseToolOptions.drivers}, default
  * `{ memory: () => createMemoryDriver() }`); any other operation addressing an uncached id falls
  * back to {@link import('./types.js').DatabaseToolOptions.store} (an unknown id throws a typed
@@ -1060,7 +1060,7 @@ export function createDatabaseDefinitionStore(
  * {@link import('./constants.js').DATABASE_TOOL_LIMIT}) via
  * {@link import('./helpers.js').clampQuery}, reporting `truncated` when storage held more rows
  * than the cap. Every operation's `query` is normalized via
- * {@link import('./helpers.js').queryOf} (defaults an omitted condition `connector` to `'and'`).
+ * {@link import('./helpers.js').normalizeQuery} (defaults an omitted condition `connector` to `'and'`).
  * When {@link import('./types.js').DatabaseToolOptions.readonly} is `true`, every mutating
  * operation throws a typed `TOOL` `ToolboxError` before doing anything. A configured
  * {@link import('./types.js').DatabaseToolOptions.timeout} is passed as a fresh
@@ -1202,7 +1202,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 					case 'records': {
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
-						const { query: probe, limit } = clampQuery(queryOf(call.query), cap)
+						const { query: probe, limit } = clampQuery(normalizeQuery(call.query), cap)
 						const rows = await table.records(probe, read)
 						const truncated = rows.length > limit
 						const sliced = rows.slice(0, limit)
@@ -1211,7 +1211,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 					case 'count': {
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
-						const count = await table.count(queryOf(call.query), read)
+						const count = await table.count(normalizeQuery(call.query), read)
 						return { count }
 					}
 					case 'aggregate': {
@@ -1220,7 +1220,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						const value = await table.aggregate(
 							call.function,
 							call.column,
-							queryOf(call.query),
+							normalizeQuery(call.query),
 							read,
 						)
 						return { value }
@@ -1301,8 +1301,8 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * must match a key of {@link import('./types.js').RelationToolOptions.managers}, an OMITTED one
  * resolves to the SOLE registered manager, either miss throwing a typed `TOOL`
  * {@link import('./errors.js').ToolboxError}
- * ({@link import('./helpers.js').relationManagerOf}) — then resolves `model` against it
- * ({@link import('./helpers.js').relationModelOf}, same typed-`TOOL`-on-miss shape), and
+ * ({@link import('./helpers.js').resolveRelationManager}) — then resolves `model` against it
+ * ({@link import('./helpers.js').resolveRelationModel}, same typed-`TOOL`-on-miss shape), and
  * dispatches to the matched operation, RETURNING a plain result on success.
  *
  * `'load'` / `'find'` expand the call's FLAT dot-path `include` list into a live
@@ -1353,8 +1353,8 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 				throw new ToolboxError('TOOL', 'malformed relation call', { args })
 			}
 			try {
-				const manager = relationManagerOf(options.managers, call.manager)
-				const model = relationModelOf(manager, call.model)
+				const manager = resolveRelationManager(options.managers, call.manager)
+				const model = resolveRelationModel(manager, call.model)
 				switch (call.operation) {
 					case 'load': {
 						const include = expandInclude(call.include, depth)

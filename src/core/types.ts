@@ -38,7 +38,7 @@ import type { RelationManagerInterface } from '@orkestrel/relation'
 // id/name still has `minLength: 1`, so an explicitly-empty `id: ''` is REJECTED, not "absent"),
 // and `completeDraft` synthesizes any MISSING id positionally + defaults a missing name to its
 // id, yielding a strict `WorkflowDefinition` that is THEN re-validated against the strict
-// contract before running (soundness preserved). `run` stays optional (a plain name string),
+// contract before running (soundness preserved). `behavior` stays optional (a plain name string),
 // mirroring the definition family.
 
 /**
@@ -54,7 +54,7 @@ export interface TaskDraft {
 	readonly name?: string
 	readonly description?: string
 	/** The behavior reference — a registry key resolved against a workflow's functions registry at construction; omitted ⇒ a deliberate JSON `null` no-op. */
-	readonly run?: string
+	readonly behavior?: string
 	/** Extra attempts after the first on failure (a non-negative integer); persisted with the workflow. */
 	readonly retries?: number
 	/** The per-attempt deadline in milliseconds (`0..MAX_TIMER_MS`); persisted with the workflow. */
@@ -80,7 +80,7 @@ export interface PhaseDraft {
  * @remarks
  * The lenient authoring form {@link import('./factories.js').createWorkflowDraftContract}
  * validates and {@link import('./helpers.js').completeDraft} completes into a strict
- * `WorkflowDefinition`. `run` stays optional (a plain name string); the `bail` policy carries
+ * `WorkflowDefinition`. `behavior` stays optional (a plain name string); the `bail` policy carries
  * over.
  */
 export interface WorkflowDraft {
@@ -98,11 +98,11 @@ export interface WorkflowDraft {
  * One flat step — `{ name }` — the building block of a {@link WorkflowSteps} blob.
  *
  * @remarks
- * `name` is the REGISTERED behavior name the step runs (it becomes the task's `run`, NOT a
+ * `name` is the REGISTERED behavior name the step runs (it becomes the task's `behavior`, NOT a
  * human label) — resolved against a workflow-level functions registry at construction.
  */
 export interface WorkflowStep {
-	/** The registered behavior name this step runs (becomes the task's `run`). */
+	/** The registered behavior name this step runs (becomes the task's `behavior`). */
 	readonly name: string
 }
 
@@ -462,7 +462,7 @@ export type ColumnSpec = ColumnKind | Readonly<{ type: ColumnKind; optional?: bo
 
 /**
  * A database's table layout — one entry per table, each a flat map of column name to
- * {@link ColumnSpec}. The small-model-facing DSL {@link import('./helpers.js').expandTables}
+ * {@link ColumnSpec}. The small-model-facing DSL {@link import('./compilers.js').expandTables}
  * compiles into an `@orkestrel/database` `TableMap`.
  */
 export type TableSpec = Readonly<
@@ -476,7 +476,7 @@ export type TableSpec = Readonly<
  * @remarks
  * A `DatabaseDefinition` is NEVER a live handle — it is the durable, serializable config a
  * {@link DefinitionStoreInterface} persists and a tool factory turns into a real
- * `@orkestrel/database` `DatabaseInterface` (via `createDatabase` + {@link import('./helpers.js').expandTables})
+ * `@orkestrel/database` `DatabaseInterface` (via `createDatabase` + {@link import('./compilers.js').expandTables})
  * on demand. `primary` maps table names to primary-key columns; `indexes` maps table names to
  * index column groups; `version` opts a capable driver into open-time schema reconciliation.
  */
@@ -509,12 +509,12 @@ export interface DefinitionStoreInterface {
 /**
  * The SERIALIZED wire query a database-tool call carries — the parsed form of
  * {@link import('./shapers.js').queryShape}, which
- * {@link import('./helpers.js').queryOf} normalizes into a live `@orkestrel/database`
+ * {@link import('./helpers.js').normalizeQuery} normalizes into a live `@orkestrel/database`
  * {@link QueryInput}.
  *
  * @remarks
  * Every condition is FLAT and its `values` is ALWAYS an array, even for a single-value operator.
- * `connector` is optional because the LAST condition joins nothing forward; `queryOf` defaults an
+ * `connector` is optional because the LAST condition joins nothing forward; `normalizeQuery` defaults an
  * omitted one to `'and'`. `order` / `limit` / `offset` carry over to the live query unchanged.
  */
 export interface DatabaseQueryInput {

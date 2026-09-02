@@ -2,7 +2,7 @@ import type { DatabaseInterface, DriverInterface, KeyFunction } from '@orkestrel
 import type { DefinitionStoreInterface } from '../types.js'
 import { createDatabase } from '@orkestrel/database'
 import { ToolboxError } from '../errors.js'
-import { expandTables } from '../helpers.js'
+import { expandTables } from '../compilers.js'
 
 /**
  * Resolve database definitions into cached live handles for database tools.

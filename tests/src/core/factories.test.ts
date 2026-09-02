@@ -4,7 +4,11 @@ import type { ToolResult } from '@orkestrel/tool'
 import type { WorkflowDraft } from '@src/core'
 import type { DatabaseInterface } from '@orkestrel/database'
 import type { WorkflowDefinition, WorkflowFunction, WorkflowFunctions } from '@orkestrel/workflow'
-import type { TerminalManagerInterface, TimerCancel, TimerHandler } from '@orkestrel/terminal'
+import type {
+	TerminalManagerInterface,
+	TimerCancelFunction,
+	TimerHandler,
+} from '@orkestrel/terminal'
 import type { FieldControl, FormSchema, FormValues } from '@orkestrel/form'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 import { createAgent, createAgentRegistry, createMemoryConversationStore } from '@orkestrel/agent'
@@ -43,7 +47,7 @@ import {
 	DESCRIBE_TOOL_NAME,
 	INFER_TOOL_NAME,
 	isToolboxError,
-	MAX_WORKFLOW_DEPTH,
+	MAX_WORKFLOW_CHAIN,
 	PROMPT_TOOL_NAME,
 	RELATION_TOOL_NAME,
 	WORKFLOW_TOOL_DESCRIPTION,
@@ -55,21 +59,24 @@ import {
 import { createTerminalManager, TerminalError } from '@orkestrel/terminal'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { belongsTo, createRelationManager, hasMany, hasThrough } from '@orkestrel/relation'
-import { describe, expect, it } from 'vitest'
-import { createRecorder, waitForDelay } from '@orkestrel/test'
+import { afterEach, describe, expect, it } from 'vitest'
+import { createRecorder, waitForAbort, waitForDelay } from '@orkestrel/test'
 import {
 	createTestTaskController,
 	MalformedAgent,
 	RecordingWorkflowStore,
+	releaseTestTaskControllers,
 	ScriptedProvider,
 } from '../../setup.js'
+
+afterEach(releaseTestTaskControllers)
 
 // tests/src/core/factories.test.ts — mirrors src/core/factories.ts with real
 // handlers, stores, workflow runners, agents, and scripted protocol providers throughout.
 
 // ── Shared fixtures ──────────────────────────────────────────────────────────
 
-// A one-task definition whose `run` is omitted, so Workflow performs the deliberate JSON-null
+// A one-task definition whose `behavior` is omitted, so Workflow performs the deliberate JSON-null
 // no-op and the run completes without a functions registry.
 function simpleDefinition(id = 'nested'): WorkflowDefinition {
 	return {
@@ -139,7 +146,7 @@ function buildToolLineageFixture(depth: number): readonly string[] {
 	return lineage
 }
 
-function createWorkflowProviderCall(id: string, run: string): ProviderResult {
+function createWorkflowProviderCall(id: string, behavior: string): ProviderResult {
 	return {
 		content: '',
 		tools: [
@@ -154,7 +161,7 @@ function createWorkflowProviderCall(id: string, run: string): ProviderResult {
 						{
 							id: 'p',
 							name: 'P',
-							tasks: [{ id: 't', name: 'T', run }],
+							tasks: [{ id: 't', name: 'T', behavior }],
 						},
 					],
 				},
@@ -230,7 +237,7 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 			}),
 		)
 		const fn = createToolFunction(tools, 'scan')
-		const value = await fn(createTestTaskController({ input: { path: '/repo' } }))
+		const value = await fn(await createTestTaskController({ input: { path: '/repo' } }))
 		expect(value).toBe('scanned')
 		expect(seen.calls[0]?.[0]).toEqual({ path: '/repo' })
 	})
@@ -247,14 +254,14 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 			}),
 		)
 		const fn = createToolFunction(tools, 'boom')
-		const error = await rejectionOf(fn(createTestTaskController()))
+		const error = await rejectionOf(fn(await createTestTaskController()))
 		expect(error).toBe(thrown)
 	})
 
 	it('an UNREGISTERED tool name throws a typed TOOL ToolboxError', async () => {
 		const tools = createToolManager()
 		const fn = createToolFunction(tools, 'missing')
-		const error = await rejectionOf(fn(createTestTaskController()))
+		const error = await rejectionOf(fn(await createTestTaskController()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
@@ -283,11 +290,13 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 			new Date(0),
 		]
 		tools.add(createTool({ name: 'json', execute: () => json }))
-		expect(await createToolFunction(tools, 'json')(createTestTaskController())).toBe(json)
+		expect(await createToolFunction(tools, 'json')(await createTestTaskController())).toBe(json)
 		for (const [index, value] of invalid.entries()) {
 			const name = `invalid-${index}`
 			tools.add(createTool({ name, execute: () => value }))
-			const error = await rejectionOf(createToolFunction(tools, name)(createTestTaskController()))
+			const error = await rejectionOf(
+				createToolFunction(tools, name)(await createTestTaskController()),
+			)
 			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		}
 	})
@@ -298,7 +307,7 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 		const definition: WorkflowDefinition = {
 			id: 'wf',
 			name: 'WF',
-			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'scan' }] }],
+			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', behavior: 'scan' }] }],
 		}
 		const result = await createWorkflowRunner().execute(definition, {
 			functions: { scan: createToolFunction(tools, 'scan') },
@@ -325,7 +334,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 			]),
 		)
 		const fn = createAgentFunction(agent)
-		const value = await fn(createTestTaskController())
+		const value = await fn(await createTestTaskController())
 		expect(value).toEqual({
 			content: 'audited',
 			thinking: 'checked evidence',
@@ -339,7 +348,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		const agent = createAgent(provider)
 		const controller = new AbortController()
 		const fn = createAgentFunction(agent)
-		const running = fn(createTestTaskController({ signal: controller.signal }))
+		const running = fn(await createTestTaskController({ signal: controller.signal }))
 		await waitForDelay(20)
 		controller.abort(new Error('cancelled mid-generate'))
 		const value = await running
@@ -348,11 +357,11 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 
 	it('native per-run signal: an already-aborted controller never starts the provider', async () => {
 		const provider = new ScriptedProvider([{ content: 'unreached' }])
-		const controller = new AbortController()
-		controller.abort(new Error('cancelled before generate'))
-		const value = await createAgentFunction(createAgent(provider))(
-			createTestTaskController({ signal: controller.signal }),
-		)
+		const abort = new AbortController()
+		const controller = await createTestTaskController({ signal: abort.signal })
+		abort.abort(new Error('cancelled before generate'))
+		await waitForAbort(controller.signal)
+		const value = await createAgentFunction(createAgent(provider))(controller)
 		expect(isRecord(value) ? value.partial : undefined).toBe(true)
 		expect(provider.started).toBe(0)
 	})
@@ -361,10 +370,10 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		const provider = new ScriptedProvider([{ content: 'x' }])
 		const agent = createAgent(provider)
 		const fn = createAgentFunction(agent, {
-			lineage: buildWorkflowLineageFixture(MAX_WORKFLOW_DEPTH + 1),
+			lineage: buildWorkflowLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
 		const error = await rejectionOf(
-			fn(createTestTaskController({ workflow: `w${MAX_WORKFLOW_DEPTH + 1}` })),
+			fn(await createTestTaskController({ workflow: `w${MAX_WORKFLOW_CHAIN + 1}` })),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
@@ -376,7 +385,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		const fn = createAgentFunction(agent, {
 			lineage: ['workflow:w0', `agent:${agent.id}`, 'workflow:w1'],
 		})
-		const error = await rejectionOf(fn(createTestTaskController({ workflow: 'w1' })))
+		const error = await rejectionOf(fn(await createTestTaskController({ workflow: 'w1' })))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
@@ -390,7 +399,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 			functions: { nested: () => 'nested-result' },
 			store,
 		})
-		await fn(createTestTaskController())
+		await fn(await createTestTaskController())
 		expect(agent.context.tools.count).toBe(1)
 		const tool = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
 		if (tool === undefined) throw new Error('workflow tool was not bound')
@@ -408,7 +417,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 	it('a bound nested workflow tool refuses its no-arg containing-workflow target as a cycle', async () => {
 		const agent = createAgent(new ScriptedProvider([{ content: 'bound' }]))
 		await createAgentFunction(agent, { runner: createWorkflowRunner() })(
-			createTestTaskController({ workflow: 'containing' }),
+			await createTestTaskController({ workflow: 'containing' }),
 		)
 		const tool = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
 		if (tool === undefined) throw new Error('workflow tool was not bound')
@@ -422,7 +431,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		const definition: WorkflowDefinition = {
 			id: 'wf',
 			name: 'WF',
-			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', run: 'auditor' }] }],
+			phases: [{ id: 'a', name: 'A', tasks: [{ id: 't', name: 'T', behavior: 'auditor' }] }],
 		}
 		const result = await createWorkflowRunner().execute(definition, {
 			functions: { auditor: createAgentFunction(agent) },
@@ -453,14 +462,14 @@ describe('createAgentFunction — contextual metadata and lifecycle guards', () 
 	it('rejects a contextual workflow mismatch before agent activity', async () => {
 		const provider = new ScriptedProvider([{ content: 'unreached' }])
 		const fn = createAgentFunction(createAgent(provider), { lineage: ['workflow:expected'] })
-		const error = await rejectionOf(fn(createTestTaskController({ workflow: 'actual' })))
+		const error = await rejectionOf(fn(await createTestTaskController({ workflow: 'actual' })))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
 
 	it('uses Agent-owned full projection and maps a malformed structural result to TOOL', async () => {
 		const error = await rejectionOf(
-			createAgentFunction(new MalformedAgent())(createTestTaskController()),
+			createAgentFunction(new MalformedAgent())(await createTestTaskController()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
@@ -468,7 +477,7 @@ describe('createAgentFunction — contextual metadata and lifecycle guards', () 
 	it('preserves a genuine provider error by identity', async () => {
 		const failure = new Error('provider refused')
 		const agent = createAgent(new ScriptedProvider([{ content: 'unreached' }], { failure }))
-		const error = await rejectionOf(createAgentFunction(agent)(createTestTaskController()))
+		const error = await rejectionOf(createAgentFunction(agent)(await createTestTaskController()))
 		expect(error).toBe(failure)
 		expect(agent.status).toBe('error')
 	})
@@ -476,9 +485,9 @@ describe('createAgentFunction — contextual metadata and lifecycle guards', () 
 	it('a concurrent same-agent loser rejects before replacing the bound workflow tool', async () => {
 		const agent = createAgent(new ScriptedProvider([{ content: 'slow' }], { delay: 40 }))
 		const fn = createAgentFunction(agent, { runner: createWorkflowRunner() })
-		const first = fn(createTestTaskController({ workflow: 'first' }))
+		const first = fn(await createTestTaskController({ workflow: 'first' }))
 		const bound = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
-		const error = await rejectionOf(fn(createTestTaskController({ workflow: 'second' })))
+		const error = await rejectionOf(fn(await createTestTaskController({ workflow: 'second' })))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(agent.context.tools.tool(WORKFLOW_TOOL_NAME)).toBe(bound)
 		await first
@@ -492,7 +501,7 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 		const definition: WorkflowDefinition = {
 			id: 'root',
 			name: 'Root',
-			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'review' }] }],
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'review' }] }],
 		}
 		const functions = createWorkflowFunctions(runner, { agents: { review: agent } })
 		const result = await runner.execute(definition, { functions })
@@ -535,7 +544,7 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 					{
 						id: `inherited-${name}`,
 						name,
-						phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: name }] }],
+						phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: name }] }],
 					},
 					{ functions },
 				),
@@ -560,7 +569,7 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 				{
 					id: `registered-${name}`,
 					name,
-					phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: name }] }],
+					phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: name }] }],
 				},
 				{ functions },
 			)
@@ -615,7 +624,7 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 	})
 
 	it('allows depth eight and rejects depth nine for a direct registry consumer', async () => {
-		for (const depth of [MAX_WORKFLOW_DEPTH, MAX_WORKFLOW_DEPTH + 1]) {
+		for (const depth of [MAX_WORKFLOW_CHAIN, MAX_WORKFLOW_CHAIN + 1]) {
 			const provider = new ScriptedProvider([{ content: `depth-${depth}` }])
 			const agent = createAgent(provider)
 			const id = `w${depth}`
@@ -628,12 +637,12 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 					id,
 					name: id,
 					bail: true,
-					phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'review' }] }],
+					phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'review' }] }],
 				},
 				{ functions },
 			)
-			expect(result.status).toBe(depth === MAX_WORKFLOW_DEPTH ? 'completed' : 'failed')
-			expect(provider.started).toBe(depth === MAX_WORKFLOW_DEPTH ? 1 : 0)
+			expect(result.status).toBe(depth === MAX_WORKFLOW_CHAIN ? 'completed' : 'failed')
+			expect(provider.started).toBe(depth === MAX_WORKFLOW_CHAIN ? 1 : 0)
 		}
 	})
 })
@@ -655,7 +664,7 @@ describe('workflow/agent recursion through real providers and runners', () => {
 			{
 				id: 'root',
 				name: 'Root',
-				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'a' }] }],
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'a' }] }],
 			},
 			{ functions },
 		)
@@ -686,7 +695,7 @@ describe('workflow/agent recursion through real providers and runners', () => {
 			{
 				id: 'root',
 				name: 'Root',
-				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'a' }] }],
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'a' }] }],
 			},
 			{ functions },
 		)
@@ -712,7 +721,7 @@ describe('workflow/agent recursion through real providers and runners', () => {
 			{
 				id: 'root',
 				name: 'Root',
-				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'a' }] }],
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'a' }] }],
 			},
 			{ functions },
 		)
@@ -755,7 +764,7 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		expect(readSummary(await tool.execute({}))).toEqual({ status: 'completed', count: 1 })
 	})
 
-	it('an omitted run completes with native JSON null', async () => {
+	it('an omitted behavior completes with native JSON null', async () => {
 		const store = createMemoryWorkflowStore()
 		const tool = createWorkflowTool(simpleDefinition('omitted'), createWorkflowRunner(), { store })
 		expect(await tool.execute({})).toEqual({ status: 'completed', count: 1, durable: true })
@@ -766,12 +775,12 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		})
 	})
 
-	it('an unresolved named run preserves the native TRANSITION WorkflowError', async () => {
+	it('an unresolved named behavior preserves the native TRANSITION WorkflowError', async () => {
 		const store = new RecordingWorkflowStore()
 		const definition: WorkflowDefinition = {
 			id: 'unresolved',
 			name: 'Unresolved',
-			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'missing' }] }],
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'missing' }] }],
 		}
 		const error = await rejectionOf(
 			createWorkflowTool(definition, createWorkflowRunner(), { store }).execute({}),
@@ -803,7 +812,7 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			{
 				id: 'wrapped',
 				name: 'Wrapped',
-				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'entered' }] }],
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'entered' }] }],
 			},
 			createWorkflowRunner(),
 			{
@@ -831,7 +840,7 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 
 	it('an over-deep call throws a typed DEPTH ToolboxError without running', async () => {
 		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
-			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
 		const error = await rejectionOf(tool.execute({ ...simpleDefinition('deep') }))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
@@ -849,7 +858,7 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 
 	it('the draft contract accepts an ids-omitted blob but the tool rejects an explicitly-empty id', () => {
 		const draft = createWorkflowDraftContract()
-		const omitted: WorkflowDraft = { phases: [{ tasks: [{ run: 'a' }] }] }
+		const omitted: WorkflowDraft = { phases: [{ tasks: [{ behavior: 'a' }] }] }
 		expect(draft.is(omitted)).toBe(true)
 		expect(draft.parse({ id: '', phases: [] })).toBeUndefined()
 	})
@@ -859,7 +868,9 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			functions: { x: () => 'x', y: () => 'y' },
 		})
 		const summary = readSummary(
-			await tool.execute({ phases: [{ tasks: [{ run: 'x' }] }, { tasks: [{ run: 'y' }] }] }),
+			await tool.execute({
+				phases: [{ tasks: [{ behavior: 'x' }] }, { tasks: [{ behavior: 'y' }] }],
+			}),
 		)
 		expect(summary).toEqual({ status: 'completed', count: 2 })
 	})
@@ -893,18 +904,18 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 
 	it('allows depth eight and rejects depth nine from a top-level-tool entry path', async () => {
 		const allowed = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
-			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH),
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN),
 		})
-		expect(await allowed.execute({ ...simpleDefinition(`w${MAX_WORKFLOW_DEPTH}`) })).toEqual({
+		expect(await allowed.execute({ ...simpleDefinition(`w${MAX_WORKFLOW_CHAIN}`) })).toEqual({
 			status: 'completed',
 			count: 1,
 		})
 
 		const rejected = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
-			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
 		const error = await rejectionOf(
-			rejected.execute({ ...simpleDefinition(`w${MAX_WORKFLOW_DEPTH + 1}`) }),
+			rejected.execute({ ...simpleDefinition(`w${MAX_WORKFLOW_CHAIN + 1}`) }),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 	})
@@ -918,9 +929,9 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 				name: 'precedence',
 				steps: [{ name: 'a' }, { name: 'b' }],
 				phases: [
-					{ id: 'x', name: 'X', tasks: [{ id: 'x0', name: 'X0', run: 'p' }] },
-					{ id: 'y', name: 'Y', tasks: [{ id: 'y0', name: 'Y0', run: 'q' }] },
-					{ id: 'z', name: 'Z', tasks: [{ id: 'z0', name: 'Z0', run: 'r' }] },
+					{ id: 'x', name: 'X', tasks: [{ id: 'x0', name: 'X0', behavior: 'p' }] },
+					{ id: 'y', name: 'Y', tasks: [{ id: 'y0', name: 'Y0', behavior: 'q' }] },
+					{ id: 'z', name: 'Z', tasks: [{ id: 'z0', name: 'Z0', behavior: 'r' }] },
 				],
 			}),
 		)
@@ -941,7 +952,7 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 
 	it('a FAILURE maps to a SINGLE-LEVEL ToolResult — a TOP-LEVEL error, no value', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
-			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
 		const result = await executeThroughManager(tool)
 		if (result.success) throw new Error('expected the depth guard to fail')
@@ -951,7 +962,7 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 
 	it('the manager constructs the expected success-discriminated ToolResult shapes directly', async () => {
 		const failing = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
-			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
 		const failure = await executeThroughManager(failing)
 		expect(failure).toEqual({
@@ -1023,7 +1034,7 @@ describe('createWorkflowTool — optional native durable store', () => {
 		const store = createMemoryWorkflowStore()
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
 			store,
-			lineage: buildToolLineageFixture(MAX_WORKFLOW_DEPTH + 1),
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
 		await rejectionOf(tool.execute({ ...simpleDefinition('unreached') }))
 		expect(await store.get('unreached')).toBeUndefined()
@@ -1049,7 +1060,7 @@ describe('createWorkflowTool — optional native durable store', () => {
 		}).execute({})
 		expect(result).toMatchObject({
 			durable: false,
-			fault: { origin: 'persistence', message: 'checkpoint refused' },
+			fault: { message: 'checkpoint refused' },
 		})
 	})
 
@@ -1060,7 +1071,7 @@ describe('createWorkflowTool — optional native durable store', () => {
 		}).execute({})
 		expect(result).toMatchObject({
 			durable: true,
-			fault: { origin: 'persistence', checkpoint: 'initial', message: 'checkpoint refused' },
+			fault: { checkpoint: 'initial', message: 'checkpoint refused' },
 		})
 		expect(await store.get('fail-once')).toBeDefined()
 	})
@@ -1472,7 +1483,7 @@ function createFakeTimer(): {
 	const timer: TimerHandler = (callback, _ms) => {
 		const entry = { callback, cancelled: false }
 		armed.push(entry)
-		const cancel: TimerCancel = () => {
+		const cancel: TimerCancelFunction = () => {
 			entry.cancelled = true
 		}
 		return cancel
@@ -1529,14 +1540,14 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEADLOCK')
 	})
 
-	it('unknown target maps to a typed TOOL ToolboxError listing known terminals', async () => {
+	it('unknown target maps to a typed TOOL ToolboxError naming the target and the broker tally', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(askTool.execute(createAskCall('ghost', 'text', 'name?')))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		const known = isToolboxError(error) ? error.context?.known : undefined
-		expect(known).toEqual(['agent'])
+		expect(isToolboxError(error) ? error.context?.to : undefined).toBe('ghost')
+		expect(isToolboxError(error) ? error.context?.count : undefined).toBe(1)
 	})
 
 	it('EXPIRE: an injected-timer expiry maps to a typed EXPIRE ToolboxError', async () => {
@@ -1769,7 +1780,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 			emitter,
 			count: 0,
 			terminal: () => undefined,
-			terminals: () => ['b'],
+			terminals: () => [],
 			add: () => {
 				throw new Error('not implemented')
 			},

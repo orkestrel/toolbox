@@ -1,4 +1,4 @@
-import { openStream } from '@orkestrel/server'
+import { createStream } from '@orkestrel/server'
 import { createTerminalManager } from '@orkestrel/terminal'
 // `TerminalConnection` is internal: it is not exported from the `@orkestrel/toolbox/server`
 // barrel, so the test reaches it by its real path.
@@ -21,7 +21,7 @@ describe('TerminalConnection', () => {
 			manager,
 			'assistant',
 			request,
-			openStream(),
+			createStream(),
 			() => true,
 			timer.timer,
 			1000,
@@ -54,7 +54,7 @@ describe('TerminalConnection', () => {
 			manager,
 			'assistant',
 			new Request('http://x/terminals/assistant', { signal: controller.signal }),
-			openStream(),
+			createStream(),
 			() => true,
 			timer.timer,
 			1000,
@@ -77,7 +77,7 @@ describe('TerminalConnection', () => {
 			manager,
 			'assistant',
 			new Request('http://x/terminals/assistant'),
-			openStream(),
+			createStream(),
 			() => {
 				throw new Error('invalid token')
 			},

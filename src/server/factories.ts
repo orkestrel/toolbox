@@ -1,9 +1,9 @@
 import type { TerminalManagerInterface } from '@orkestrel/terminal'
-import type { TerminalRoute, TerminalRoutesOptions } from './types.js'
-import { TerminalRoutes } from './terminals/TerminalRoutes.js'
+import type { TerminalBridgeOptions, TerminalRoute } from './types.js'
+import { TerminalBridge } from './terminals/TerminalBridge.js'
 
 /**
- * Build the GET SSE stream and POST answer routes that bridge a terminal manager onto the wire.
+ * Builds the GET SSE stream and POST answer routes that bridge a terminal manager onto the wire.
  *
  * @remarks
  * Both routes share the configured `:name` path and optional token gate. The GET route replays
@@ -26,7 +26,7 @@ import { TerminalRoutes } from './terminals/TerminalRoutes.js'
  */
 export function createTerminalRoutes(
 	manager: TerminalManagerInterface,
-	options?: TerminalRoutesOptions,
+	options?: TerminalBridgeOptions,
 ): readonly TerminalRoute[] {
-	return new TerminalRoutes(manager, options).routes()
+	return new TerminalBridge(manager, options).routes()
 }

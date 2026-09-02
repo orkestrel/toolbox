@@ -6,11 +6,14 @@ import {
 	createTestTaskController,
 	MalformedAgent,
 	RecordingWorkflowStore,
+	releaseTestTaskControllers,
 	ScriptedProvider,
 } from './setup.js'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 describe('setup', () => {
+	afterEach(releaseTestTaskControllers)
+
 	it('createTestDatabase returns a fresh, closable live database on every call', async () => {
 		const first = createTestDatabase()
 		const second = createTestDatabase()
@@ -58,8 +61,8 @@ describe('setup', () => {
 		})
 	})
 
-	it('createTestTaskController wires a real controller over a p/t workflow with defaults', () => {
-		const controller = createTestTaskController()
+	it('createTestTaskController wires a real controller over a p/t workflow with defaults', async () => {
+		const controller = await createTestTaskController()
 
 		expect(controller.input).toEqual({})
 		expect(controller.aborted).toBe(false)
@@ -69,7 +72,7 @@ describe('setup', () => {
 
 	it('createTestTaskController threads a caller signal and input into the real controller', async () => {
 		const abortController = new AbortController()
-		const controller = createTestTaskController({
+		const controller = await createTestTaskController({
 			signal: abortController.signal,
 			input: { path: '/repo' },
 		})

@@ -1,5 +1,4 @@
 import type { WorkflowDefinition, WorkflowResult } from '@orkestrel/workflow'
-import type { TableMap } from '@orkestrel/database'
 import type { DatabaseErrorCode } from '@orkestrel/database'
 import type {
 	Include,
@@ -8,14 +7,10 @@ import type {
 	RelationManagerInterface,
 } from '@orkestrel/relation'
 import type { QueryInput } from '@orkestrel/database'
-import type { ContractShape } from '@orkestrel/contract'
 import type {
 	ToolboxErrorCode,
 	ClampedQuery,
-	ColumnKind,
-	ColumnSpec,
 	DatabaseQueryInput,
-	TableSpec,
 	WorkflowToolResult,
 	WorkflowLineage,
 } from './types.js'
@@ -25,39 +20,31 @@ import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
 import { ToolboxError } from './errors.js'
 import { isWorkflowLineage } from './validators.js'
-import {
-	booleanShape,
-	integerShape,
-	isString,
-	numberShape,
-	optionalShape,
-	stringShape,
-} from '@orkestrel/contract'
 
 // Toolbox owns the workflow tool's lenient-authoring completion, ancestry tags, and boundary
 // projections. Runtime scheduling, named-function resolution, and persistence remain native
 // `@orkestrel/workflow` responsibilities.
 
 /**
- * The ancestry identifier of a workflow in a run chain — `workflow:<id>`.
+ * Returns the ancestry identifier of a workflow in a run chain — `workflow:<id>`.
  *
  * @remarks
- * Namespacing keeps a workflow id and an {@link agentTag} agent name in ONE set without
+ * Namespacing keeps a workflow id and a {@link tagAgent} agent name in ONE set without
  * collision, so re-entering a workflow OR an agent already in the chain is a single `includes`
  * check.
  *
  * @param id - The workflow definition's `id`
  * @returns The namespaced ancestry tag (`workflow:<id>`)
  */
-export function workflowTag(id: string): string {
+export function tagWorkflow(id: string): string {
 	return `workflow:${id}`
 }
 
 /**
- * The ancestry identifier of an agent in a run chain — `agent:<name>`.
+ * Returns the ancestry identifier of an agent in a run chain — `agent:<name>`.
  *
  * @remarks
- * The agent counterpart of {@link workflowTag}: {@link import('./factories.js').createAgentFunction}
+ * The agent counterpart of {@link tagWorkflow}: {@link import('./factories.js').createAgentFunction}
  * / {@link import('./factories.js').createWorkflowTool} guard against re-entering an agent or
  * workflow already in the chain (this package's typed `DEPTH` `ToolboxError`). The
  * `agent:` namespace keeps it distinct from a same-string workflow id.
@@ -65,17 +52,17 @@ export function workflowTag(id: string): string {
  * @param name - The agent's identifier / registry name
  * @returns The namespaced ancestry tag (`agent:<name>`)
  */
-export function agentTag(name: string): string {
+export function tagAgent(name: string): string {
 	return `agent:${name}`
 }
 
 /**
- * Build a validated, copied, and frozen workflow lineage value.
+ * Returns the canonical workflow lineage — validated, copied, and frozen.
  *
  * @param lineage - The configured chain; omitted means a direct root
  * @returns An immutable caller-isolated lineage
  */
-export function lineageOf(lineage: WorkflowLineage = []): WorkflowLineage {
+export function normalizeLineage(lineage: WorkflowLineage = []): WorkflowLineage {
 	if (!isWorkflowLineage(lineage)) {
 		throw new ToolboxError('TOOL', 'workflow lineage must alternate unique workflow and agent tags')
 	}
@@ -83,24 +70,24 @@ export function lineageOf(lineage: WorkflowLineage = []): WorkflowLineage {
 }
 
 /**
- * Append one tag to a workflow lineage and return a frozen copy.
+ * Appends one tag to a workflow lineage and returns a frozen copy.
  *
  * @param lineage - The valid chain to extend
  * @param tag - The workflow or agent tag to append
  * @returns The validated immutable extension
  */
 export function extendLineage(lineage: WorkflowLineage, tag: string): WorkflowLineage {
-	return lineageOf([...lineage, tag])
+	return normalizeLineage([...lineage, tag])
 }
 
 /**
- * Derive the zero-based workflow nesting depth from a valid lineage.
+ * Derives the zero-based workflow nesting depth from a valid lineage.
  *
  * @param lineage - The workflow/agent chain
  * @returns Zero for an empty/root lineage, then one per nested workflow
  */
 export function deriveWorkflowDepth(lineage: WorkflowLineage): number {
-	const current = lineageOf(lineage)
+	const current = normalizeLineage(lineage)
 	const workflows = current.filter((tag) => tag.startsWith('workflow:')).length
 	return Math.max(0, workflows - 1)
 }
@@ -118,7 +105,7 @@ export function deriveWorkflowDepth(lineage: WorkflowLineage): number {
  * @param result - The terminal `WorkflowResult` (`@orkestrel/workflow`) the run produced
  * @returns The plain success summary — `{ status, count, durable?, fault? }`
  */
-export function workflowToolSummary(result: WorkflowResult): WorkflowToolResult {
+export function summarizeWorkflow(result: WorkflowResult): WorkflowToolResult {
 	return {
 		status: result.status,
 		count: result.results.length,
@@ -146,7 +133,7 @@ export function workflowToolSummary(result: WorkflowResult): WorkflowToolResult 
  * `phase-<i>`, and task `j` of that phase is `<phaseId>-task-<j>` (so a provided phase id flows
  * into its tasks' synthesized ids). A PROVIDED `id` / `name` at any level is kept VERBATIM —
  * synthesis touches only the omitted ones. A missing `name` defaults to the resolved `id` (never
- * the other way round), so the result always has both. `run`, `description`, the per-phase
+ * the other way round), so the result always has both. `behavior`, `description`, the per-phase
  * `concurrency` / `bail`, the per-task `retries` / `timeout`, and the workflow `bail` carry over
  * unchanged. The result is a complete {@link WorkflowDefinition}; the caller still validates it
  * against the STRICT contract.
@@ -208,7 +195,7 @@ export function completeTaskDraft(
 		id,
 		name: task.name ?? id,
 		...(task.description === undefined ? {} : { description: task.description }),
-		...(task.run === undefined ? {} : { run: task.run }),
+		...(task.behavior === undefined ? {} : { behavior: task.behavior }),
 		...(task.retries === undefined ? {} : { retries: task.retries }),
 		...(task.timeout === undefined ? {} : { timeout: task.timeout }),
 	}
@@ -221,7 +208,7 @@ export function completeTaskDraft(
  * @remarks
  * The expansion of the tool's ADVERTISED surface: the deliberately-reduced flat form. Each
  * {@link import('./types.js').WorkflowStep} maps to a phase holding exactly one task: the step's
- * `name` becomes the task's `run` (the behavior-registry key). Ids/names are auto-filled
+ * `name` becomes the task's `behavior` (the behavior-registry key). Ids/names are auto-filled
  * positionally — it builds an ids-omitted {@link WorkflowDraft} and delegates to
  * {@link completeDraft}, so the two lenient surfaces share ONE synthesis path (step `i` → phase
  * `phase-<i>`, its task `phase-<i>-task-0`). The optional `name` becomes both the workflow's
@@ -236,7 +223,7 @@ export function expandSteps(flat: WorkflowSteps): WorkflowDefinition {
 	return completeDraft({
 		...(flat.name === undefined ? {} : { id: flat.name, name: flat.name }),
 		phases: flat.steps.map((step) => ({
-			tasks: [{ run: step.name }],
+			tasks: [{ behavior: step.name }],
 		})),
 	})
 }
@@ -256,58 +243,20 @@ export function expandSteps(flat: WorkflowSteps): WorkflowDefinition {
  * @param error - The value caught from a terminal-manager operation (`ask` / `answer` / …)
  * @returns The mapped {@link ToolboxErrorCode}, or `undefined` if `error` is not a `TerminalError`
  */
-export function terminalToolCode(error: unknown): ToolboxErrorCode | undefined {
+export function inferTerminalCode(error: unknown): ToolboxErrorCode | undefined {
 	if (!isTerminalError(error)) return undefined
 	if (error.code === 'DEADLOCK') return 'DEADLOCK'
 	if (error.code === 'EXPIRE') return 'EXPIRE'
 	return 'TOOL'
 }
 
-// === Database-tool foundation — the config-only `DatabaseDefinition` compiles into a live
-// `@orkestrel/database` `TableMap`, and its store twins narrow an untrusted persisted blob back to
-// the type.
-
-/**
- * Compile a {@link TableSpec} into the `@orkestrel/database` {@link TableMap} it configures —
- * each {@link ColumnSpec} maps to the matching primitive shaper (`'string'` → `stringShape()`,
- * `'integer'` → `integerShape()`, `'number'` → `numberShape()`, `'boolean'` → `booleanShape()`),
- * wrapped in `optionalShape` when the column declares `optional: true`. Total, pure.
- *
- * @param spec - The small-model-facing table layout
- * @returns The compiled `TableMap` a `@orkestrel/database` `createDatabase` call accepts
- */
-export function expandTables(spec: TableSpec): TableMap {
-	const tables: Record<string, Readonly<Record<string, ContractShape>>> = {}
-	for (const [table, definition] of Object.entries(spec)) {
-		const columns: Record<string, ContractShape> = {}
-		for (const [column, columnSpec] of Object.entries(definition.columns)) {
-			columns[column] = columnShape(columnSpec)
-		}
-		tables[table] = columns
-	}
-	return tables
-}
-
-/** Compile one {@link ColumnSpec} into its `@orkestrel/database` column shape — the per-column leaf {@link expandTables} maps over. */
-export function columnShape(spec: ColumnSpec): ContractShape {
-	const kind = isString(spec) ? spec : spec.type
-	const optional = !isString(spec) && spec.optional === true
-	const shape = kindShape(kind)
-	return optional ? optionalShape(shape) : shape
-}
-
-/** Map one {@link import('./types.js').ColumnKind} to its primitive `@orkestrel/database` shape — the leaf {@link columnShape} wraps. */
-export function kindShape(kind: ColumnKind): ContractShape {
-	if (kind === 'string') return stringShape()
-	if (kind === 'integer') return integerShape()
-	if (kind === 'number') return numberShape()
-	return booleanShape()
-}
+// === Database- and relation-tool error classification — a caught upstream error maps to the
+// code the owning factory re-throws with.
 
 /**
  * Maps a caught error to the granular {@link DatabaseErrorCode} (`@orkestrel/database`) the code
  * {@link import('./factories.js').createDatabaseTool} throws with — the pure classification step
- * of that factory's error handling, mirroring {@link terminalToolCode}'s idiom for
+ * of that factory's error handling, mirroring {@link inferTerminalCode}'s idiom for
  * `@orkestrel/database`.
  *
  * @param error - The value caught from a `@orkestrel/database` table operation
@@ -320,7 +269,7 @@ export function databaseToolCode(error: unknown): DatabaseErrorCode | undefined 
 /**
  * Maps a caught error to the granular {@link RelationErrorCode} (`@orkestrel/relation`) the code
  * {@link import('./factories.js').createRelationTool} throws with — the pure classification step
- * of that factory's error handling, mirroring {@link terminalToolCode}'s idiom for
+ * of that factory's error handling, mirroring {@link inferTerminalCode}'s idiom for
  * `@orkestrel/relation`.
  *
  * @param error - The value caught from a `@orkestrel/relation` operation
@@ -396,7 +345,7 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
 }
 
 /**
- * Resolve which registered {@link RelationManagerInterface} a relation-tool call addresses — the
+ * Resolves which registered {@link RelationManagerInterface} a relation-tool call addresses — the
  * pure manager-resolution leaf {@link import('./factories.js').createRelationTool} calls on
  * every operation.
  *
@@ -409,7 +358,7 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
  * @param name - The call's optional `manager` field
  * @returns The resolved {@link RelationManagerInterface}
  */
-export function relationManagerOf(
+export function resolveRelationManager(
 	managers: Readonly<Record<string, RelationManagerInterface>>,
 	name: string | undefined,
 ): RelationManagerInterface {
@@ -435,19 +384,22 @@ export function relationManagerOf(
 }
 
 /**
- * Resolve a `model` name against a live {@link RelationManagerInterface} — the pure model-lookup
+ * Resolves a `model` name against a live {@link RelationManagerInterface} — the pure model-lookup
  * leaf {@link import('./factories.js').createRelationTool} calls on every operation, mirroring
- * {@link relationManagerOf}'s guard shape.
+ * {@link resolveRelationManager}'s guard shape.
  *
  * @param manager - The resolved {@link RelationManagerInterface}
  * @param name - The call's `model` field
  * @returns The model's {@link ModelInterface}
  */
-export function relationModelOf(manager: RelationManagerInterface, name: string): ModelInterface {
+export function resolveRelationModel(
+	manager: RelationManagerInterface,
+	name: string,
+): ModelInterface {
 	if (!manager.has(name)) {
 		throw new ToolboxError('TOOL', `unknown model '${name}'`, {
 			model: name,
-			models: manager.models(),
+			models: manager.names(),
 		})
 	}
 	return manager.model(name)
@@ -456,8 +408,8 @@ export function relationModelOf(manager: RelationManagerInterface, name: string)
 // === Database-tool operation leaves (SRC-2 — `createDatabaseTool` itself)
 
 /**
- * Normalize the database tool's parsed SERIALIZED query into a live `@orkestrel/database`
- * {@link QueryInput} — default each condition's OMITTED `connector` to `'and'`.
+ * Returns the canonical live `@orkestrel/database` {@link QueryInput} for the database tool's
+ * parsed SERIALIZED query — each condition's OMITTED `connector` defaults to `'and'`.
  *
  * @remarks
  * The wire form ({@link import('./shapers.js').databaseToolShape}) lets a caller drop `connector`
@@ -468,7 +420,7 @@ export function relationModelOf(manager: RelationManagerInterface, name: string)
  * @param query - The parsed query (or `undefined`)
  * @returns The equivalent live `QueryInput`, or `undefined` when `query` is `undefined`
  */
-export function queryOf(query: DatabaseQueryInput | undefined): QueryInput | undefined {
+export function normalizeQuery(query: DatabaseQueryInput | undefined): QueryInput | undefined {
 	if (query === undefined) return undefined
 	const conditions = query.conditions?.map((condition) => ({
 		...condition,

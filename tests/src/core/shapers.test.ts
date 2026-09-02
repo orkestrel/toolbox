@@ -187,7 +187,7 @@ describe('workflowDraftShape — the lenient draft (ids/names optional at every 
 	const contract = createContract(workflowDraftShape)
 
 	it('is() accepts an ids-omitted draft', () => {
-		expect(contract.is({ phases: [{ tasks: [{ run: 'a' }] }] })).toBe(true)
+		expect(contract.is({ phases: [{ tasks: [{ behavior: 'a' }] }] })).toBe(true)
 		expect(contract.is({ phases: [] })).toBe(true)
 	})
 
@@ -196,7 +196,7 @@ describe('workflowDraftShape — the lenient draft (ids/names optional at every 
 			contract.is({
 				id: 'w',
 				name: 'W',
-				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', run: 'f' }] }],
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'f' }] }],
 			}),
 		).toBe(true)
 	})
@@ -212,8 +212,8 @@ describe('workflowDraftShape — the lenient draft (ids/names optional at every 
 		expect(contract.is({ phases: 'nope' })).toBe(false)
 	})
 
-	it('is() rejects a task with an empty run, or a sub-1 concurrency', () => {
-		expect(contract.is({ phases: [{ tasks: [{ run: '' }] }] })).toBe(false)
+	it('is() rejects a task with an empty behavior, or a sub-1 concurrency', () => {
+		expect(contract.is({ phases: [{ tasks: [{ behavior: '' }] }] })).toBe(false)
 		expect(contract.is({ phases: [{ tasks: [], concurrency: 0 }] })).toBe(false)
 	})
 

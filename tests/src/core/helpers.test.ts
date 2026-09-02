@@ -7,7 +7,7 @@ import type {
 	WorkflowResult,
 } from '@orkestrel/workflow'
 import {
-	agentTag,
+	tagAgent,
 	ToolboxError,
 	clampQuery,
 	completeDraft,
@@ -16,12 +16,11 @@ import {
 	createAgentFunction,
 	deriveWorkflowDepth,
 	extendLineage,
-	lineageOf,
-	queryOf,
+	normalizeLineage,
+	normalizeQuery,
 	databaseToolCode,
 	expandInclude,
 	expandSteps,
-	expandTables,
 	isAgentFunction,
 	isToolboxError,
 	isColumnKind,
@@ -29,9 +28,9 @@ import {
 	isDatabaseDefinition,
 	isWorkflowLineage,
 	relationToolCode,
-	terminalToolCode,
-	workflowTag,
-	workflowToolSummary,
+	inferTerminalCode,
+	tagWorkflow,
+	summarizeWorkflow,
 } from '@src/core'
 import { createAgent } from '@orkestrel/agent'
 import { TerminalError } from '@orkestrel/terminal'
@@ -44,7 +43,6 @@ import {
 } from '@orkestrel/workflow'
 import { DatabaseError } from '@orkestrel/database'
 import { RelationError } from '@orkestrel/relation'
-import { createContract, objectShape } from '@orkestrel/contract'
 import { describe, expect, it } from 'vitest'
 import { ScriptedProvider } from '../../setup.js'
 
@@ -54,16 +52,16 @@ import { ScriptedProvider } from '../../setup.js'
 // that turns the tool's LENIENT authoring surfaces into a strict WorkflowDefinition
 // (`@orkestrel/workflow`).
 
-describe('ancestry tags — workflowTag / agentTag (depth/cycle chain identifiers)', () => {
+describe('ancestry tags — tagWorkflow / tagAgent (depth/cycle chain identifiers)', () => {
 	it('namespaces a workflow id and an agent name distinctly (no collision)', () => {
-		expect(workflowTag('x')).toBe('workflow:x')
-		expect(agentTag('x')).toBe('agent:x')
-		expect(workflowTag('x')).not.toBe(agentTag('x'))
+		expect(tagWorkflow('x')).toBe('workflow:x')
+		expect(tagAgent('x')).toBe('agent:x')
+		expect(tagWorkflow('x')).not.toBe(tagAgent('x'))
 	})
 
 	it('is a pure function of its input id/name', () => {
-		expect(workflowTag('release')).toBe('workflow:release')
-		expect(agentTag('reviewer')).toBe('agent:reviewer')
+		expect(tagWorkflow('release')).toBe('workflow:release')
+		expect(tagAgent('reviewer')).toBe('agent:reviewer')
 	})
 })
 
@@ -87,7 +85,7 @@ describe('workflow lineage helpers', () => {
 
 	it('copies and freezes construction and extension without aliasing caller arrays', () => {
 		const source = ['workflow:root']
-		const root = lineageOf(source)
+		const root = normalizeLineage(source)
 		source.push('agent:later')
 		const nested = extendLineage(root, 'agent:a')
 		expect(root).toEqual(['workflow:root'])
@@ -104,7 +102,7 @@ describe('workflow lineage helpers', () => {
 		]) {
 			let error: unknown
 			try {
-				lineageOf(lineage)
+				normalizeLineage(lineage)
 			} catch (caught) {
 				error = caught
 			}
@@ -147,7 +145,7 @@ describe('workflow lineage helpers', () => {
 	})
 })
 
-describe('workflowToolSummary — WorkflowResult → the plain handler summary', () => {
+describe('summarizeWorkflow — WorkflowResult → the plain handler summary', () => {
 	it('summarizes a run as the terminal status + the result count', () => {
 		const workflowContext = buildWorkflowContext({ id: 'wf-1', name: 'WF' })
 		const phaseContext = buildPhaseContext(workflowContext, { id: 'p', name: 'P' })
@@ -165,17 +163,15 @@ describe('workflowToolSummary — WorkflowResult → the plain handler summary',
 			results,
 			durable: true,
 			fault: {
-				origin: 'persistence',
 				checkpoint: 'settlement',
 				message: 'temporary refusal',
 			},
 		}
-		expect(workflowToolSummary(result)).toEqual({
+		expect(summarizeWorkflow(result)).toEqual({
 			status: 'completed',
 			count: 2,
 			durable: true,
 			fault: {
-				origin: 'persistence',
 				checkpoint: 'settlement',
 				message: 'temporary refusal',
 			},
@@ -188,14 +184,14 @@ describe('workflowToolSummary — WorkflowResult → the plain handler summary',
 			status: 'completed',
 			results: [],
 		}
-		expect(workflowToolSummary(result)).toEqual({ status: 'completed', count: 0 })
+		expect(summarizeWorkflow(result)).toEqual({ status: 'completed', count: 0 })
 	})
 })
 
 describe('completeDraft — synthesize omitted ids/names into a strict definition', () => {
 	it('fills EVERY missing id positionally + defaults each name to its (resolved) id', () => {
 		const draft: WorkflowDraft = {
-			phases: [{ tasks: [{ run: 'a' }, { run: 'b' }] }, { tasks: [{ run: 'c' }] }],
+			phases: [{ tasks: [{ behavior: 'a' }, { behavior: 'b' }] }, { tasks: [{ behavior: 'c' }] }],
 		}
 		const definition = completeDraft(draft)
 		expect(createWorkflowContract().is(definition)).toBe(true)
@@ -209,14 +205,14 @@ describe('completeDraft — synthesize omitted ids/names into a strict definitio
 		])
 		expect(definition.phases[0]?.tasks[0]?.name).toBe('phase-0-task-0')
 		expect(definition.phases[1]?.tasks[0]?.id).toBe('phase-1-task-0')
-		expect(definition.phases[0]?.tasks[0]?.run).toBe('a')
-		expect(definition.phases[1]?.tasks[0]?.run).toBe('c')
+		expect(definition.phases[0]?.tasks[0]?.behavior).toBe('a')
+		expect(definition.phases[1]?.tasks[0]?.behavior).toBe('c')
 	})
 
 	it('PRESERVES a provided id/name verbatim and nests synthesized task ids under a provided phase id', () => {
 		const definition = completeDraft({
 			id: 'mine',
-			phases: [{ id: 'p', name: 'Phase', tasks: [{ name: 'T', run: 'f' }] }],
+			phases: [{ id: 'p', name: 'Phase', tasks: [{ name: 'T', behavior: 'f' }] }],
 		})
 		expect(definition.id).toBe('mine')
 		expect(definition.name).toBe('mine')
@@ -235,7 +231,7 @@ describe('completeDraft — synthesize omitted ids/names into a strict definitio
 					description: 'pd',
 					concurrency: 3,
 					bail: false,
-					tasks: [{ run: 'x', retries: 2, timeout: 500, description: 'leaf' }],
+					tasks: [{ behavior: 'x', retries: 2, timeout: 500, description: 'leaf' }],
 				},
 			],
 		})
@@ -249,16 +245,16 @@ describe('completeDraft — synthesize omitted ids/names into a strict definitio
 		expect(definition.phases[0]?.tasks[0]?.description).toBe('leaf')
 	})
 
-	it('omits run/retries/timeout when the draft task declares none (no undefined keys)', () => {
+	it('omits behavior/retries/timeout when the draft task declares none (no undefined keys)', () => {
 		const definition = completeDraft({ phases: [{ tasks: [{}] }] })
 		const task = definition.phases[0]?.tasks[0]
-		expect(task && 'run' in task).toBe(false)
+		expect(task && 'behavior' in task).toBe(false)
 		expect(task && 'retries' in task).toBe(false)
 		expect(task && 'timeout' in task).toBe(false)
 	})
 
 	it('is deterministic — the same draft always yields the same definition', () => {
-		const draft: WorkflowDraft = { phases: [{ tasks: [{ run: 'x' }] }] }
+		const draft: WorkflowDraft = { phases: [{ tasks: [{ behavior: 'x' }] }] }
 		expect(completeDraft(draft)).toEqual(completeDraft(draft))
 	})
 
@@ -270,7 +266,7 @@ describe('completeDraft — synthesize omitted ids/names into a strict definitio
 
 	it('completePhaseDraft / completeTaskDraft synthesize at their own positional index', () => {
 		expect(completePhaseDraft({ tasks: [] }, 2).id).toBe('phase-2')
-		expect(completeTaskDraft({ run: 't' }, 'phase-2', 5).id).toBe('phase-2-task-5')
+		expect(completeTaskDraft({ behavior: 't' }, 'phase-2', 5).id).toBe('phase-2-task-5')
 	})
 
 	it('completePhaseDraft preserves a provided phase id/name and its concurrency/bail', () => {
@@ -285,14 +281,14 @@ describe('completeDraft — synthesize omitted ids/names into a strict definitio
 	})
 
 	it('completeTaskDraft preserves a provided task id/name', () => {
-		const task = completeTaskDraft({ id: 'fixed', name: 'Fixed', run: 'f' }, 'phase-0', 0)
+		const task = completeTaskDraft({ id: 'fixed', name: 'Fixed', behavior: 'f' }, 'phase-0', 0)
 		expect(task.id).toBe('fixed')
 		expect(task.name).toBe('Fixed')
 	})
 })
 
 describe('expandSteps — flatten a steps blob into a one-task-phase-per-step definition', () => {
-	it('maps each step to a one-task phase IN ORDER (a step`s name becomes the task`s run)', () => {
+	it('maps each step to a one-task phase IN ORDER (a step`s name becomes the task`s behavior)', () => {
 		const flat: WorkflowSteps = {
 			name: 'pipeline',
 			steps: [{ name: 'fetch' }, { name: 'scan' }, { name: 'audit' }],
@@ -305,9 +301,9 @@ describe('expandSteps — flatten a steps blob into a one-task-phase-per-step de
 		expect(definition.phases.map((phase) => phase.tasks.length)).toEqual([1, 1, 1])
 		expect(definition.phases.map((phase) => phase.id)).toEqual(['phase-0', 'phase-1', 'phase-2'])
 		expect(definition.phases[0]?.tasks[0]?.id).toBe('phase-0-task-0')
-		expect(definition.phases[0]?.tasks[0]?.run).toBe('fetch')
-		expect(definition.phases[1]?.tasks[0]?.run).toBe('scan')
-		expect(definition.phases[2]?.tasks[0]?.run).toBe('audit')
+		expect(definition.phases[0]?.tasks[0]?.behavior).toBe('fetch')
+		expect(definition.phases[1]?.tasks[0]?.behavior).toBe('scan')
+		expect(definition.phases[2]?.tasks[0]?.behavior).toBe('audit')
 	})
 
 	it('defaults the workflow id (and name) when no name is supplied', () => {
@@ -323,22 +319,22 @@ describe('expandSteps — flatten a steps blob into a one-task-phase-per-step de
 	})
 })
 
-describe('terminalToolCode — classify a caught error into a ToolboxErrorCode', () => {
+describe('inferTerminalCode — classify a caught error into a ToolboxErrorCode', () => {
 	it('maps DEADLOCK and EXPIRE to their own code', () => {
-		expect(terminalToolCode(new TerminalError('DEADLOCK', 'cycle'))).toBe('DEADLOCK')
-		expect(terminalToolCode(new TerminalError('EXPIRE', 'timed out'))).toBe('EXPIRE')
+		expect(inferTerminalCode(new TerminalError('DEADLOCK', 'cycle'))).toBe('DEADLOCK')
+		expect(inferTerminalCode(new TerminalError('EXPIRE', 'timed out'))).toBe('EXPIRE')
 	})
 
 	it('maps every other TerminalErrorCode to the generic TOOL code', () => {
-		expect(terminalToolCode(new TerminalError('TARGET', 'unknown terminal'))).toBe('TOOL')
-		expect(terminalToolCode(new TerminalError('CANCEL', 'aborted'))).toBe('TOOL')
-		expect(terminalToolCode(new TerminalError('DRIVER', 'io failure'))).toBe('TOOL')
+		expect(inferTerminalCode(new TerminalError('TARGET', 'unknown terminal'))).toBe('TOOL')
+		expect(inferTerminalCode(new TerminalError('CANCEL', 'aborted'))).toBe('TOOL')
+		expect(inferTerminalCode(new TerminalError('DRIVER', 'io failure'))).toBe('TOOL')
 	})
 
 	it('returns undefined for a non-TerminalError value', () => {
-		expect(terminalToolCode(new Error('plain'))).toBeUndefined()
-		expect(terminalToolCode('nope')).toBeUndefined()
-		expect(terminalToolCode(undefined)).toBeUndefined()
+		expect(inferTerminalCode(new Error('plain'))).toBeUndefined()
+		expect(inferTerminalCode('nope')).toBeUndefined()
+		expect(inferTerminalCode(undefined)).toBeUndefined()
 	})
 })
 
@@ -382,49 +378,6 @@ describe('isColumnSpec — narrow to a bare ColumnKind or an { type, optional } 
 		expect(isColumnSpec(42)).toBe(false)
 		expect(isColumnSpec('text')).toBe(false)
 		expect(isColumnSpec([])).toBe(false)
-	})
-})
-
-describe('expandTables — compile a TableSpec into a @orkestrel/database TableMap', () => {
-	it('maps each ColumnKind to the matching primitive shaper (guards good/bad values)', () => {
-		const tables = expandTables({
-			widgets: {
-				columns: { name: 'string', count: 'integer', weight: 'number', active: 'boolean' },
-			},
-		})
-		const widgets = tables.widgets
-		if (widgets === undefined) throw new Error('expected widgets table')
-		const contract = createContract(objectShape(widgets))
-		expect(contract.is({ name: 'w', count: 1, weight: 1.5, active: true })).toBe(true)
-		expect(contract.is({ name: 42, count: 1, weight: 1.5, active: true })).toBe(false)
-		expect(contract.is({ name: 'w', count: 1.5, weight: 1.5, active: true })).toBe(false)
-		expect(contract.is({ name: 'w', count: 1, weight: 'x', active: true })).toBe(false)
-		expect(contract.is({ name: 'w', count: 1, weight: 1.5, active: 'yes' })).toBe(false)
-	})
-
-	it('optional:true wraps so an absent column passes and a wrong-typed present column fails', () => {
-		const tables = expandTables({
-			widgets: { columns: { nickname: { type: 'string', optional: true } } },
-		})
-		const widgets = tables.widgets
-		if (widgets === undefined) throw new Error('expected widgets table')
-		const contract = createContract(objectShape(widgets))
-		expect(contract.is({})).toBe(true)
-		expect(contract.is({ nickname: 'w' })).toBe(true)
-		expect(contract.is({ nickname: 42 })).toBe(false)
-	})
-
-	it('compiles multiple tables independently', () => {
-		const tables = expandTables({
-			a: { columns: { x: 'string' } },
-			b: { columns: { y: 'integer' } },
-		})
-		expect(Object.keys(tables).sort()).toEqual(['a', 'b'])
-		const a = tables.a
-		const b = tables.b
-		if (a === undefined || b === undefined) throw new Error('expected both tables')
-		expect(createContract(objectShape(a)).is({ x: 's' })).toBe(true)
-		expect(createContract(objectShape(b)).is({ y: 1 })).toBe(true)
 	})
 })
 
@@ -557,13 +510,13 @@ describe('clampQuery — clamp a records call to a row cap + build the probe que
 	})
 })
 
-describe('queryOf — normalize a parsed wire query into a live QueryInput', () => {
+describe('normalizeQuery — normalize a parsed wire query into a live QueryInput', () => {
 	it('returns undefined when the input is undefined', () => {
-		expect(queryOf(undefined)).toBeUndefined()
+		expect(normalizeQuery(undefined)).toBeUndefined()
 	})
 
 	it('defaults an omitted condition connector to "and", preserving an explicit one', () => {
-		const result = queryOf({
+		const result = normalizeQuery({
 			conditions: [
 				{ column: 'a', operator: 'equals', values: [1] },
 				{ column: 'b', operator: 'equals', values: [2], connector: 'or' },
@@ -576,7 +529,7 @@ describe('queryOf — normalize a parsed wire query into a live QueryInput', () 
 	})
 
 	it('passes order / limit / offset through unchanged, omitting fields not supplied', () => {
-		const result = queryOf({
+		const result = normalizeQuery({
 			order: [{ column: 'a', direction: 'descending' }],
 			limit: 5,
 			offset: 2,
@@ -590,7 +543,7 @@ describe('queryOf — normalize a parsed wire query into a live QueryInput', () 
 	})
 
 	it('an empty query object yields an empty (no-key) result', () => {
-		expect(queryOf({})).toEqual({})
+		expect(normalizeQuery({})).toEqual({})
 	})
 })
 

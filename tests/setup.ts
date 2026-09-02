@@ -1,7 +1,7 @@
 import type {
-	MessageInterface,
 	AgentInterface,
 	AgentResult,
+	Message,
 	ProviderDelta,
 	ProviderInterface,
 	ProviderResult,
@@ -16,7 +16,7 @@ import type {
 } from '@orkestrel/workflow'
 import { createAgent, ProviderAbortError } from '@orkestrel/agent'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
-import { createWorkflow, TaskController } from '@orkestrel/workflow'
+import { createWorkflowRunner } from '@orkestrel/workflow'
 import { waitForDelay } from '@orkestrel/test'
 
 /**
@@ -59,7 +59,7 @@ export function createTestDefinition(id = 'shop'): DatabaseDefinition {
 	}
 }
 
-/** Options for a real workflow {@link TaskController} test handle. */
+/** Options for a live workflow task controller captured mid-run. */
 export interface TestTaskControllerOptions {
 	readonly signal?: AbortSignal
 	readonly input?: JSONRecord
@@ -67,33 +67,59 @@ export interface TestTaskControllerOptions {
 	readonly task?: string
 }
 
+// The workflow package publishes `TaskControllerInterface` but not the class behind it, so a live
+// handle comes from a real run: a one-task workflow whose behavior captures its own controller and
+// parks. The run stays open — and the handle stays valid — until `releaseTestTaskControllers`
+// settles every parked task, which each suite does after every test.
+const releases: Array<() => void> = []
+
 /**
- * Build a real exported workflow task and its native {@link TaskController} handle.
+ * Captures a live {@link TaskControllerInterface} from a real one-task workflow run.
+ *
+ * @remarks
+ * The task parks after capture, so the returned handle keeps the non-aborted, owning state a
+ * `WorkflowFunction` sees mid-run. `signal` folds into the controller's own signal through the
+ * run's cancellation, `input` arrives as the task's metadata bag, and `workflow` / `task` name the
+ * lineage `controller.task.phase.workflow.id` and `controller.task.id` report.
  *
  * @param options - Optional signal, input, and lineage identities
- * @returns A native controller over a real workflow task
+ * @returns The live controller of a parked task in a real run
  */
-export function createTestTaskController(
+export async function createTestTaskController(
 	options?: TestTaskControllerOptions,
-): TaskControllerInterface {
+): Promise<TaskControllerInterface> {
 	const workflowId = options?.workflow ?? 'wf'
 	const taskId = options?.task ?? 't'
-	const workflow = createWorkflow({
-		id: workflowId,
-		name: workflowId,
-		phases: [{ id: 'p', name: 'P', tasks: [{ id: taskId, name: taskId }] }],
-	})
-	const task = workflow.phase('p')?.task(taskId)
-	if (task === undefined) throw new Error(`test task '${taskId}' was not constructed`)
-	return new TaskController(
-		options?.signal ?? new AbortController().signal,
-		options?.input ?? {},
-		task,
-		1,
-		() => workflow.results(),
-		(input) => task.report(input),
-		() => task.pulse(),
+	const captured = Promise.withResolvers<TaskControllerInterface>()
+	const parked = Promise.withResolvers<null>()
+	releases.push(() => parked.resolve(null))
+	const run = createWorkflowRunner().execute(
+		{
+			id: workflowId,
+			name: workflowId,
+			phases: [{ id: 'p', name: 'P', tasks: [{ id: taskId, name: taskId, behavior: 'park' }] }],
+		},
+		{
+			functions: {
+				park: (controller) => {
+					captured.resolve(controller)
+					return parked.promise
+				},
+			},
+			phases: { p: { tasks: { [taskId]: { metadata: options?.input ?? {} } } } },
+			...(options?.signal === undefined ? {} : { signal: options.signal }),
+		},
 	)
+	// A cancelled run settles through its result rather than a rejection, and no caller here reads
+	// that result; the catch keeps an engine-level rejection from surfacing as an unhandled one.
+	run.catch(() => {})
+	return captured.promise
+}
+
+/** Settles every task parked by {@link createTestTaskController}, closing its run. */
+export function releaseTestTaskControllers(): void {
+	for (const release of releases) release()
+	releases.length = 0
 }
 
 /** A protocol-faithful workflow store that records checkpoints and rejects a controlled prefix. */
@@ -142,7 +168,7 @@ export class RecordingWorkflowStore implements WorkflowStoreInterface {
 
 /** One recorded `generate` / `stream` call on a {@link ScriptedProvider}. */
 export interface ScriptedCall {
-	readonly messages: readonly MessageInterface[]
+	readonly messages: readonly Message[]
 }
 
 /**
@@ -206,7 +232,7 @@ export class ScriptedProvider implements ScriptedProviderInterface {
 	}
 
 	async *stream(
-		messages: readonly MessageInterface[],
+		messages: readonly Message[],
 		signal: AbortSignal,
 	): AsyncGenerator<ProviderDelta, ProviderResult> {
 		this.#calls.push({ messages: [...messages] })
@@ -220,16 +246,13 @@ export class ScriptedProvider implements ScriptedProviderInterface {
 		for (const delta of [turn.content]) {
 			if (signal.aborted) throw new ProviderAbortError({ content: streamed })
 			streamed += delta
-			if (delta.length > 0) yield { type: 'content', text: delta }
+			if (delta.length > 0) yield { channel: 'content', text: delta }
 		}
 		if (signal.aborted) throw new ProviderAbortError({ content: streamed })
 		return turn
 	}
 
-	async generate(
-		messages: readonly MessageInterface[],
-		signal: AbortSignal,
-	): Promise<ProviderResult> {
+	async generate(messages: readonly Message[], signal: AbortSignal): Promise<ProviderResult> {
 		const generator = this.stream(messages, signal)
 		let step = await generator.next()
 		while (!step.done) step = await generator.next()

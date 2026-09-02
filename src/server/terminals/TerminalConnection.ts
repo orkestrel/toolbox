@@ -1,7 +1,7 @@
 import type {
 	PendingForm,
 	TerminalManagerInterface,
-	TimerCancel,
+	TimerCancelFunction,
 	TimerHandler,
 	WireEvent,
 } from '@orkestrel/terminal'
@@ -23,7 +23,7 @@ export class TerminalConnection {
 	readonly #timer: TimerHandler
 	readonly #keepalive: number
 	readonly #presented: string | undefined
-	#cancel: TimerCancel | undefined
+	#cancel: TimerCancelFunction | undefined
 	readonly #destroyHandler: () => void
 	readonly #pendingHandler: (form: PendingForm) => void
 	readonly #expireHandler: (to: string, id: string) => void

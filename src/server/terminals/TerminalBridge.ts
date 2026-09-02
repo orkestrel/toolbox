@@ -1,8 +1,8 @@
 import type { TerminalManagerInterface, TimerHandler } from '@orkestrel/terminal'
 import type {
+	TerminalBridgeOptions,
 	TerminalRoute,
 	TerminalRouteContext,
-	TerminalRoutesOptions,
 	TerminalToken,
 } from '../types.js'
 import { defaultTimer, HEADER_TOKEN } from '@orkestrel/terminal'
@@ -11,23 +11,24 @@ import { isNonEmptyString, isRecord } from '@orkestrel/contract'
 import {
 	collectRequestBody,
 	ContentTooLargeError,
+	createStream,
 	DEFAULT_BODY_LIMIT,
-	openStream,
 } from '@orkestrel/server'
 import { TERMINAL_KEEPALIVE_MS, TERMINAL_ROUTES_PATH } from '../constants.js'
 import { TerminalConnection } from './TerminalConnection.js'
 
 /**
- * Build and serve the terminal manager's GET stream and POST answer routes.
+ * Bridges a terminal manager onto the wire — owns the shared route options, the token gate, and
+ * the bound GET stream and POST answer handlers.
  *
  * @example
  * ```ts
- * import { TerminalRoutes } from '@orkestrel/toolbox/server'
+ * import { TerminalBridge } from '@orkestrel/toolbox/server'
  *
- * const routes = new TerminalRoutes(manager).routes()
+ * const routes = new TerminalBridge(manager).routes()
  * ```
  */
-export class TerminalRoutes {
+export class TerminalBridge {
 	readonly #manager: TerminalManagerInterface
 	readonly #path: string
 	readonly #token: TerminalToken | undefined
@@ -39,12 +40,12 @@ export class TerminalRoutes {
 	readonly #post: TerminalRoute['handler']
 
 	/**
-	 * Create a terminal route owner.
+	 * Creates a terminal bridge.
 	 *
 	 * @param manager - Terminal manager bridged onto HTTP
 	 * @param options - Shared route, authorization, keepalive, timer, and body-limit options
 	 */
-	constructor(manager: TerminalManagerInterface, options?: TerminalRoutesOptions) {
+	constructor(manager: TerminalManagerInterface, options?: TerminalBridgeOptions) {
 		this.#manager = manager
 		this.#path = options?.path ?? TERMINAL_ROUTES_PATH
 		this.#token = options?.token
@@ -61,7 +62,7 @@ export class TerminalRoutes {
 	}
 
 	/**
-	 * Project the bound GET and POST route records.
+	 * Projects the bound GET and POST route records.
 	 *
 	 * @returns The GET stream route followed by the POST answer route
 	 */
@@ -95,7 +96,7 @@ export class TerminalRoutes {
 			this.#manager,
 			name,
 			request,
-			openStream(),
+			createStream(),
 			this.#accepts,
 			this.#timer,
 			this.#keepalive,

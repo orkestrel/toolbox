@@ -19,7 +19,7 @@ export const AGENT_TOOL_NAME = 'agent'
  * enforces.
  *
  * @remarks
- * Deliberately a SEPARATE constant from {@link MAX_WORKFLOW_DEPTH} (rather than the two guards
+ * Deliberately a SEPARATE constant from {@link MAX_WORKFLOW_CHAIN} (rather than the two guards
  * sharing one reference): the two guards bound DIFFERENT chains (workflow nesting vs. agent
  * delegation) that happen to share a value today, and keeping this bound decoupled means a
  * future change to one never silently shifts the other. Same numeric value by convention, not
@@ -66,7 +66,7 @@ export const AGENT_TOOL_DESCRIPTION = [
  * workflows is allowed, while a ninth nested workflow is rejected with this package's typed
  * `DEPTH` `ToolboxError`.
  */
-export const MAX_WORKFLOW_DEPTH = 8
+export const MAX_WORKFLOW_CHAIN = 8
 
 /**
  * The name {@link import('./factories.js').createWorkflowTool} advertises by default — the key a
@@ -78,7 +78,7 @@ export const MAX_WORKFLOW_DEPTH = 8
  * The propagation seam's well-known key: when
  * `createAgentFunction`'s `runner` option is supplied, it adds a `createWorkflowTool`-built tool
  * under this name to the agent's `context.tools`, so it can author + run a NESTED workflow
- * (bounded by {@link MAX_WORKFLOW_DEPTH}).
+ * (bounded by {@link MAX_WORKFLOW_CHAIN}).
  */
 export const WORKFLOW_TOOL_NAME = 'workflow'
 
@@ -89,7 +89,7 @@ export const WORKFLOW_TOOL_NAME = 'workflow'
  * @remarks
  * Each step becomes a one-task phase, in
  * order; a step's `name` is a REGISTERED behavior name (not a label) — the registry key its
- * task's `run` resolves against. The tool expands this
+ * task's `behavior` resolves against. The tool expands this
  * ({@link import('./helpers.js').expandSteps}) into a valid `WorkflowDefinition`
  * (`@orkestrel/workflow`). It is embedded VERBATIM in {@link WORKFLOW_TOOL_DESCRIPTION}.
  */
@@ -117,7 +117,7 @@ export const WORKFLOW_TOOL_NESTED_EXAMPLE: WorkflowDefinition = Object.freeze({
 				Object.freeze({
 					id: 'compile',
 					name: 'Compile',
-					run: 'compile',
+					behavior: 'compile',
 				}),
 			]),
 		}),
@@ -149,7 +149,7 @@ export const WORKFLOW_TOOL_DESCRIPTION = [
 	'Example:',
 	JSON.stringify(WORKFLOW_TOOL_FLAT_EXAMPLE),
 	'',
-	'ADVANCED — the full nested form, for multi-task phases or explicit ids. A workflow has phases; a phase has tasks; a task may have a "run" (a registered behavior name); omitting it creates a JSON-null no-op:',
+	'ADVANCED — the full nested form, for multi-task phases or explicit ids. A workflow has phases; a phase has tasks; a task may have a "behavior" (a registered behavior name); omitting it creates a JSON-null no-op:',
 	JSON.stringify(WORKFLOW_TOOL_NESTED_EXAMPLE),
 	'In the nested form you may omit any "id"/"name" and they are filled in positionally; a provided one is kept.',
 ].join('\n')
@@ -320,7 +320,7 @@ export const ANSWER_TOOL_DESCRIPTION = [
  * @remarks
  * SRC-1 of a 3-unit spine: this unit lands the persistence + schema foundation
  * ({@link import('./types.js').DatabaseDefinition}, {@link import('./types.js').DefinitionStoreInterface},
- * {@link import('./helpers.js').expandTables}); `createDatabaseTool` itself is built in a later unit.
+ * {@link import('./compilers.js').expandTables}); `createDatabaseTool` itself is built in a later unit.
  */
 export const DATABASE_TOOL_NAME = 'database'
 

@@ -119,7 +119,7 @@ export const taskDraftShape = objectShape({
 		stringShape({ min: 1, description: 'Task name; defaults to the id when omitted.' }),
 	),
 	description: optionalShape(stringShape({ description: 'Optional task description.' })),
-	run: optionalShape(
+	behavior: optionalShape(
 		stringShape({
 			min: 1,
 			description:
@@ -174,7 +174,7 @@ export const phaseDraftShape = objectShape({
  *
  * @remarks
  * The lenient counterpart {@link import('./factories.js').createWorkflowDraftContract} compiles.
- * `run` stays optional like the strict form; omission is the deliberate JSON `null` no-op. A
+ * `behavior` stays optional like the strict form; omission is the deliberate JSON `null` no-op. A
  * provided `id` / `name` still has `minLength: 1` (so
  * an explicitly-empty `id: ''` is REJECTED, not auto-filled). After
  * {@link import('./helpers.js').completeDraft} fills the missing ids/names, the result is
@@ -202,13 +202,13 @@ export const workflowDraftShape = objectShape({
  * The shape of ONE flat step — `{ name }` — the building block of {@link workflowStepsShape}.
  *
  * @remarks
- * `name` is the REGISTERED behavior name the step runs (it becomes the task's `run`). The tool
+ * `name` is the REGISTERED behavior name the step runs (it becomes the task's `behavior`). The tool
  * expands each step into a one-task phase, in order ({@link import('./helpers.js').expandSteps}).
  */
 export const stepShape = objectShape({
 	name: stringShape({
 		min: 1,
-		description: 'The registered behavior name this step runs (becomes the task run).',
+		description: 'The registered behavior name this step runs (becomes the task behavior).',
 	}),
 })
 
@@ -487,7 +487,7 @@ export const queryShape = objectShape({
  * @remarks
  * Every arm carries `id` (the database id). `'create'` carries `tables` (the
  * {@link import('./types.js').TableSpec} column DSL, compiled via
- * {@link import('./helpers.js').expandTables}); `'get'` / `'update'` / `'remove'` carry `key`
+ * {@link import('./compilers.js').expandTables}); `'get'` / `'update'` / `'remove'` carry `key`
  * (one key or an array of keys, positional); `'add'` / `'set'` carry `row` (one row or an array of
  * rows); `'update'` also carries `changes` (a loose partial row); `'records'` / `'count'` /
  * `'aggregate'` carry an optional `query` (the SERIALIZED form — `values` is ALWAYS an array,
