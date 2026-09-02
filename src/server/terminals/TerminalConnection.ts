@@ -9,7 +9,7 @@ import type { StreamInterface } from '@orkestrel/server'
 import { HEADER_TOKEN, serializeExpire, serializePending } from '@orkestrel/terminal'
 
 /**
- * Own one terminal SSE connection's replay, subscriptions, keepalive, and teardown.
+ * Owns one terminal SSE connection's replay, subscriptions, keepalive, and teardown.
  *
  * Not exported from the `@orkestrel/toolbox/server` barrel — reach this behaviour through
  * `createTerminalRoutes`.
@@ -30,7 +30,7 @@ export class TerminalConnection {
 	readonly #tickHandler: () => void
 
 	/**
-	 * Create a terminal stream connection.
+	 * Creates a terminal stream connection.
 	 *
 	 * @param manager - Terminal manager supplying pending forms and lifecycle events
 	 * @param name - Terminal endpoint streamed by this connection
@@ -64,7 +64,7 @@ export class TerminalConnection {
 	}
 
 	/**
-	 * Open the connection by replaying pending forms, subscribing, and arming keepalive handling.
+	 * Opens the connection by replaying pending forms, subscribing, and arming keepalive handling.
 	 *
 	 * @returns The SSE response
 	 */

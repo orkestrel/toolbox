@@ -7,7 +7,7 @@ import type { TableInterface } from '@orkestrel/database'
 import { isDatabaseDefinition } from '../validators.js'
 
 /**
- * A {@link DefinitionStoreInterface} backed by one table of the `@orkestrel/database` layer — a
+ * Represents a {@link DefinitionStoreInterface} backed by one table of the `@orkestrel/database` layer — a
  * database's durable CONFIG state IS a row, so persistence reduces to keyed point-access
  * (`get` / `set` / `delete`) over a {@link TableInterface}, the driver-pluggable twin of the
  * plain-`Map` {@link import('./MemoryDefinitionStore.js').MemoryDefinitionStore}.
@@ -51,7 +51,7 @@ export class DatabaseDefinitionStore implements DefinitionStoreInterface {
 	readonly #table: TableInterface<DatabaseDefinitionRow>
 
 	/**
-	 * Wrap a table as a definition store.
+	 * Wraps a table as a definition store.
 	 *
 	 * @param table - The {@link TableInterface} holding the definitions — its row is the
 	 *   {@link DatabaseDefinitionRow} `{ id; definition }` shape (the definition one opaque JSON column)

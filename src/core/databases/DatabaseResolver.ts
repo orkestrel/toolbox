@@ -5,7 +5,7 @@ import { ToolboxError } from '../errors.js'
 import { expandTables } from '../compilers.js'
 
 /**
- * Resolve database definitions into cached live handles for database tools.
+ * Resolves database definitions into cached live handles for database tools.
  *
  * @example
  * ```ts
@@ -22,7 +22,7 @@ export class DatabaseResolver {
 	readonly #store: DefinitionStoreInterface | undefined
 
 	/**
-	 * Create a database resolver over the tool's live state and optional definition store.
+	 * Creates a database resolver over the tool's live state and optional definition store.
 	 *
 	 * @param handles - Initial live database handles cached by id
 	 * @param drivers - Driver factories keyed by definition driver name
@@ -42,17 +42,17 @@ export class DatabaseResolver {
 	}
 
 	/**
-	 * Determine whether a live database is cached by id.
+	 * Determines whether a live database is cached by id.
 	 *
 	 * @param id - Database id
-	 * @returns Whether a live handle is cached
+	 * @returns True if a live handle is cached; false otherwise
 	 */
 	has(id: string): boolean {
 		return this.#handles.has(id)
 	}
 
 	/**
-	 * Read a cached database without consulting the definition store.
+	 * Reads a cached database without consulting the definition store.
 	 *
 	 * @param id - Database id
 	 * @returns The cached live database, or `undefined`
@@ -62,7 +62,7 @@ export class DatabaseResolver {
 	}
 
 	/**
-	 * Cache a live database by id.
+	 * Caches a live database by id.
 	 *
 	 * @param id - Database id
 	 * @param database - Live database handle
@@ -73,7 +73,7 @@ export class DatabaseResolver {
 	}
 
 	/**
-	 * Remove a cached live database by id.
+	 * Removes a cached live database by id.
 	 *
 	 * @param id - Database id
 	 * @returns Nothing
@@ -83,7 +83,7 @@ export class DatabaseResolver {
 	}
 
 	/**
-	 * Resolve a cached or stored database by id.
+	 * Resolves a cached or stored database by id.
 	 *
 	 * @param id - Database definition id
 	 * @returns The cached or newly constructed live database

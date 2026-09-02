@@ -124,8 +124,8 @@ export function summarizeWorkflow(result: WorkflowResult): WorkflowToolResult {
 // `createWorkflowContract().is` gate before running (soundness).
 
 /**
- * Complete a {@link WorkflowDraft} into a strict {@link WorkflowDefinition} — synthesize any
- * MISSING `id` deterministically + positionally, and default any MISSING `name` to its
+ * Completes a {@link WorkflowDraft} into a strict {@link WorkflowDefinition} — synthesizes any
+ * MISSING `id` deterministically + positionally, and defaults any MISSING `name` to its
  * (now-resolved) `id`.
  *
  * @remarks
@@ -153,7 +153,7 @@ export function completeDraft(draft: WorkflowDraft): WorkflowDefinition {
 }
 
 /**
- * Complete one {@link PhaseDraft} into a strict phase definition — the per-phase step of
+ * Completes one {@link PhaseDraft} into a strict phase definition — the per-phase step of
  * {@link completeDraft} (phase `index` → `phase-<index>` when its id is omitted).
  *
  * @param phase - The draft phase
@@ -176,7 +176,7 @@ export function completePhaseDraft(
 }
 
 /**
- * Complete one {@link TaskDraft} into a strict task definition — the per-task leaf step of
+ * Completes one {@link TaskDraft} into a strict task definition — the per-task leaf step of
  * {@link completeDraft} (task `index` of phase `<phaseId>` → `<phaseId>-task-<index>` when its id
  * is omitted).
  *
@@ -202,7 +202,7 @@ export function completeTaskDraft(
 }
 
 /**
- * Expand a flat {@link WorkflowSteps} blob into a strict {@link WorkflowDefinition} — each step
+ * Expands a flat {@link WorkflowSteps} blob into a strict {@link WorkflowDefinition} — each step
  * becomes a one-task phase, IN ORDER.
  *
  * @remarks
@@ -280,7 +280,7 @@ export function relationToolCode(error: unknown): RelationErrorCode | undefined 
 }
 
 /**
- * Expand the relation tool's FLAT dot-path `include` list into a live `@orkestrel/relation`
+ * Expands the relation tool's FLAT dot-path `include` list into a live `@orkestrel/relation`
  * {@link Include} tree — the pure leaf {@link import('./factories.js').createRelationTool} calls
  * before a `'load'` / `'find'` call.
  *
@@ -435,7 +435,7 @@ export function normalizeQuery(query: DatabaseQueryInput | undefined): QueryInpu
 }
 
 /**
- * Clamp a `'records'` call's query to a row cap, and build the PROBE query the caller reads
+ * Clamps a `'records'` call's query to a row cap, and builds the PROBE query the caller reads
  * with — the pure leaf {@link import('./factories.js').createDatabaseTool}'s `'records'` operation
  * uses to detect truncation without a separate `count` round trip.
  *

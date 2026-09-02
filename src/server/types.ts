@@ -4,11 +4,11 @@ import type { TimerHandler } from '@orkestrel/terminal'
 // imports `@orkestrel/router`) so a consumer mounts the two returned routes against ANY router
 // that accepts this shape; these types are the source of truth.
 
-/** The HTTP method literal a {@link TerminalRoute} declares — the same union `@orkestrel/router`'s `Method` type accepts. */
+/** Represents the HTTP method literal a {@link TerminalRoute} declares — the same union `@orkestrel/router`'s `Method` type accepts. */
 export type TerminalRouteMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS'
 
 /**
- * The minimal route-dispatch context a {@link TerminalRoute} handler reads — exactly the frozen,
+ * Represents the minimal route-dispatch context a {@link TerminalRoute} handler reads — exactly the frozen,
  * URL-decoded `:name` path param slice a router hands a matched handler.
  */
 export interface TerminalRouteContext {
@@ -16,7 +16,7 @@ export interface TerminalRouteContext {
 }
 
 /**
- * One structural route record {@link import('./factories.js').createTerminalRoutes} returns — a
+ * Represents one structural route record {@link import('./factories.js').createTerminalRoutes} returns — a
  * plain `{ method, path, handler }` shape carrying NO dependency on `@orkestrel/router`'s own
  * `Route` type, so a consumer mounts it against any router that accepts a two-arg
  * `(request, context) => Response | Promise<Response>` handler keyed by `method` + `path`.
@@ -31,7 +31,7 @@ export interface TerminalRoute {
 }
 
 /**
- * The `token` gate {@link TerminalBridgeOptions} may configure — a plain string compared for
+ * Represents the `token` gate {@link TerminalBridgeOptions} may configure — a plain string compared for
  * equality against the `x-orkestrel-token` header, OR a validator function the consumer fully
  * controls, enabling expiry/rotation (a JWT `exp` check, a revocation-list lookup, anything
  * time-varying) that a fixed string cannot express. `undefined` disables the auth check entirely.
@@ -39,7 +39,7 @@ export interface TerminalRoute {
 export type TerminalToken = string | ((value: string | undefined) => boolean)
 
 /**
- * Options for a {@link import('./terminals/TerminalBridge.js').TerminalBridge} and for the
+ * Represents the options for a {@link import('./terminals/TerminalBridge.js').TerminalBridge} and for the
  * {@link import('./factories.js').createTerminalRoutes} factory that projects its routes.
  *
  * @remarks

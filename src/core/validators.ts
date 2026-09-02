@@ -12,10 +12,10 @@ import { attempt, isFiniteNumber, isNonEmptyString, isRecord, isString } from '@
 // and a persisted database definition read back from a store.
 
 /**
- * Narrow an unknown value to a valid alternating workflow lineage.
+ * Narrows an unknown value to a valid alternating workflow lineage.
  *
  * @param value - The value to inspect
- * @returns Whether `value` is a unique, nonempty-tagged workflow/agent chain
+ * @returns True if `value` is a unique, nonempty-tagged workflow/agent chain; false otherwise
  */
 export function isWorkflowLineage(value: unknown): value is WorkflowLineage {
 	const inspected = attempt(() => {
@@ -33,10 +33,10 @@ export function isWorkflowLineage(value: unknown): value is WorkflowLineage {
 }
 
 /**
- * Narrow an unknown callable to Toolbox's frozen contextual agent adapter metadata.
+ * Narrows an unknown callable to Toolbox's frozen contextual agent adapter metadata.
  *
  * @param value - The value to inspect
- * @returns Whether it is a frozen {@link AgentFunction} with a frozen valid lineage
+ * @returns True if it is a frozen {@link AgentFunction} with a frozen valid lineage; false otherwise
  */
 export function isAgentFunction(value: unknown): value is AgentFunction {
 	const inspected = attempt(() => {
@@ -54,7 +54,7 @@ export function isAgentFunction(value: unknown): value is AgentFunction {
 	return inspected.success && inspected.value
 }
 
-/** Narrow an unknown value to a {@link ColumnSpec} — a valid {@link ColumnKind} shorthand, or `{ type, optional }` with a valid `type`. */
+/** Narrows an unknown value to a {@link ColumnSpec} — a valid {@link ColumnKind} shorthand, or `{ type, optional }` with a valid `type`. */
 export function isColumnSpec(value: unknown): value is ColumnSpec {
 	if (isColumnKind(value)) return true
 	if (!isRecord(value)) return false
@@ -64,13 +64,13 @@ export function isColumnSpec(value: unknown): value is ColumnSpec {
 	)
 }
 
-/** Narrow an unknown value to a {@link ColumnKind}. */
+/** Narrows an unknown value to a {@link ColumnKind}. */
 export function isColumnKind(value: unknown): value is ColumnKind {
 	return value === 'string' || value === 'integer' || value === 'number' || value === 'boolean'
 }
 
 /**
- * Narrow an unknown value to a {@link DatabaseDefinition} — a non-empty `id` + `driver`, a
+ * Narrows an unknown value to a {@link DatabaseDefinition} — a non-empty `id` + `driver`, a
  * `tables` record whose every value is `{ columns: record of valid ColumnSpec }`, plus optional
  * `primary`, `indexes`, and finite `version` schema configuration. The boundary guard a
  * {@link import('./types.js').DefinitionStoreInterface} applies to an untrusted persisted blob

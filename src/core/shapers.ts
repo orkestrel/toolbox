@@ -16,7 +16,7 @@ import { MAX_TIMER_MS } from '@orkestrel/workflow'
 // === Prompt / answer shapes (createPromptTool / createAnswerTool call args)
 
 /**
- * The shape of {@link import('./factories.js').createPromptTool}'s call arguments — `to` names the
+ * Describes the shape of {@link import('./factories.js').createPromptTool}'s call arguments — `to` names the
  * terminal identity and `schema` carries the complete multi-field form document.
  *
  * @remarks
@@ -32,7 +32,7 @@ export const promptToolShape = objectShape({
 })
 
 /**
- * The shape of {@link import('./factories.js').createAnswerTool}'s call arguments — discriminated
+ * Describes the shape of {@link import('./factories.js').createAnswerTool}'s call arguments — discriminated
  * by `operation`: `'pending'` lists the forms addressed to this tool's terminal, while `'answer'`
  * resolves one by `id` with a complete `values` record.
  *
@@ -61,7 +61,7 @@ export const answerToolShape = unionShape(
 // over the editing primitives now owned by `@orkestrel/workspace`.
 
 /**
- * The shape of {@link import('./types.js').AgentToolArguments} —
+ * Describes the shape of {@link import('./types.js').AgentToolArguments} —
  * {@link import('./factories.js').createAgentTool}'s advertised `parameters`.
  *
  * @remarks
@@ -94,7 +94,7 @@ export const agentToolShape = objectShape({
 })
 
 /**
- * The shape of {@link import('./types.js').DescribeToolArguments} —
+ * Describes the shape of {@link import('./types.js').DescribeToolArguments} —
  * {@link import('./factories.js').createDescribeTool}'s advertised `parameters`.
  *
  * @remarks
@@ -110,7 +110,7 @@ export const describeToolShape = objectShape({
 // === Workflow draft / flat-steps shapes
 
 /**
- * The shape of a {@link import('./types.js').TaskDraft} — identical to a strict task shape
+ * Describes the shape of a {@link import('./types.js').TaskDraft} — identical to a strict task shape
  * EXCEPT `id` and `name` are OPTIONAL.
  */
 export const taskDraftShape = objectShape({
@@ -144,7 +144,7 @@ export const taskDraftShape = objectShape({
 })
 
 /**
- * The shape of a PHASE in a draft workflow — identical to a strict phase shape EXCEPT `id` and
+ * Describes the shape of a PHASE in a draft workflow — identical to a strict phase shape EXCEPT `id` and
  * `name` are OPTIONAL, and its tasks are {@link taskDraftShape}s.
  */
 export const phaseDraftShape = objectShape({
@@ -168,7 +168,7 @@ export const phaseDraftShape = objectShape({
 })
 
 /**
- * The shape of a DRAFT workflow — identical to a strict workflow shape EXCEPT `id` and `name`
+ * Describes the shape of a DRAFT workflow — identical to a strict workflow shape EXCEPT `id` and `name`
  * are OPTIONAL at all three levels (workflow / phase / task), so a small model can omit the six
  * identity strings and let the tool synthesize them positionally.
  *
@@ -199,7 +199,7 @@ export const workflowDraftShape = objectShape({
 })
 
 /**
- * The shape of ONE flat step — `{ name }` — the building block of {@link workflowStepsShape}.
+ * Describes the shape of ONE flat step — `{ name }` — the building block of {@link workflowStepsShape}.
  *
  * @remarks
  * `name` is the REGISTERED behavior name the step runs (it becomes the task's `behavior`). The tool
@@ -213,7 +213,7 @@ export const stepShape = objectShape({
 })
 
 /**
- * The FLAT authoring shape {@link import('./factories.js').createWorkflowTool} advertises as its
+ * Describes the FLAT authoring shape {@link import('./factories.js').createWorkflowTool} advertises as its
  * `parameters` — the simplest surface a small model can fill: `{ name?, steps: [{ name }] }`.
  *
  * @remarks
@@ -235,7 +235,7 @@ export const workflowStepsShape = objectShape({
 // === Workspace operation shape
 
 /**
- * The shape of a {@link import('./types.js').WorkspaceOperation} — a descriptive tagged union
+ * Describes the shape of a {@link import('./types.js').WorkspaceOperation} — a descriptive tagged union
  * over the workspace edit, read, and navigation operations, discriminated by the `operation`
  * literal (never a bare `kind`). Each variant leads with its `operation`
  * discriminant then its FLAT fields, every field via `stringShape` / `optionalShape` /
@@ -383,12 +383,12 @@ export const workspaceToolShape = unionShape(
 // === Database tool shape (SRC-2 — the tool factory itself; SRC-1 landed the persistence + the
 // TableSpec DSL this shape's `tables` field compiles the SAME way `expandTables` does)
 
-/** A {@link import('./types.js').ColumnKind} literal — the leaf {@link columnSpecShape} wraps. */
+/** Describes a {@link import('./types.js').ColumnKind} literal — the leaf {@link columnSpecShape} wraps. */
 export const columnKindShape = literalShape(['string', 'integer', 'number', 'boolean'], {
 	description: 'A column type: "string" | "integer" | "number" | "boolean".',
 })
 
-/** A {@link import('./types.js').ColumnSpec} — a bare {@link columnKindShape}, or `{ type, optional }`. */
+/** Describes a {@link import('./types.js').ColumnSpec} — a bare {@link columnKindShape}, or `{ type, optional }`. */
 export const columnSpecShape = unionShape(
 	columnKindShape,
 	objectShape({
@@ -399,7 +399,7 @@ export const columnSpecShape = unionShape(
 	}),
 )
 
-/** A {@link import('./types.js').TableSpec} — table name to `{ columns }`, each column a {@link columnSpecShape}. */
+/** Describes a {@link import('./types.js').TableSpec} — table name to `{ columns }`, each column a {@link columnSpecShape}. */
 export const tableSpecShape = recordShape(
 	objectShape({
 		columns: recordShape(columnSpecShape, { description: 'Column name to its type.' }),
@@ -407,7 +407,7 @@ export const tableSpecShape = recordShape(
 	{ description: 'Table name to its column layout.' },
 )
 
-/** One key value — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
+/** Describes one key value — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
 export const keyShape = unionShape(
 	arrayShape(unionShape(stringShape(), numberShape()), {
 		description: 'Multiple row keys, positional — a miss at an index is undefined there.',
@@ -416,18 +416,18 @@ export const keyShape = unionShape(
 	numberShape({ description: 'One row key.' }),
 )
 
-/** A loose row — a flat object of column name to JSON value; the array form (multiple rows) resolves FIRST, so an array argument is read as many rows rather than one. */
+/** Describes a loose row — a flat object of column name to JSON value; the array form (multiple rows) resolves FIRST, so an array argument is read as many rows rather than one. */
 export const rowShape = recordShape(jsonShape(), {
 	description: 'A row as a flat object of column name to value.',
 })
 
-/** One or many loose rows — the array form resolves FIRST, so an array argument is read as many rows rather than one. */
+/** Describes one or many loose rows — the array form resolves FIRST, so an array argument is read as many rows rather than one. */
 export const rowsShape = unionShape(
 	arrayShape(rowShape, { description: 'Multiple rows.' }),
 	rowShape,
 )
 
-/** One SERIALIZED WHERE condition — `values` is ALWAYS an array, even for a single-value operator. */
+/** Describes one SERIALIZED WHERE condition — `values` is ALWAYS an array, even for a single-value operator. */
 export const conditionShape = objectShape({
 	column: stringShape({ description: 'The column this condition applies to.' }),
 	operator: literalShape(
@@ -460,13 +460,13 @@ export const conditionShape = objectShape({
 	),
 })
 
-/** One sort term. */
+/** Describes one sort term. */
 export const orderShape = objectShape({
 	column: stringShape({ description: 'The column to sort by.' }),
 	direction: literalShape(['ascending', 'descending'], { description: 'The sort direction.' }),
 })
 
-/** The SERIALIZED query form — conditions, order, and pagination. */
+/** Describes the SERIALIZED query form — conditions, order, and pagination. */
 export const queryShape = objectShape({
 	conditions: optionalShape(
 		arrayShape(conditionShape, { description: 'The WHERE conditions, folded left to right.' }),
@@ -479,7 +479,7 @@ export const queryShape = objectShape({
 })
 
 /**
- * The shape of {@link import('./factories.js').createDatabaseTool}'s call arguments —
+ * Describes the shape of {@link import('./factories.js').createDatabaseTool}'s call arguments —
  * discriminated by `operation` into the 11 database operations (`'create'` / `'tables'` /
  * `'get'` / `'records'` / `'count'` / `'aggregate'` / `'add'` / `'set'` / `'update'` /
  * `'remove'` / `'destroy'`).
@@ -595,7 +595,7 @@ export const databaseToolShape = unionShape(
 // flat-args ergonomic lever), expanded into a live `Include` by
 // {@link import('./helpers.js').expandInclude}.
 
-/** One key value — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
+/** Describes one key value — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
 export const relationKeyShape = unionShape(
 	arrayShape(unionShape(stringShape(), numberShape()), {
 		description: 'Multiple row keys, positional — a miss at an index is undefined there.',
@@ -604,13 +604,13 @@ export const relationKeyShape = unionShape(
 	numberShape({ description: 'One row key.' }),
 )
 
-/** A single row key (not an array) — used by `'link'` / `'unlink'` / `'links'`, which address exactly one owning row. */
+/** Describes a single row key (not an array) — used by `'link'` / `'unlink'` / `'links'`, which address exactly one owning row. */
 export const singleKeyShape = unionShape(
 	stringShape({ description: 'The owning row key.' }),
 	numberShape({ description: 'The owning row key.' }),
 )
 
-/** Flat dot-path relation include list, expanded via {@link import('./helpers.js').expandInclude}. */
+/** Describes the flat dot-path relation include list, expanded via {@link import('./helpers.js').expandInclude}. */
 export const includeShape = optionalShape(
 	arrayShape(
 		stringShape({
@@ -620,13 +620,13 @@ export const includeShape = optionalShape(
 	),
 )
 
-/** Which registered relation manager to address — omitted resolves to the sole registered manager. */
+/** Describes which registered relation manager to address — omitted resolves to the sole registered manager. */
 export const managerShape = optionalShape(
 	stringShape({ min: 1, description: 'Which registered relation manager to address.' }),
 )
 
 /**
- * The shape of {@link import('./factories.js').createRelationTool}'s call arguments —
+ * Describes the shape of {@link import('./factories.js').createRelationTool}'s call arguments —
  * discriminated by `operation` into the 5 relation operations (`'load'` / `'find'` / `'link'` /
  * `'unlink'` / `'links'`).
  *
@@ -691,7 +691,7 @@ export const relationToolShape = unionShape(
 )
 
 /**
- * The shape of {@link import('./factories.js').createInferTool}'s call arguments — one or more
+ * Describes the shape of {@link import('./factories.js').createInferTool}'s call arguments — one or more
  * example `samples` to infer a JSON Schema from, plus per-call `format` / `enum` toggles and an
  * optional `candidates` array to check against the inferred schema.
  *

@@ -1,7 +1,7 @@
 import type { DatabaseDefinition, DefinitionStoreInterface } from '../types.js'
 
 /**
- * The in-memory {@link DefinitionStoreInterface} — a process-lifetime `Map` of
+ * Represents the in-memory {@link DefinitionStoreInterface} — a process-lifetime `Map` of
  * {@link DatabaseDefinition}s keyed by database id, the DEFAULT store
  * {@link import('../factories.js').createMemoryDefinitionStore} builds. It implements the same
  * {@link DefinitionStoreInterface} contract as

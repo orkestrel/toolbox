@@ -129,7 +129,7 @@ import {
 // sub-agent delegation over an `AgentRegistryInterface`.
 
 /**
- * Wrap a registered tool as a {@link WorkflowFunction} (`@orkestrel/workflow`) — the OPT-IN
+ * Wraps a registered tool as a {@link WorkflowFunction} (`@orkestrel/workflow`) — the OPT-IN
  * adapter that lets a `function`-form task run a `@orkestrel/tool` tool BY NAME.
  *
  * @remarks
@@ -177,7 +177,7 @@ export function createToolFunction(tools: ToolManagerInterface, name: string): W
 }
 
 /**
- * Wrap a live `AgentInterface` (`@orkestrel/agent`) as a {@link WorkflowFunction}
+ * Wraps a live `AgentInterface` (`@orkestrel/agent`) as a {@link WorkflowFunction}
  * (`@orkestrel/workflow`) — the opt-in adapter that runs the agent to a settled result and carries
  * immutable lineage metadata for contextual Toolbox composition.
  *
@@ -288,7 +288,7 @@ export function createAgentFunction(
 }
 
 /**
- * Compose opaque host functions and raw agents into one immutable workflow registry.
+ * Composes opaque host functions and raw agents into one immutable workflow registry.
  *
  * @remarks
  * This is the target-aware composition boundary used by direct runner consumers and
@@ -360,7 +360,7 @@ export function createWorkflowFunctions(
 }
 
 /**
- * Compile the lenient workflow draft contract used by {@link createWorkflowTool}.
+ * Compiles the lenient workflow draft contract used by {@link createWorkflowTool}.
  *
  * @returns The compiled {@link import('./types.js').WorkflowDraft} contract
  */
@@ -369,7 +369,7 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
 }
 
 /**
- * Wrap a {@link WorkflowDefinition} as an LLM-callable tool — it ADVERTISES the SIMPLE flat
+ * Wraps a {@link WorkflowDefinition} as an LLM-callable tool — it ADVERTISES the SIMPLE flat
  * authoring shape (`{ name?, steps: [{ name }] }`) as its `parameters` so even a small model can
  * author a complete tree, and its handler EXPANDS / COMPLETES the authored blob, validates it
  * against the STRICT contract, and runs it through `runner`, forwarding the caller's optional
@@ -509,7 +509,7 @@ export function createWorkflowTool(
 }
 
 /**
- * Build an LLM-callable workspace-editing tool — it ADVERTISES the `operation`-discriminated
+ * Builds an LLM-callable workspace-editing tool — it ADVERTISES the `operation`-discriminated
  * 13-op union ({@link import('./shapers.js').workspaceToolShape}) as its `parameters`, and its
  * handler PARSES the model-supplied args against that contract and DISPATCHES the matched
  * operation against the manager's ACTIVE workspace (the registry ops drive the manager itself),
@@ -661,7 +661,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 }
 
 /**
- * Build an LLM-callable sub-agent delegation tool — resolves a live, seeded `AgentInterface`
+ * Builds an LLM-callable sub-agent delegation tool — resolves a live, seeded `AgentInterface`
  * from `registry` and runs it to completion for ONE delegated `task`.
  *
  * @remarks
@@ -756,7 +756,7 @@ export function createAgentTool(
 }
 
 /**
- * Build an LLM-callable tool that returns the FULL `description` of another registered tool by
+ * Builds an LLM-callable tool that returns the FULL `description` of another registered tool by
  * name — the counterpart to the lean `summary` the other tools in this package advertise
  * (`AGENT_TOOL_SUMMARY` / `WORKFLOW_TOOL_SUMMARY` / `WORKSPACE_TOOL_SUMMARY`).
  *
@@ -812,7 +812,7 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
 }
 
 /**
- * Build an LLM-callable form tool — the ASK side of the terminal seam. Asks
+ * Builds an LLM-callable form tool — the ASK side of the terminal seam. Asks
  * a multi-field form and BLOCKS until it answers, returning the resolved values record.
  *
  * @remarks
@@ -909,7 +909,7 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 }
 
 /**
- * Build an LLM-callable answer tool — the ANSWER side of the terminal seam. Lists the forms
+ * Builds an LLM-callable answer tool — the ANSWER side of the terminal seam. Lists the forms
  * currently addressed to {@link import('./types.js').AnswerToolOptions.to}, or answers one of
  * them by id.
  *
@@ -994,7 +994,7 @@ export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 // === Database definition stores (SRC-1 — the tool factories land in a later unit)
 
 /**
- * Create the in-memory {@link DefinitionStoreInterface} — a process-lifetime `Map` of database
+ * Creates the in-memory {@link DefinitionStoreInterface} — a process-lifetime `Map` of database
  * definitions, the DEFAULT store the upcoming database / relation tools will persist their
  * `DatabaseDefinition` configs through.
  *
@@ -1012,7 +1012,7 @@ export function createMemoryDefinitionStore(): DefinitionStoreInterface {
 }
 
 /**
- * Create a {@link DefinitionStoreInterface} backed by one table of the `@orkestrel/database`
+ * Creates a {@link DefinitionStoreInterface} backed by one table of the `@orkestrel/database`
  * layer — the driver-pluggable twin of {@link createMemoryDefinitionStore}, storing each
  * database's definition as one opaque JSON column.
  *
@@ -1040,7 +1040,7 @@ export function createDatabaseDefinitionStore(
 // === Database tool (SRC-2 — createDatabaseTool itself)
 
 /**
- * Build an LLM-callable database tool — create, query, and mutate `@orkestrel/database`
+ * Builds an LLM-callable database tool — it creates, queries, and mutates `@orkestrel/database`
  * databases through one `operation`-discriminated call (matching
  * {@link createWorkspaceTool}'s single-tool-many-operations shape).
  *
@@ -1290,7 +1290,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 // === Relation tool (SRC-3 — createRelationTool, the final unit of the database / relation spine)
 
 /**
- * Build an LLM-callable relation tool — traverse and edit `@orkestrel/relation` relationships
+ * Builds an LLM-callable relation tool — it traverses and edits `@orkestrel/relation` relationships
  * through one `operation`-discriminated call (matching {@link createDatabaseTool}'s
  * single-tool-many-operations shape).
  *
@@ -1420,7 +1420,7 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 }
 
 /**
- * Build a standalone LLM-callable tool that infers a JSON Schema from example values — the
+ * Builds a standalone LLM-callable tool that infers a JSON Schema from example values — the
  * utility half of the "existing API/DB → MCP tool" bridge (the other half,
  * {@link createEndpointTool}, wraps one CONCRETE endpoint).
  *
@@ -1534,7 +1534,7 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
 }
 
 /**
- * Wrap one CONCRETE endpoint ({@link import('./types.js').EndpointDefinition}) as an LLM-callable
+ * Wraps one CONCRETE endpoint ({@link import('./types.js').EndpointDefinition}) as an LLM-callable
  * `ToolInterface` — the endpoint half of the "existing API/DB → MCP tool" bridge (the other half,
  * {@link createInferTool}, is a standalone inference utility).
  *

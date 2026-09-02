@@ -12,7 +12,7 @@ import type { ToolboxErrorCode } from './types.js'
 // shares it rather than minting one error class per tool.
 
 /**
- * A package-owned tool-call failure: malformed input or unresolved configuration (`TOOL`),
+ * Represents a package-owned tool-call failure: malformed input or unresolved configuration (`TOOL`),
  * delegation depth/cycle rejection (`DEPTH`), prompt failure (`DEADLOCK` / `EXPIRE` / `ANSWER`),
  * or a translated upstream database/relation failure (`DATABASE` / `RELATION`).
  *
@@ -51,10 +51,10 @@ export class ToolboxError extends Error {
 }
 
 /**
- * Type guard narrowing an unknown caught value to an {@link ToolboxError}.
+ * Narrows an unknown caught value to an {@link ToolboxError}.
  *
  * @param value - The value to test (typically a `catch` binding)
- * @returns `true` when `value` is an {@link ToolboxError}
+ * @returns True if `value` is an {@link ToolboxError}; false otherwise
  *
  * @example
  * ```ts
