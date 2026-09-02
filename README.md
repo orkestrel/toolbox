@@ -46,9 +46,9 @@ published from `@orkestrel/toolbox/server`.
 
 ## Guide
 
-See [`guides/src/toolbox.md`](guides/src/toolbox.md). The vendored
-[`guides/src/tool.md`](guides/src/tool.md) and
-[`guides/src/workspace.md`](guides/src/workspace.md) document the runtime dependencies.
+See [`guides/toolbox.md`](guides/toolbox.md). The vendored
+[`guides/tool.md`](guides/tool.md) and
+[`guides/workspace.md`](guides/workspace.md) document the runtime dependencies.
 
 ## License
 
