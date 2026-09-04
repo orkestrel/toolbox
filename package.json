@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/toolbox",
-	"version": "0.0.11",
+	"version": "0.0.12",
 	"description": "Concrete LLM-callable tools for the @orkestrel line — workflow authoring, workspace editing, sub-agent delegation, and more, over the @orkestrel/tool runtime, with pluggable stores. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
@@ -83,23 +83,23 @@
 		"test:setup": "vitest run --config vite.config.ts --no-cache --reporter=dot --project setup"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.19",
-		"@orkestrel/contract": "^0.0.15",
-		"@orkestrel/database": "^0.0.12",
-		"@orkestrel/form": "^0.0.4",
-		"@orkestrel/relation": "^0.0.10",
-		"@orkestrel/server": "^0.0.17",
-		"@orkestrel/terminal": "^0.0.13",
-		"@orkestrel/tool": "^0.0.12",
-		"@orkestrel/workflow": "^0.0.16",
-		"@orkestrel/workspace": "^0.0.6"
+		"@orkestrel/agent": "^0.0.20",
+		"@orkestrel/contract": "^0.0.16",
+		"@orkestrel/database": "^0.0.13",
+		"@orkestrel/form": "^0.0.5",
+		"@orkestrel/relation": "^0.0.11",
+		"@orkestrel/server": "^0.0.18",
+		"@orkestrel/terminal": "^0.0.14",
+		"@orkestrel/tool": "^0.0.13",
+		"@orkestrel/workflow": "^0.0.17",
+		"@orkestrel/workspace": "^0.0.7"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.59.0",
-		"@orkestrel/guide": "^0.0.15",
-		"@orkestrel/probe": "^0.0.11",
-		"@orkestrel/scaffold": "^0.0.60",
-		"@orkestrel/test": "^0.0.12",
+		"@orkestrel/guide": "^0.0.17",
+		"@orkestrel/probe": "^0.0.12",
+		"@orkestrel/scaffold": "^0.0.62",
+		"@orkestrel/test": "^0.0.13",
 		"@types/node": "^26.4.0",
 		"oxfmt": "^0.65.0",
 		"oxlint": "^1.80.0",
