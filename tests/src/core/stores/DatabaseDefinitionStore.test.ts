@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest'
 // tests/src/core/stores/DatabaseDefinitionStore.test.ts — mirrors src/core/stores/DatabaseDefinitionStore.ts.
 // The store is one half of a twin pair: it shares the `DefinitionStoreInterface` contract with
 // MemoryDefinitionStore, so the conformance scenarios below are the SAME contract scenarios its
-// twin's test runs (AGENTS §5 — Stores: point-access, own-id set, no-op delete-of-absent),
+// twin's test runs (AGENTS' Stores rule — point-access, own-id set, no-op delete-of-absent),
 // asserted here against the driver-pluggable tier. Database-only scenarios (default driver,
 // malformed stored blob) follow in their own sections.
 
@@ -92,7 +92,7 @@ describe('DatabaseDefinitionStore — DefinitionStoreInterface conformance', () 
 		const columns: Record<string, ColumnSpec> = {
 			id: 'string',
 			name: 'string',
-			price: { type: 'number', optional: true },
+			price: { primitive: 'number', optional: true },
 		}
 		const tables: Record<string, { columns: Record<string, ColumnSpec> }> = {
 			items: { columns },

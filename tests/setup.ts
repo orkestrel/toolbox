@@ -9,6 +9,7 @@ import type {
 import type { DatabaseInterface } from '@orkestrel/database'
 import type { DatabaseDefinition } from '@src/core'
 import type { JSONRecord } from '@orkestrel/contract'
+import type { TimerHandler } from '@orkestrel/terminal'
 import type {
 	TaskControllerInterface,
 	WorkflowSnapshot,
@@ -35,7 +36,7 @@ export function createTestDatabase(): DatabaseInterface {
  * Build the ONE full {@link DatabaseDefinition} fixture the definition-store twins both assert
  * against — mixed column forms, a `primary` map, single- and multi-column `indexes`, and a
  * non-integer `version`, so a round-trip proves every field survives rather than only the flat
- * ones (AGENTS §16.1 — one shared data builder, not a per-file hand-roll).
+ * ones (AGENTS' no-mocks rule — one shared data builder, not a per-file hand-roll).
  *
  * @param id - The definition id; defaults to `shop`
  * @returns A complete definition with every optional field populated
@@ -48,7 +49,7 @@ export function createTestDefinition(id = 'shop'): DatabaseDefinition {
 			items: {
 				columns: {
 					id: 'string',
-					price: { type: 'number', optional: true },
+					price: { primitive: 'number', optional: true },
 					name: 'string',
 				},
 			},
@@ -159,7 +160,7 @@ export class RecordingWorkflowStore implements WorkflowStoreInterface {
 
 // ── Scripted ProviderInterface (Ollama-free agent fixture) ───────────────────
 //
-// AGENTS §16.1: the ONE general scripted `ProviderInterface` the agent-touching tests in
+// AGENTS' no-mocks rule: the ONE general scripted `ProviderInterface` the agent-touching tests in
 // this package drive (createAgentFunction / createAgentTool). Trimmed from
 // `@orkestrel/agent`'s own test fixture to the minimum this package's tests need — a real
 // provider (NOT a mock of the agent): `stream` returns each turn's whole content as one
@@ -200,7 +201,7 @@ export interface ScriptedProviderInterface extends ProviderInterface {
  * repeats once the list is exhausted), streaming its whole content as ONE delta and
  * RETURNING the result. Honours `signal`: an already-aborted (or mid-stream aborted) signal
  * throws a `ProviderAbortError` carrying the accumulated partial, so a cancel threaded into
- * the agent commits a genuine partial (AGENTS §16.1 — one shared fixture, not a per-test
+ * the agent commits a genuine partial (AGENTS' no-mocks rule — one shared fixture, not a per-test
  * hand-roll).
  *
  * @param turns - The `ProviderResult`s to replay in order (the last repeats)
@@ -289,5 +290,41 @@ export class MalformedAgent implements AgentInterface {
 
 	abort(reason?: unknown): void {
 		this.#agent.abort(reason)
+	}
+}
+
+/** A controllable timer fixture with observable arm and cancellation counts. */
+export interface TestTimerInterface {
+	readonly timer: TimerHandler
+	readonly armed: number
+	readonly cancelled: number
+	fire(index: number): void
+}
+
+/**
+ * Create a controllable timer fixture for an injected timer seam.
+ *
+ * @returns A timer and its observable arm/cancellation record
+ */
+export function createTestTimer(): TestTimerInterface {
+	const entries: Array<{ callback: () => void; cancelled: boolean }> = []
+	return {
+		timer(callback, _delay) {
+			const entry = { callback, cancelled: false }
+			entries.push(entry)
+			return () => {
+				entry.cancelled = true
+			}
+		},
+		get armed() {
+			return entries.length
+		},
+		get cancelled() {
+			return entries.filter((entry) => entry.cancelled).length
+		},
+		fire(index: number): void {
+			const entry = entries[index]
+			if (entry !== undefined && !entry.cancelled) entry.callback()
+		},
 	}
 }

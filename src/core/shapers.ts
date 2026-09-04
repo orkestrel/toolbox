@@ -380,19 +380,18 @@ export const workspaceToolShape = unionShape(
 	}),
 )
 
-// === Database tool shape (SRC-2 — the tool factory itself; SRC-1 landed the persistence + the
-// TableSpec DSL this shape's `tables` field compiles the SAME way `expandTables` does)
+// === Database tool shape
 
-/** Describes a {@link import('./types.js').ColumnKind} literal — the leaf {@link columnSpecShape} wraps. */
-export const columnKindShape = literalShape(['string', 'integer', 'number', 'boolean'], {
-	description: 'A column type: "string" | "integer" | "number" | "boolean".',
+/** Describes a {@link import('./types.js').ColumnPrimitive} literal — the leaf {@link columnSpecShape} wraps. */
+export const columnPrimitiveShape = literalShape(['string', 'integer', 'number', 'boolean'], {
+	description: 'A column primitive: "string" | "integer" | "number" | "boolean".',
 })
 
-/** Describes a {@link import('./types.js').ColumnSpec} — a bare {@link columnKindShape}, or `{ type, optional }`. */
+/** Describes a {@link import('./types.js').ColumnSpec} — a bare {@link columnPrimitiveShape}, or `{ primitive, optional }`. */
 export const columnSpecShape = unionShape(
-	columnKindShape,
+	columnPrimitiveShape,
 	objectShape({
-		type: columnKindShape,
+		primitive: columnPrimitiveShape,
 		optional: optionalShape(
 			booleanShape({ description: 'Whether the column may be absent from a row.' }),
 		),
@@ -402,12 +401,14 @@ export const columnSpecShape = unionShape(
 /** Describes a {@link import('./types.js').TableSpec} — table name to `{ columns }`, each column a {@link columnSpecShape}. */
 export const tableSpecShape = recordShape(
 	objectShape({
-		columns: recordShape(columnSpecShape, { description: 'Column name to its type.' }),
+		columns: recordShape(columnSpecShape, {
+			description: 'Column name to its primitive or its { primitive, optional } spec.',
+		}),
 	}),
 	{ description: 'Table name to its column layout.' },
 )
 
-/** Describes one key value — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
+/** Describes one key value for the database tool and the relation tool — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
 export const keyShape = unionShape(
 	arrayShape(unionShape(stringShape(), numberShape()), {
 		description: 'Multiple row keys, positional — a miss at an index is undefined there.',
@@ -587,22 +588,13 @@ export const databaseToolShape = unionShape(
 	}),
 )
 
-// === Relation tool shape (createRelationTool call args, SRC-3)
+// === Relation tool shape (createRelationTool call args)
 //
 // Every arm carries an optional `manager` (which registered `RelationManagerInterface` to
 // address — omitted resolves to the sole registered manager) and a required `model` (the table
 // name on that manager). `include` is a flat array of dot-paths (mirrors `databaseToolShape`'s
 // flat-args ergonomic lever), expanded into a live `Include` by
 // {@link import('./helpers.js').expandInclude}.
-
-/** Describes one key value — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
-export const relationKeyShape = unionShape(
-	arrayShape(unionShape(stringShape(), numberShape()), {
-		description: 'Multiple row keys, positional — a miss at an index is undefined there.',
-	}),
-	stringShape({ description: 'One row key.' }),
-	numberShape({ description: 'One row key.' }),
-)
 
 /** Describes a single row key (not an array) — used by `'link'` / `'unlink'` / `'links'`, which address exactly one owning row. */
 export const singleKeyShape = unionShape(
@@ -642,7 +634,7 @@ export const relationToolShape = unionShape(
 		}),
 		manager: managerShape,
 		model: stringShape({ min: 1, description: 'The model (table) name.' }),
-		key: relationKeyShape,
+		key: keyShape,
 		include: includeShape,
 	}),
 	objectShape({

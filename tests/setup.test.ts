@@ -4,6 +4,7 @@ import {
 	createTestDatabase,
 	createTestDefinition,
 	createTestTaskController,
+	createTestTimer,
 	MalformedAgent,
 	RecordingWorkflowStore,
 	releaseTestTaskControllers,
@@ -35,7 +36,7 @@ describe('setup', () => {
 				items: {
 					columns: {
 						id: 'string',
-						price: { type: 'number', optional: true },
+						price: { primitive: 'number', optional: true },
 						name: 'string',
 					},
 				},
@@ -54,7 +55,7 @@ describe('setup', () => {
 			items: {
 				columns: {
 					id: 'string',
-					price: { type: 'number', optional: true },
+					price: { primitive: 'number', optional: true },
 					name: 'string',
 				},
 			},
@@ -179,5 +180,30 @@ describe('setup', () => {
 
 		expect(agent.status).toBe('idle')
 		expect(typeof agent.emitter.on).toBe('function')
+	})
+
+	it('createTestTimer arms deadlines without a real host timer and fires only the requested index', () => {
+		const timer = createTestTimer()
+		const fired: number[] = []
+
+		timer.timer(() => fired.push(0), 5)
+		timer.timer(() => fired.push(1), 5)
+		expect(timer.armed).toBe(2)
+
+		timer.fire(1)
+		expect(fired).toEqual([1])
+		timer.fire(1)
+		expect(fired).toEqual([1, 1])
+	})
+
+	it('createTestTimer counts a cancelled deadline and never fires it after cancellation', () => {
+		const timer = createTestTimer()
+		const fired: number[] = []
+		const cancel = timer.timer(() => fired.push(0), 5)
+
+		cancel()
+		expect(timer.cancelled).toBe(1)
+		timer.fire(0)
+		expect(fired).toEqual([])
 	})
 })

@@ -1,5 +1,5 @@
 import type { TerminalManagerInterface } from '@orkestrel/terminal'
-import type { TerminalBridgeOptions, TerminalRoute } from './types.js'
+import type { TerminalRoute, TerminalRoutesOptions } from './types.js'
 import { TerminalBridge } from './terminals/TerminalBridge.js'
 
 /**
@@ -26,7 +26,7 @@ import { TerminalBridge } from './terminals/TerminalBridge.js'
  */
 export function createTerminalRoutes(
 	manager: TerminalManagerInterface,
-	options?: TerminalBridgeOptions,
+	options?: TerminalRoutesOptions,
 ): readonly TerminalRoute[] {
 	return new TerminalBridge(manager, options).routes()
 }

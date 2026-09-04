@@ -262,7 +262,7 @@ export function inferTerminalCode(error: unknown): ToolboxErrorCode | undefined 
  * @param error - The value caught from a `@orkestrel/database` table operation
  * @returns The granular {@link DatabaseErrorCode}, or `undefined` if `error` is not a `DatabaseError`
  */
-export function databaseToolCode(error: unknown): DatabaseErrorCode | undefined {
+export function inferDatabaseCode(error: unknown): DatabaseErrorCode | undefined {
 	return isDatabaseError(error) ? error.code : undefined
 }
 
@@ -275,7 +275,7 @@ export function databaseToolCode(error: unknown): DatabaseErrorCode | undefined 
  * @param error - The value caught from a `@orkestrel/relation` operation
  * @returns The granular {@link RelationErrorCode}, or `undefined` if `error` is not a `RelationError`
  */
-export function relationToolCode(error: unknown): RelationErrorCode | undefined {
+export function inferRelationCode(error: unknown): RelationErrorCode | undefined {
 	return isRelationError(error) ? error.code : undefined
 }
 
@@ -405,7 +405,7 @@ export function resolveRelationModel(
 	return manager.model(name)
 }
 
-// === Database-tool operation leaves (SRC-2 — `createDatabaseTool` itself)
+// === Database-tool operation leaves
 
 /**
  * Returns the canonical live `@orkestrel/database` {@link QueryInput} for the database tool's
@@ -435,13 +435,39 @@ export function normalizeQuery(query: DatabaseQueryInput | undefined): QueryInpu
 }
 
 /**
+ * Picks the effective row limit a tool reads with — the requested count when it sits inside the
+ * cap, the cap when it exceeds it, and `0` when either falls below zero.
+ *
+ * @remarks
+ * The one place the database tool's `'records'` clamp ({@link clampQuery}) and the relation tool's
+ * `'find'` / `'links'` truncation both take their ceiling from, so a negative construction-time
+ * option can never reach a slice. Pure and total.
+ *
+ * @example
+ * ```ts
+ * import { resolveLimit } from '@src/core'
+ *
+ * resolveLimit(undefined, 100) // 100 — an omitted request takes the cap
+ * resolveLimit(500, 100) // 100 — a request over the cap is clamped down
+ * resolveLimit(-1, 100) // 0 — a negative request floors at zero
+ * ```
+ *
+ * @param requested - The caller's requested row count (or `undefined`)
+ * @param cap - The row-count ceiling
+ * @returns The effective row limit, never below `0` and never above `cap`
+ */
+export function resolveLimit(requested: number | undefined, cap: number): number {
+	return Math.max(0, Math.min(requested ?? cap, cap))
+}
+
+/**
  * Clamps a `'records'` call's query to a row cap, and builds the PROBE query the caller reads
  * with — the pure leaf {@link import('./factories.js').createDatabaseTool}'s `'records'` operation
  * uses to detect truncation without a separate `count` round trip.
  *
  * @remarks
- * The effective limit is `min(query?.limit ?? cap, cap)`, floored at `0` (so a caller can never
- * exceed the configured cap by supplying a larger `query.limit`). The returned probe query
+ * {@link resolveLimit} picks the effective limit, so a caller can never exceed the configured cap
+ * by supplying a larger `query.limit`, and can never drive it below `0`. The returned probe query
  * requests ONE MORE row than the effective limit (`limit: effective + 1`) — if storage returns
  * that many, the caller knows the true result was truncated (`rows.length > effective`) and slices
  * back down to `effective` before returning.
@@ -461,6 +487,6 @@ export function normalizeQuery(query: DatabaseQueryInput | undefined): QueryInpu
  * @returns The PROBE query (`limit` bumped by one) and the effective `limit`
  */
 export function clampQuery(query: QueryInput | undefined, cap: number): ClampedQuery {
-	const limit = Math.max(0, Math.min(query?.limit ?? cap, cap))
+	const limit = resolveLimit(query?.limit, cap)
 	return { query: { ...query, limit: limit + 1 }, limit }
 }

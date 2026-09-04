@@ -223,8 +223,8 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
  * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  *
  * @remarks
- * Net-new: pairs with the other three tools' lean {@link AGENT_TOOL_SUMMARY} /
- * {@link WORKFLOW_TOOL_SUMMARY} / {@link WORKSPACE_TOOL_SUMMARY} — a model that reads only the
+ * Pairs with the lean {@link AGENT_TOOL_SUMMARY} / {@link WORKFLOW_TOOL_SUMMARY} /
+ * {@link WORKSPACE_TOOL_SUMMARY} — a model that reads only the
  * advertised summary can call `describe` with that tool's registered name to get its full
  * teaching description back.
  */
@@ -314,27 +314,23 @@ export const ANSWER_TOOL_DESCRIPTION = [
 ].join('\n')
 
 /**
- * Holds the name the upcoming `createDatabaseTool` factory will advertise by default — the key a model
- * calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
- *
- * @remarks
- * SRC-1 of a 3-unit spine: this unit lands the persistence + schema foundation
- * ({@link import('./types.js').DatabaseDefinition}, {@link import('./types.js').DefinitionStoreInterface},
- * {@link import('./compilers.js').expandTables}); `createDatabaseTool` itself is built in a later unit.
+ * Holds the name {@link import('./factories.js').createDatabaseTool} advertises by default — the key
+ * a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  */
 export const DATABASE_TOOL_NAME = 'database'
 
 /**
- * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} the upcoming database tool
- * will advertise in place of {@link DATABASE_TOOL_DESCRIPTION}.
+ * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
+ * {@link import('./factories.js').createDatabaseTool} advertises in place of
+ * {@link DATABASE_TOOL_DESCRIPTION}.
  */
 export const DATABASE_TOOL_SUMMARY =
 	"Create and query a database — one operation per call (create, tables, get, records, count, aggregate, add, set, update, remove, destroy), chosen by the 'operation' field. Call describe('database') for the full operation list, the query form, and the column DSL."
 
 /**
- * Holds the DESCRIPTION the upcoming database tool will advertise — a multi-line guide that teaches a
- * small model the operation list, the SERIALIZED query form, and the {@link import('./types.js').TableSpec}
- * column DSL.
+ * Holds the description {@link import('./factories.js').createDatabaseTool} advertises — a
+ * multi-line guide that teaches a small model the operation list, the SERIALIZED query form, and
+ * the {@link import('./types.js').TableSpec} column DSL.
  *
  * @remarks
  * The query form is deliberately SERIALIZED (never fluent) — every condition is a flat object
@@ -346,7 +342,7 @@ export const DATABASE_TOOL_DESCRIPTION = [
 	'Create and query a database. Every call is ONE operation, chosen by the "operation" field.',
 	'',
 	'Operations (each takes the fields listed):',
-	'- create    { "operation": "create", "id": "<database id>", "tables": { "<table>": { "columns": { "<column>": "string" | "integer" | "number" | "boolean" | { "type": "string", "optional": true } } } }, "primary"?: { "<table>": "<column>" }, "indexes"?: { "<table>": [["<column>"]] }, "version"?: <number> } — define a new database.',
+	'- create    { "operation": "create", "id": "<database id>", "tables": { "<table>": { "columns": { "<column>": "string" | "integer" | "number" | "boolean" | { "primitive": "string", "optional": true } } } }, "primary"?: { "<table>": "<column>" }, "indexes"?: { "<table>": [["<column>"]] }, "version"?: <number> } — define a new database.',
 	'- tables    { "operation": "tables", "id": "<database id>" } — list a database\'s table names.',
 	'- get       { "operation": "get", "id": "<database id>", "table": "<table>", "key": "<row key>" } — fetch one row by its primary key.',
 	'- records   { "operation": "records", "id": "<database id>", "table": "<table>", "query"?: <Query> } — list rows matching a query.',
@@ -363,7 +359,7 @@ export const DATABASE_TOOL_DESCRIPTION = [
 	'  operators: equals, not, above, below, from, to, between, like, glob, starts, ends, any, none, absent, present.',
 	'  "connector" joins this condition to the next ("and" | "or"); omit on the last condition.',
 	'',
-	'Column DSL (used by "create" "tables"): a column is either a bare type string ("string" | "integer" | "number" | "boolean"), or { "type": "<type>", "optional": true } when the column may be absent from a row.',
+	'Column DSL (used by "create" "tables"): a column is either a bare primitive string ("string" | "integer" | "number" | "boolean"), or { "primitive": "<primitive>", "optional": true } when the column may be absent from a row.',
 	'Schema configuration is creation-time only. Evolve a schema by opening a newly configured target-version database over a versioned persistent driver; reconciliation requires paired metadata/stamp capabilities.',
 	'Example — create a database:',
 	JSON.stringify({
@@ -371,7 +367,11 @@ export const DATABASE_TOOL_DESCRIPTION = [
 		id: 'shop',
 		tables: {
 			products: {
-				columns: { name: 'string', price: 'number', notes: { type: 'string', optional: true } },
+				columns: {
+					name: 'string',
+					price: 'number',
+					notes: { primitive: 'string', optional: true },
+				},
 			},
 		},
 	}),
@@ -384,7 +384,7 @@ export const DATABASE_TOOL_DESCRIPTION = [
 	}),
 ].join('\n')
 
-/** Holds the default cap on rows a `records` call returns when the caller omits `query.limit` — the upcoming database tool's default row ceiling. */
+/** Holds the default cap on rows a `records` call returns when the caller omits `query.limit` — the database tool's default row ceiling. */
 export const DATABASE_TOOL_LIMIT = 1000
 
 /** Lists the runtime-frozen database-tool mutation names disabled by `DatabaseToolOptions.readonly`. */

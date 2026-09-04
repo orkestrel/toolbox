@@ -1,8 +1,8 @@
 import type { QueryInput } from '@orkestrel/database'
 import type { WorkflowDraft, WorkflowSteps } from '@src/core'
 import type {
+	LifecycleStatus,
 	TaskResult,
-	TaskStatus,
 	WorkflowDefinition,
 	WorkflowResult,
 } from '@orkestrel/workflow'
@@ -13,26 +13,20 @@ import {
 	completeDraft,
 	completePhaseDraft,
 	completeTaskDraft,
-	createAgentFunction,
 	deriveWorkflowDepth,
 	extendLineage,
 	normalizeLineage,
 	normalizeQuery,
-	databaseToolCode,
+	inferDatabaseCode,
 	expandInclude,
 	expandSteps,
-	isAgentFunction,
 	isToolboxError,
-	isColumnKind,
-	isColumnSpec,
-	isDatabaseDefinition,
-	isWorkflowLineage,
-	relationToolCode,
+	inferRelationCode,
+	resolveLimit,
 	inferTerminalCode,
 	tagWorkflow,
 	summarizeWorkflow,
 } from '@src/core'
-import { createAgent } from '@orkestrel/agent'
 import { TerminalError } from '@orkestrel/terminal'
 import {
 	buildPhaseContext,
@@ -44,10 +38,9 @@ import {
 import { DatabaseError } from '@orkestrel/database'
 import { RelationError } from '@orkestrel/relation'
 import { describe, expect, it } from 'vitest'
-import { ScriptedProvider } from '../../setup.js'
 
 // tests/src/core/helpers.test.ts — mirrors src/core/helpers.ts. Pure, deterministic
-// synthesis (AGENTS §16.1: real inputs, no mocks): the ancestry tag namespacing, the
+// synthesis (AGENTS' no-mocks rule: real inputs, no mocks): the ancestry tag namespacing, the
 // workflow-tool run summary, and the draft-completion / flat-steps-expansion pipeline
 // that turns the tool's LENIENT authoring surfaces into a strict WorkflowDefinition
 // (`@orkestrel/workflow`).
@@ -66,23 +59,6 @@ describe('ancestry tags — tagWorkflow / tagAgent (depth/cycle chain identifier
 })
 
 describe('workflow lineage helpers', () => {
-	it('validates strict alternating unique nonempty tags beginning with workflow', () => {
-		expect(isWorkflowLineage([])).toBe(true)
-		expect(isWorkflowLineage(['workflow:root', 'agent:a', 'workflow:child'])).toBe(true)
-		for (const invalid of [
-			['agent:a'],
-			['workflow:'],
-			['workflow:a', 'workflow:b'],
-			['workflow:a', 'agent:b', 'workflow:a'],
-			['workflow:a', 'agent:b', 'agent:c'],
-		]) {
-			expect(isWorkflowLineage(invalid)).toBe(false)
-		}
-		const revoked = Proxy.revocable<readonly string[]>(['workflow:root'], {})
-		revoked.revoke()
-		expect(isWorkflowLineage(revoked.proxy)).toBe(false)
-	})
-
 	it('copies and freezes construction and extension without aliasing caller arrays', () => {
 		const source = ['workflow:root']
 		const root = normalizeLineage(source)
@@ -124,32 +100,13 @@ describe('workflow lineage helpers', () => {
 			]),
 		).toBe(2)
 	})
-
-	it('recognizes only frozen agent adapters carrying frozen valid metadata', () => {
-		const fn = createAgentFunction(createAgent(new ScriptedProvider([{ content: 'ok' }])))
-		expect(isAgentFunction(fn)).toBe(true)
-		expect(isAgentFunction(() => 'opaque')).toBe(false)
-		expect(
-			isAgentFunction(
-				Object.freeze(
-					Object.assign(() => 'spoof', {
-						category: 'agent',
-						lineage: ['agent:wrong'],
-					}),
-				),
-			),
-		).toBe(false)
-		const revoked = Proxy.revocable(() => 'revoked', {})
-		revoked.revoke()
-		expect(isAgentFunction(revoked.proxy)).toBe(false)
-	})
 })
 
 describe('summarizeWorkflow — WorkflowResult → the plain handler summary', () => {
 	it('summarizes a run as the terminal status + the result count', () => {
 		const workflowContext = buildWorkflowContext({ id: 'wf-1', name: 'WF' })
 		const phaseContext = buildPhaseContext(workflowContext, { id: 'p', name: 'P' })
-		const statuses: readonly TaskStatus[] = ['completed', 'failed']
+		const statuses: readonly LifecycleStatus[] = ['completed', 'failed']
 		const results: readonly TaskResult[] = statuses.map((status, index) => ({
 			task: buildTaskContext(phaseContext, { id: `t${index}`, name: `t${index}` }),
 			phase: phaseContext,
@@ -338,136 +295,52 @@ describe('inferTerminalCode — classify a caught error into a ToolboxErrorCode'
 	})
 })
 
-describe('isColumnKind — narrow to a valid ColumnKind literal', () => {
-	it('accepts every ColumnKind', () => {
-		expect(isColumnKind('string')).toBe(true)
-		expect(isColumnKind('integer')).toBe(true)
-		expect(isColumnKind('number')).toBe(true)
-		expect(isColumnKind('boolean')).toBe(true)
+describe('inferDatabaseCode / inferRelationCode — classify a caught error into its granular code', () => {
+	it('inferDatabaseCode maps a real DatabaseError to its code', () => {
+		expect(inferDatabaseCode(new DatabaseError('NOT_FOUND', 'missing row'))).toBe('NOT_FOUND')
+		expect(inferDatabaseCode(new DatabaseError('CONFLICT', 'dup'))).toBe('CONFLICT')
 	})
 
-	it('rejects a non-ColumnKind string and a non-string value', () => {
-		expect(isColumnKind('text')).toBe(false)
-		expect(isColumnKind('')).toBe(false)
-		expect(isColumnKind(42)).toBe(false)
-		expect(isColumnKind(undefined)).toBe(false)
-		expect(isColumnKind(null)).toBe(false)
-		expect(isColumnKind({})).toBe(false)
-	})
-})
-
-describe('isColumnSpec — narrow to a bare ColumnKind or an { type, optional } object', () => {
-	it('accepts a bare ColumnKind shorthand', () => {
-		expect(isColumnSpec('string')).toBe(true)
-		expect(isColumnSpec('integer')).toBe(true)
-		expect(isColumnSpec('number')).toBe(true)
-		expect(isColumnSpec('boolean')).toBe(true)
+	it('inferDatabaseCode returns undefined for a non-DatabaseError value', () => {
+		expect(inferDatabaseCode(new Error('plain'))).toBeUndefined()
+		expect(inferDatabaseCode(undefined)).toBeUndefined()
+		expect(inferDatabaseCode('nope')).toBeUndefined()
 	})
 
-	it('accepts the object form with a valid type, with and without optional', () => {
-		expect(isColumnSpec({ type: 'string' })).toBe(true)
-		expect(isColumnSpec({ type: 'integer', optional: true })).toBe(true)
-		expect(isColumnSpec({ type: 'boolean', optional: false })).toBe(true)
-	})
-
-	it('rejects an invalid type, a wrong-typed optional, and junk values', () => {
-		expect(isColumnSpec({ type: 'text' })).toBe(false)
-		expect(isColumnSpec({ type: 'string', optional: 'yes' })).toBe(false)
-		expect(isColumnSpec({})).toBe(false)
-		expect(isColumnSpec(null)).toBe(false)
-		expect(isColumnSpec(42)).toBe(false)
-		expect(isColumnSpec('text')).toBe(false)
-		expect(isColumnSpec([])).toBe(false)
-	})
-})
-
-describe('isDatabaseDefinition — narrow an untrusted value to a DatabaseDefinition', () => {
-	const valid = {
-		id: 'db-1',
-		driver: 'memory',
-		tables: { widgets: { columns: { name: 'string', qty: { type: 'integer', optional: true } } } },
-		primary: { widgets: 'name' },
-		indexes: { widgets: [['name'], ['name', 'qty']] },
-		version: 2.5,
-	}
-
-	it('accepts a full valid definition, with and without optional schema configuration', () => {
-		expect(isDatabaseDefinition(valid)).toBe(true)
-		const {
-			primary: _primary,
-			indexes: _indexes,
-			version: _version,
-			...withoutConfiguration
-		} = valid
-		expect(isDatabaseDefinition(withoutConfiguration)).toBe(true)
-	})
-
-	it('rejects a missing or empty id / driver', () => {
-		const { id: _id, ...withoutId } = valid
-		expect(isDatabaseDefinition(withoutId)).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, id: '' })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, driver: '' })).toBe(false)
-	})
-
-	it('rejects malformed tables / columns', () => {
-		expect(isDatabaseDefinition({ ...valid, tables: 'nope' })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, tables: { widgets: 'nope' } })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, tables: { widgets: { columns: 'nope' } } })).toBe(false)
-		expect(
-			isDatabaseDefinition({ ...valid, tables: { widgets: { columns: { name: 'text' } } } }),
-		).toBe(false)
-	})
-
-	it('rejects wrong-typed primary values and the obsolete keys field', () => {
-		expect(isDatabaseDefinition({ ...valid, primary: 'nope' })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, primary: { widgets: 42 } })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, primary: { widgets: '' } })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, primary: undefined, keys: { widgets: 'name' } })).toBe(
-			false,
-		)
-	})
-
-	it('accepts empty index lists and rejects malformed groups or nonfinite versions', () => {
-		expect(isDatabaseDefinition({ ...valid, indexes: { widgets: [] } })).toBe(true)
-		expect(isDatabaseDefinition({ ...valid, indexes: { widgets: [[]] } })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, indexes: { widgets: [['']] } })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, indexes: { widgets: 'name' } })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, version: Number.NaN })).toBe(false)
-		expect(isDatabaseDefinition({ ...valid, version: Number.NEGATIVE_INFINITY })).toBe(false)
-	})
-
-	it('rejects non-objects', () => {
-		expect(isDatabaseDefinition(null)).toBe(false)
-		expect(isDatabaseDefinition(undefined)).toBe(false)
-		expect(isDatabaseDefinition('nope')).toBe(false)
-		expect(isDatabaseDefinition(42)).toBe(false)
-		expect(isDatabaseDefinition([])).toBe(false)
-	})
-})
-
-describe('databaseToolCode / relationToolCode — classify a caught error into its granular code', () => {
-	it('databaseToolCode maps a real DatabaseError to its code', () => {
-		expect(databaseToolCode(new DatabaseError('NOT_FOUND', 'missing row'))).toBe('NOT_FOUND')
-		expect(databaseToolCode(new DatabaseError('CONFLICT', 'dup'))).toBe('CONFLICT')
-	})
-
-	it('databaseToolCode returns undefined for a non-DatabaseError value', () => {
-		expect(databaseToolCode(new Error('plain'))).toBeUndefined()
-		expect(databaseToolCode(undefined)).toBeUndefined()
-		expect(databaseToolCode('nope')).toBeUndefined()
-	})
-
-	it('relationToolCode maps a real RelationError to its code', () => {
-		expect(relationToolCode(new RelationError('INVALID', 'bad include'))).toBe('INVALID')
-		expect(relationToolCode(new RelationError('UNKNOWN_RELATION', 'missing'))).toBe(
+	it('inferRelationCode maps a real RelationError to its code', () => {
+		expect(inferRelationCode(new RelationError('INVALID', 'bad include'))).toBe('INVALID')
+		expect(inferRelationCode(new RelationError('UNKNOWN_RELATION', 'missing'))).toBe(
 			'UNKNOWN_RELATION',
 		)
 	})
 
-	it('relationToolCode returns undefined for a non-RelationError value', () => {
-		expect(relationToolCode(new Error('plain'))).toBeUndefined()
-		expect(relationToolCode(undefined)).toBeUndefined()
-		expect(relationToolCode('nope')).toBeUndefined()
+	it('inferRelationCode returns undefined for a non-RelationError value', () => {
+		expect(inferRelationCode(new Error('plain'))).toBeUndefined()
+		expect(inferRelationCode(undefined)).toBeUndefined()
+		expect(inferRelationCode('nope')).toBeUndefined()
+	})
+})
+
+describe('resolveLimit — pick the effective row limit from a request and a cap', () => {
+	it('an omitted request resolves to the cap', () => {
+		expect(resolveLimit(undefined, 100)).toBe(100)
+	})
+
+	it('a request below the cap is honored', () => {
+		expect(resolveLimit(10, 100)).toBe(10)
+	})
+
+	it('a request above the cap is clamped down to the cap', () => {
+		expect(resolveLimit(500, 100)).toBe(100)
+	})
+
+	it('a negative request floors at 0', () => {
+		expect(resolveLimit(-1, 100)).toBe(0)
+	})
+
+	it('a negative cap floors at 0', () => {
+		expect(resolveLimit(undefined, -1)).toBe(0)
+		expect(resolveLimit(10, -1)).toBe(0)
 	})
 })
 

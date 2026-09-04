@@ -1,6 +1,6 @@
 import type { TableMap } from '@orkestrel/database'
 import type { ContractShape } from '@orkestrel/contract'
-import type { ColumnKind, ColumnSpec, TableSpec } from './types.js'
+import type { ColumnPrimitive, ColumnSpec, TableSpec } from './types.js'
 import {
 	booleanShape,
 	integerShape,
@@ -12,7 +12,7 @@ import {
 
 // Toolbox compilers — the config-only `TableSpec` column DSL compiled into the live
 // `@orkestrel/database` `TableMap` a `createDatabase` call accepts. Pure and total: one composite
-// walk over the spec, and the two leaves it maps with.
+// walk over the spec, and the `compileColumn` / `compileColumnPrimitive` leaves it maps with.
 
 /**
  * Compiles a {@link TableSpec} into the `@orkestrel/database` {@link TableMap} it configures —
@@ -35,18 +35,30 @@ export function expandTables(spec: TableSpec): TableMap {
 	return tables
 }
 
-/** Compiles one {@link ColumnSpec} into its `@orkestrel/database` column shape — the per-column leaf {@link expandTables} maps over. */
+/**
+ * Compiles one {@link ColumnSpec} into its `@orkestrel/database` column shape — the per-column leaf
+ * {@link expandTables} maps over.
+ *
+ * @param spec - The column spec to compile
+ * @returns The `@orkestrel/database` column shape, wrapped in `optionalShape` when the spec declares `optional: true`
+ */
 export function compileColumn(spec: ColumnSpec): ContractShape {
-	const kind = isString(spec) ? spec : spec.type
+	const primitive = isString(spec) ? spec : spec.primitive
 	const optional = !isString(spec) && spec.optional === true
-	const shape = compileColumnKind(kind)
+	const shape = compileColumnPrimitive(primitive)
 	return optional ? optionalShape(shape) : shape
 }
 
-/** Compiles one {@link import('./types.js').ColumnKind} into its primitive `@orkestrel/database` shape — the leaf {@link compileColumn} wraps. */
-export function compileColumnKind(kind: ColumnKind): ContractShape {
-	if (kind === 'string') return stringShape()
-	if (kind === 'integer') return integerShape()
-	if (kind === 'number') return numberShape()
+/**
+ * Compiles one {@link import('./types.js').ColumnPrimitive} into its primitive
+ * `@orkestrel/database` shape — the leaf {@link compileColumn} wraps.
+ *
+ * @param primitive - The declared column primitive
+ * @returns The matching primitive `@orkestrel/database` shape
+ */
+export function compileColumnPrimitive(primitive: ColumnPrimitive): ContractShape {
+	if (primitive === 'string') return stringShape()
+	if (primitive === 'integer') return integerShape()
+	if (primitive === 'number') return numberShape()
 	return booleanShape()
 }

@@ -1,8 +1,8 @@
 import type { TerminalManagerInterface, TimerHandler } from '@orkestrel/terminal'
 import type {
-	TerminalBridgeOptions,
 	TerminalRoute,
 	TerminalRouteContext,
+	TerminalRoutesOptions,
 	TerminalToken,
 } from '../types.js'
 import { defaultTimer, HEADER_TOKEN } from '@orkestrel/terminal'
@@ -21,12 +21,8 @@ import { TerminalConnection } from './TerminalConnection.js'
  * Bridges a terminal manager onto the wire — owns the shared route options, the token gate, and
  * the bound GET stream and POST answer handlers.
  *
- * @example
- * ```ts
- * import { TerminalBridge } from '@orkestrel/toolbox/server'
- *
- * const routes = new TerminalBridge(manager).routes()
- * ```
+ * Not exported from the `@orkestrel/toolbox/server` barrel — reach this behaviour through
+ * `createTerminalRoutes`.
  */
 export class TerminalBridge {
 	readonly #manager: TerminalManagerInterface
@@ -45,7 +41,7 @@ export class TerminalBridge {
 	 * @param manager - Terminal manager bridged onto HTTP
 	 * @param options - Shared route, authorization, keepalive, timer, and body-limit options
 	 */
-	constructor(manager: TerminalManagerInterface, options?: TerminalBridgeOptions) {
+	constructor(manager: TerminalManagerInterface, options?: TerminalRoutesOptions) {
 		this.#manager = manager
 		this.#path = options?.path ?? TERMINAL_ROUTES_PATH
 		this.#token = options?.token
@@ -133,7 +129,7 @@ export class TerminalBridge {
 
 		const result = this.#manager.answer(name, body.id, body.values)
 		if (result.success) return Response.json(result)
-		if (result.error.reason === 'terminal') return Response.json(result, { status: 404 })
+		if (result.error.reason === 'target') return Response.json(result, { status: 404 })
 		return Response.json(result, { status: 422 })
 	}
 }

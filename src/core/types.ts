@@ -2,11 +2,11 @@ import type { AgentInterface, ConversationStoreInterface } from '@orkestrel/agen
 import type { WorkspaceManagerInterface, WorkspaceStoreInterface } from '@orkestrel/workspace'
 import type { TerminalManagerInterface } from '@orkestrel/terminal'
 import type {
+	LifecycleStatus,
 	WorkflowFault,
 	WorkflowFunction,
-	WorkflowFunctions,
+	WorkflowRegistry,
 	WorkflowRunnerInterface,
-	WorkflowStatus,
 	WorkflowStoreInterface,
 } from '@orkestrel/workflow'
 import type {
@@ -122,8 +122,8 @@ export interface WorkflowSteps {
 
 /** Represents the JSON-safe run summary returned by {@link import('./factories.js').createWorkflowTool}. */
 export interface WorkflowToolResult {
-	/** Holds the run's terminal {@link WorkflowStatus}. */
-	readonly status: WorkflowStatus
+	/** Holds the run's terminal {@link LifecycleStatus}. */
+	readonly status: LifecycleStatus
 	/** Holds the tally of settled task results. */
 	readonly count: number
 	/** Reports whether the native runner stored its final state; omitted when no store was supplied. */
@@ -164,7 +164,7 @@ export type AgentFunction = WorkflowFunction & {
 export interface AgentFunctionOptions {
 	readonly runner?: WorkflowRunnerInterface
 	readonly lineage?: WorkflowLineage
-	readonly functions?: WorkflowFunctions
+	readonly functions?: WorkflowRegistry
 	readonly agents?: WorkflowAgents
 	readonly store?: WorkflowStoreInterface
 }
@@ -183,7 +183,7 @@ export interface AgentFunctionOptions {
  */
 export interface WorkflowToolOptions {
 	readonly lineage?: WorkflowLineage
-	readonly functions?: WorkflowFunctions
+	readonly functions?: WorkflowRegistry
 	readonly agents?: WorkflowAgents
 	readonly store?: WorkflowStoreInterface
 }
@@ -279,7 +279,7 @@ export type WorkspaceOperation =
 	 * The FLAT range edit — the four positive-integer caret components reassemble into a `Range`
 	 * (`@orkestrel/workspace`) via `rangeOf`. An empty span (`from === to`) inserts; a span past
 	 * the end is clamped. An inverted / sub-1 range throws `RANGE`; a binary target throws
-	 * `MODALITY`.
+	 * `MODALITY`; a missing target throws `MISSING`.
 	 */
 	| {
 			readonly operation: 'splice'
@@ -451,14 +451,16 @@ export interface AnswerToolOptions {
 
 // === Database definition (config-only)
 
-/** Represents one column's declared type — a primitive shorthand, or `integer` for a whole-number `number`. */
-export type ColumnKind = 'string' | 'integer' | 'number' | 'boolean'
+/** Represents one column's declared primitive — a shorthand, or `integer` for a whole-number `number`. */
+export type ColumnPrimitive = 'string' | 'integer' | 'number' | 'boolean'
 
 /**
- * Represents one table column's spec — either a bare {@link ColumnKind} shorthand, or `{ type, optional }`
- * when the column may be absent from a row.
+ * Represents one table column's spec — either a bare {@link ColumnPrimitive} shorthand, or
+ * `{ primitive, optional }` when the column may be absent from a row.
  */
-export type ColumnSpec = ColumnKind | Readonly<{ type: ColumnKind; optional?: boolean }>
+export type ColumnSpec =
+	| ColumnPrimitive
+	| Readonly<{ primitive: ColumnPrimitive; optional?: boolean }>
 
 /**
  * Represents a database's table layout — one entry per table, each a flat map of column name to
@@ -618,14 +620,14 @@ export interface RelationToolOptions {
 //
 // `createInferTool` and `createEndpointTool` bridge an EXISTING API/DB surface into an
 // LLM-callable `ToolInterface`, built on `@orkestrel/contract`'s sample-based schema inference
-// (`samplesToSchema` / `schemaToObject` / `schemaToParameters`) and, since `@orkestrel/contract`
-// 0.0.7, its validating inverse `schemaToShape` (an inferred `JSONSchema` → a `ContractShape`).
+// (`samplesToSchema` / `schemaToObject` / `schemaToParameters`) and its validating inverse
+// `schemaToShape` (an inferred `JSONSchema` → a `ContractShape`).
 // `createInferTool` is a STANDALONE utility tool a model calls directly to learn a JSON Schema
 // from example values; `createEndpointTool` wraps one CONCRETE endpoint (`EndpointDefinition`) —
 // its `parameters` are inferred ONCE at construction from `samples` and advertised to steer the
-// model, and by DEFAULT `execute` ENFORCES that same advertised schema against the model-supplied
-// `args` before calling `invoke` (`EndpointToolOptions.validate`, default `true`) — see the
-// Contract invariant in `tool.md`.
+// model, and by DEFAULT the tool's `execute` ENFORCES that same advertised schema against the
+// model-supplied `args` before calling the definition's own `execute`
+// (`EndpointToolOptions.validate`, default `true`) — see the Contract invariant in `tool.md`.
 
 /**
  * Represents the options for {@link import('./factories.js').createInferTool} — advertised name/description
@@ -639,10 +641,10 @@ export interface InferToolOptions {
 }
 
 /**
- * Represents the handler {@link import('./types.js').EndpointDefinition.invoke} implements — mirrors
+ * Represents the handler {@link import('./types.js').EndpointDefinition.execute} implements — mirrors
  * `@orkestrel/tool`'s `ToolOptions.execute` signature EXACTLY (same `Readonly<Record<string,
  * unknown>>` argument, same `Promise<unknown> | unknown` return) so
- * `execute: (args) => definition.invoke(args)` typechecks with zero assertions in
+ * `execute: (args) => definition.execute(args)` typechecks with zero assertions in
  * {@link import('./factories.js').createEndpointTool}.
  */
 export type EndpointHandler = (
@@ -658,23 +660,23 @@ export type EndpointHandler = (
  * `samples` MUST be non-empty — {@link import('./factories.js').createEndpointTool} throws a
  * typed `TOOL` {@link import('./errors.js').ToolboxError} at CONSTRUCTION when it is empty,
  * since an empty sample set cannot infer a schema. By DEFAULT ({@link EndpointToolOptions.validate}
- * `true`) `invoke` receives the PARSED, NORMALIZED args record — a copy of the model-supplied
+ * `true`) `execute` receives the PARSED, NORMALIZED args record — a copy of the model-supplied
  * `args` with each scalar coerced to its inferred type (e.g. a number sent for a string slot
  * arrives coerced to a string), checked against the same schema advertised as `parameters` — and
- * a call with a missing required key or a non-coercible value never reaches `invoke` at all (see
+ * a call with a missing required key or a non-coercible value never reaches `execute` at all (see
  * {@link EndpointToolOptions.validate}). With
- * `validate: false`, `invoke` receives the model-supplied `args` VERBATIM (raw passthrough, never
- * checked against the inferred schema). Either way `invoke`'s return flows back as the tool
+ * `validate: false`, `execute` receives the model-supplied `args` VERBATIM (raw passthrough, never
+ * checked against the inferred schema). Either way `execute`'s return flows back as the tool
  * call's result; a throw PROPAGATES uncaught, isolated by the `ToolManagerInterface`
  * (`@orkestrel/tool`) into the canonical error envelope. When `samples` are non-object values,
- * the advertised schema wraps them under a single required `value` property, so `invoke` receives
+ * the advertised schema wraps them under a single required `value` property, so `execute` receives
  * an `args` record of the shape `{ value: ... }` — never the bare value.
  */
 export interface EndpointDefinition {
 	readonly name: string
 	readonly description: string
 	readonly samples: readonly unknown[]
-	readonly invoke: EndpointHandler
+	readonly execute: EndpointHandler
 }
 
 /**
@@ -686,23 +688,25 @@ export interface EndpointDefinition {
  * `format` / `enum` default to `false`, matching `@orkestrel/contract`'s own
  * `ValueToSchemaOptions` defaults. `validate` defaults to `true`: the schema
  * `createEndpointTool` advertises as `parameters` (`samplesToSchema` + `schemaToObject`) is
- * compiled ONCE at construction (via `@orkestrel/contract` 0.0.7's `schemaToShape`) into a
- * `ContractInterface` used to `parse` every call's `args` before `invoke` runs — a NORMALIZING
+ * compiled ONCE at construction (through `@orkestrel/contract`'s `schemaToShape`) into a
+ * `ContractInterface` used to `parse` every call's `args` before `execute` runs — a NORMALIZING
  * parse: a scalar value is COERCED to its inferred type where the house parsers coerce (a number
- * to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/`'false'`/`1`/`0`), so `invoke`
- * receives the COERCED values (e.g. `7` sent for a string slot arrives at `invoke` as `'7'`), not
+ * to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/`'false'`/`1`/`0`), so `execute`
+ * receives the COERCED values (e.g. `7` sent for a string slot arrives at `execute` as `'7'`), not
  * the raw call args. A call whose `args` fails to parse — a required key missing, or a value not
  * coercible to its slot's type — THROWS a typed `TOOL` {@link import('./errors.js').ToolboxError}
- * carrying the structured `explain` faults, and `invoke` is never called. Beyond that coercion,
+ * carrying the structured `explain` faults, and `execute` is never called. Beyond that coercion,
  * enforcement is STRUCTURAL — required keys, `enum` membership, and numeric bounds — `format`
  * annotations (`email`, `date-time`, `uuid`, `uri`, ...) are NEVER asserted, mirroring
  * `@orkestrel/contract`'s own widening-only law for `schemaToShape`: a `format: true`-tuned
  * endpoint still ACCEPTS a non-conforming string in a format-tagged slot. A key NOT present in
  * the inferred (closed, `additionalProperties: false`) schema is NEVER a rejection either — it is
- * SILENTLY DROPPED before `invoke` runs (the same leniency `@orkestrel/contract`'s own `parse`
- * grants a closed object generally), so `invoke` may see fewer keys than the caller sent. Set
- * `validate: false` to restore the PRE-0.0.7 behavior exactly — `execute` passes the
- * model-supplied `args` straight to `invoke` UNCHANGED, unchecked and unstripped.
+ * SILENTLY DROPPED before `execute` runs (the same leniency `@orkestrel/contract`'s own `parse`
+ * grants a closed object generally), so `execute` may see fewer keys than the caller sent. Set
+ * `validate: false` when the endpoint's own handler validates its arguments, or when `samples`
+ * under-describe the real contract and the normalizing coercion would corrupt a call: the tool's
+ * `execute` then passes the model-supplied `args` to the handler unchanged, unchecked and
+ * unstripped.
  */
 export interface EndpointToolOptions {
 	readonly format?: boolean

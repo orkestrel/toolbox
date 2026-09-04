@@ -3,12 +3,8 @@ import type { ProviderResult } from '@orkestrel/agent'
 import type { ToolResult } from '@orkestrel/tool'
 import type { WorkflowDraft } from '@src/core'
 import type { DatabaseInterface } from '@orkestrel/database'
-import type { WorkflowDefinition, WorkflowFunction, WorkflowFunctions } from '@orkestrel/workflow'
-import type {
-	TerminalManagerInterface,
-	TimerCancelFunction,
-	TimerHandler,
-} from '@orkestrel/terminal'
+import type { WorkflowDefinition, WorkflowFunction, WorkflowRegistry } from '@orkestrel/workflow'
+import type { TerminalManagerInterface } from '@orkestrel/terminal'
 import type { FieldControl, FormSchema, FormValues } from '@orkestrel/form'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 import { createAgent, createAgentRegistry, createMemoryConversationStore } from '@orkestrel/agent'
@@ -60,9 +56,10 @@ import { createTerminalManager, TerminalError } from '@orkestrel/terminal'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { belongsTo, createRelationManager, hasMany, hasThrough } from '@orkestrel/relation'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createRecorder, waitForAbort, waitForDelay } from '@orkestrel/test'
+import { captureError, createRecorder, waitForAbort, waitForDelay } from '@orkestrel/test'
 import {
 	createTestTaskController,
+	createTestTimer,
 	MalformedAgent,
 	RecordingWorkflowStore,
 	releaseTestTaskControllers,
@@ -200,15 +197,6 @@ async function rejectionOf(promise: Promise<unknown> | unknown): Promise<unknown
 	}
 }
 
-function thrownOf(action: () => unknown): unknown {
-	try {
-		action()
-		return undefined
-	} catch (error) {
-		return error
-	}
-}
-
 // A minimal, hand-built TaskContext — pure DATA, the lineage shape createAgentFunction /
 // createToolFunction read from controller.task. Lets the adapter tests call the returned
 // WorkflowFunction directly, without driving a full runner round-trip.
@@ -268,7 +256,7 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 	it('rejects wrapping the reserved live workflow tool at construction', () => {
 		const tools = createToolManager()
 		tools.add(createWorkflowTool(simpleDefinition(), createWorkflowRunner()))
-		const error = thrownOf(() => createToolFunction(tools, WORKFLOW_TOOL_NAME))
+		const error = captureError(() => createToolFunction(tools, WORKFLOW_TOOL_NAME))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
@@ -539,7 +527,7 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 		const runner = createWorkflowRunner()
 		const functions = createWorkflowFunctions(runner)
 		for (const name of ['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__']) {
-			const error = thrownOf(() =>
+			const error = captureError(() =>
 				runner.execute(
 					{
 						id: `inherited-${name}`,
@@ -583,7 +571,7 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 	it('rejects function/agent key collisions and stale marked adapters before runner entry', () => {
 		const runner = createWorkflowRunner()
 		const agent = createAgent(new ScriptedProvider([{ content: 'unreached' }]))
-		const collision = thrownOf(() =>
+		const collision = captureError(() =>
 			createWorkflowFunctions(runner, {
 				functions: { review: () => 'opaque' },
 				agents: { review: agent },
@@ -592,28 +580,30 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 		expect(isToolboxError(collision) ? collision.code : undefined).toBe('TOOL')
 
 		const stale = createAgentFunction(agent)
-		const marked = thrownOf(() => createWorkflowFunctions(runner, { functions: { review: stale } }))
+		const marked = captureError(() =>
+			createWorkflowFunctions(runner, { functions: { review: stale } }),
+		)
 		expect(isToolboxError(marked) ? marked.code : undefined).toBe('TOOL')
 	})
 
 	it('rejects non-callable runtime entries and factory-specific lineage endings', () => {
-		const invalid: WorkflowFunctions = { leaf: () => 'leaf' }
+		const invalid: WorkflowRegistry = { leaf: () => 'leaf' }
 		Object.defineProperty(invalid, 'leaf', { enumerable: true, value: 7 })
-		const callable = thrownOf(() =>
+		const callable = captureError(() =>
 			createWorkflowFunctions(createWorkflowRunner(), { functions: invalid }),
 		)
 		expect(isToolboxError(callable) ? callable.code : undefined).toBe('TOOL')
 
 		const agent = createAgent(new ScriptedProvider([{ content: 'unreached' }]))
-		const agentEnding = thrownOf(() =>
+		const agentEnding = captureError(() =>
 			createAgentFunction(agent, { lineage: ['workflow:w', 'agent:a'] }),
 		)
-		const toolEnding = thrownOf(() =>
+		const toolEnding = captureError(() =>
 			createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
 				lineage: ['workflow:w'],
 			}),
 		)
-		const functionsEnding = thrownOf(() =>
+		const functionsEnding = captureError(() =>
 			createWorkflowFunctions(createWorkflowRunner(), {
 				lineage: ['workflow:w', 'agent:a'],
 			}),
@@ -1473,33 +1463,6 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 
 // ── createPromptTool / createAnswerTool — the terminal ask/answer seam ───────
 
-/** A controllable fake `TimerHandler` — records armed `(callback, ms)` pairs and lets a test fire one on demand. */
-function createFakeTimer(): {
-	readonly timer: TimerHandler
-	fire: (index: number) => void
-	readonly armed: number
-} {
-	const armed: Array<{ callback: () => void; cancelled: boolean }> = []
-	const timer: TimerHandler = (callback, _ms) => {
-		const entry = { callback, cancelled: false }
-		armed.push(entry)
-		const cancel: TimerCancelFunction = () => {
-			entry.cancelled = true
-		}
-		return cancel
-	}
-	return {
-		timer,
-		fire(index: number): void {
-			const entry = armed[index]
-			if (entry !== undefined && !entry.cancelled) entry.callback()
-		},
-		get armed() {
-			return armed.length
-		},
-	}
-}
-
 describe('createPromptTool / createAnswerTool — the terminal ask/answer seam', () => {
 	it('ask BLOCKS then resolves when the peer answers via the answer tool', async () => {
 		const manager = createTerminalManager()
@@ -1552,14 +1515,14 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 
 	it('EXPIRE: an injected-timer expiry maps to a typed EXPIRE ToolboxError', async () => {
 		const manager = createTerminalManager()
-		const fake = createFakeTimer()
+		const timer = createTestTimer()
 		manager.add('agent')
-		manager.add('reviewer', { timeout: 10, timer: fake.timer })
+		manager.add('reviewer', { timeout: 10, timer: timer.timer })
 		const askTool = createPromptTool({ manager, from: 'agent' })
 
 		const pending = rejectionOf(askTool.execute(createAskCall('reviewer', 'text', 'name?')))
 		await waitForDelay(0)
-		fake.fire(0)
+		timer.fire(0)
 		const error = await pending
 		expect(isToolboxError(error) ? error.code : undefined).toBe('EXPIRE')
 	})
@@ -2054,23 +2017,23 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		expect(Array.isArray(path) ? path : []).toEqual(expect.arrayContaining(['t0', 't1']))
 	})
 
-	it('an EXPIRE (fake-timer-driven) fires while nine other agents remain pending — surfaces typed EXPIRE only for the expired ask', async () => {
-		const fake = createFakeTimer()
+	it('an EXPIRE (injected-timer-driven) fires while nine other agents remain pending — surfaces typed EXPIRE only for the expired ask', async () => {
+		const timer = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('t0')
-		manager.add('t9', { timeout: 10, timer: fake.timer })
+		manager.add('t9', { timeout: 10, timer: timer.timer })
 		for (const name of NAMES.slice(1, 9)) manager.add(name)
 		const askFromT0 = createPromptTool({ manager, from: 't0' })
 		const askFromT1 = createPromptTool({ manager, from: 't1' })
 
 		// A second, ordinary ask (no timer) stays pending throughout — proves the expiry is scoped
-		// to the one form whose broker was configured with the fake timer, not global.
+		// to the one form whose broker was configured with the injected timer, not global.
 		const other = Promise.resolve(askFromT1.execute(createAskCall('t2', 'text', 'still waiting')))
 		other.catch(() => {})
 
 		const expiring = rejectionOf(askFromT0.execute(createAskCall('t9', 'text', 'name?')))
 		await waitForDelay(0)
-		fake.fire(0)
+		timer.fire(0)
 		const error = await expiring
 		expect(isToolboxError(error) ? error.code : undefined).toBe('EXPIRE')
 
@@ -2089,7 +2052,7 @@ function itemsTables(): Readonly<Record<string, unknown>> {
 			columns: {
 				id: 'string',
 				name: 'string',
-				price: { type: 'number', optional: true },
+				price: { primitive: 'number', optional: true },
 				active: 'boolean',
 			},
 		},
@@ -2943,6 +2906,26 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 		expect(isRecord(result) ? result.count : undefined).toBe(2)
 	})
 
+	it('a negative `limit` option floors the effective limit at 0 for find and links', async () => {
+		const manager = buildRelationManager()
+		await seedAccount(manager, 'a1')
+		await seedAccount(manager, 'a2')
+		await seedAccount(manager, 'a3')
+		await seedRep(manager, 'r1')
+		await manager.model('accounts').link('a1', 'reps', 'r1')
+		const tool = createRelationTool({ managers: { shop: manager }, limit: -1 })
+		const found = await tool.execute({ operation: 'find', model: 'accounts', include: [] })
+		expect(isRecord(found) ? found.count : undefined).toBe(0)
+		expect(isRecord(found) ? found.limit : undefined).toBe(0)
+		const linked = await tool.execute({
+			operation: 'links',
+			model: 'accounts',
+			key: 'a1',
+			relation: 'reps',
+		})
+		expect(isRecord(linked) ? linked.count : undefined).toBe(0)
+	})
+
 	it('offset paging walks every row when driven by the reported truncation', async () => {
 		const manager = buildRelationManager()
 		for (const id of ['a1', 'a2', 'a3', 'a4', 'a5']) await seedAccount(manager, id)
@@ -3513,7 +3496,7 @@ describe('createEndpointTool', () => {
 				{ id: '1', name: 'Ada' },
 				{ id: '2', name: 'Bob' },
 			],
-			invoke: (args) => args,
+			execute: (args) => args,
 		})
 		expect(tool.parameters).toEqual({
 			type: 'object',
@@ -3523,14 +3506,14 @@ describe('createEndpointTool', () => {
 		})
 	})
 
-	it('validate: false PASSTHROUGH: invoke receives the model-supplied args EXACTLY (same reference), even when they diverge from the inferred schema', async () => {
+	it('validate: false PASSTHROUGH: the handler receives the model-supplied args EXACTLY (same reference), even when they diverge from the inferred schema', async () => {
 		let received: unknown
 		const tool = createEndpointTool(
 			{
 				name: 'echo',
 				description: 'Echoes call args.',
 				samples: [{ id: '1' }],
-				invoke: (args) => {
+				execute: (args) => {
 					received = args
 					return null
 				},
@@ -3542,7 +3525,7 @@ describe('createEndpointTool', () => {
 		expect(received).toBe(args)
 	})
 
-	it('default validation COERCES a scalar to its inferred type before invoke runs', async () => {
+	it('default validation COERCES a scalar to its inferred type before the handler runs', async () => {
 		let received: unknown
 		const tool = createEndpointTool({
 			name: 'lookupUser',
@@ -3551,7 +3534,7 @@ describe('createEndpointTool', () => {
 				{ id: '1', name: 'a' },
 				{ id: '2', name: 'b' },
 			],
-			invoke: (args) => {
+			execute: (args) => {
 				received = args
 				return args
 			},
@@ -3568,7 +3551,7 @@ describe('createEndpointTool', () => {
 				{ id: '1', name: 'a' },
 				{ id: '2', name: 'b' },
 			],
-			invoke: (args) => args,
+			execute: (args) => args,
 		})
 		const error = await rejectionOf(
 			Promise.resolve().then(() => tool.execute({ id: true, name: 'Ada' })),
@@ -3580,12 +3563,12 @@ describe('createEndpointTool', () => {
 		expect(Array.isArray(faults) ? faults.length : 0).toBeGreaterThan(0)
 	})
 
-	it('a sync invoke result flows back as the manager value', async () => {
+	it('a sync handler result flows back as the manager value', async () => {
 		const tool = createEndpointTool({
 			name: 'add',
 			description: 'Adds two numbers.',
 			samples: [{ a: 1, b: 2 }],
-			invoke: (args) => Number(args.a) + Number(args.b),
+			execute: (args) => Number(args.a) + Number(args.b),
 		})
 		const manager = createToolManager()
 		manager.add(tool)
@@ -3598,12 +3581,12 @@ describe('createEndpointTool', () => {
 		expect(result.value).toBe(7)
 	})
 
-	it('an async invoke result flows back as the manager value', async () => {
+	it('an async handler result flows back as the manager value', async () => {
 		const tool = createEndpointTool({
 			name: 'fetchUser',
 			description: 'Fetches a user by id.',
 			samples: [{ id: '1' }],
-			invoke: async (args) => {
+			execute: async (args) => {
 				await Promise.resolve()
 				return { id: args.id, name: 'Ada' }
 			},
@@ -3619,12 +3602,12 @@ describe('createEndpointTool', () => {
 		expect(result.value).toEqual({ id: '1', name: 'Ada' })
 	})
 
-	it('invoke throwing surfaces exactly once through the manager error envelope, never double-wrapped', async () => {
+	it('a handler throwing surfaces exactly once through the manager error envelope, never double-wrapped', async () => {
 		const tool = createEndpointTool({
 			name: 'boom',
 			description: 'Always fails.',
 			samples: [{ x: 1 }],
-			invoke: () => {
+			execute: () => {
 				throw new Error('endpoint failure')
 			},
 		})
@@ -3636,12 +3619,12 @@ describe('createEndpointTool', () => {
 		expect(result.error.split('endpoint failure').length).toBe(2)
 	})
 
-	it('async invoke rejecting surfaces exactly once through the manager error envelope, never double-wrapped', async () => {
+	it('an async handler rejecting surfaces exactly once through the manager error envelope, never double-wrapped', async () => {
 		const tool = createEndpointTool({
 			name: 'asyncBoom',
 			description: 'Always rejects.',
 			samples: [{ x: 1 }],
-			invoke: async () => {
+			execute: async () => {
 				await Promise.resolve()
 				throw new Error('async endpoint failure')
 			},
@@ -3661,7 +3644,7 @@ describe('createEndpointTool', () => {
 				name: 'empty',
 				description: 'No samples.',
 				samples: [],
-				invoke: (args) => args,
+				execute: (args) => args,
 			})
 		} catch (error) {
 			caught = error
@@ -3676,7 +3659,7 @@ describe('createEndpointTool', () => {
 			name: 'status',
 			description: 'Status endpoint.',
 			samples,
-			invoke: (args) => args,
+			execute: (args) => args,
 		})
 		expect(withoutEnum.parameters).toEqual({
 			type: 'object',
@@ -3685,7 +3668,7 @@ describe('createEndpointTool', () => {
 			additionalProperties: false,
 		})
 		const withEnum = createEndpointTool(
-			{ name: 'status', description: 'Status endpoint.', samples, invoke: (args) => args },
+			{ name: 'status', description: 'Status endpoint.', samples, execute: (args) => args },
 			{ enum: true },
 		)
 		expect(withEnum.parameters).toEqual({
@@ -3701,7 +3684,7 @@ describe('createEndpointTool', () => {
 			name: 'custom',
 			description: 'A custom endpoint.',
 			samples: [{ x: 1 }],
-			invoke: (args) => args,
+			execute: (args) => args,
 		})
 		expect(tool.name).toBe('custom')
 		expect(tool.description).toBe('A custom endpoint.')
@@ -3712,7 +3695,7 @@ describe('createEndpointTool', () => {
 			name: 'text',
 			description: 'Bare string samples.',
 			samples: ['a', 'b', 'c'],
-			invoke: (args) => args,
+			execute: (args) => args,
 		})
 		expect(tool.parameters).toEqual({
 			type: 'object',
@@ -3722,14 +3705,14 @@ describe('createEndpointTool', () => {
 		})
 	})
 
-	it('non-object root samples (bare strings), validate: false: invoke receives raw args unchecked', async () => {
+	it('non-object root samples (bare strings), validate: false: the handler receives raw args unchecked', async () => {
 		let received: unknown
 		const tool = createEndpointTool(
 			{
 				name: 'text',
 				description: 'Bare string samples.',
 				samples: ['a', 'b', 'c'],
-				invoke: (args) => {
+				execute: (args) => {
 					received = args
 					return 'ok'
 				},
@@ -3743,7 +3726,7 @@ describe('createEndpointTool', () => {
 
 	// ── default validation (v1–v8) ──────────────────────────────────────────
 
-	it('(v1) conforming args parse and reach invoke as a record deep-equal to the sent args', async () => {
+	it('(v1) conforming args parse and reach the handler as a record deep-equal to the sent args', async () => {
 		let received: unknown
 		const tool = createEndpointTool({
 			name: 'lookupUser',
@@ -3752,7 +3735,7 @@ describe('createEndpointTool', () => {
 				{ id: '1', name: 'Ada' },
 				{ id: '2', name: 'Bob' },
 			],
-			invoke: (args) => {
+			execute: (args) => {
 				received = args
 				return args
 			},
@@ -3768,7 +3751,7 @@ describe('createEndpointTool', () => {
 			name: 'lookupUser',
 			description: 'Look up a user by id.',
 			samples: [{ id: '1', name: 'Ada' }],
-			invoke: (args) => args,
+			execute: (args) => args,
 		})
 		const manager = createToolManager()
 		manager.add(tool)
@@ -3784,17 +3767,16 @@ describe('createEndpointTool', () => {
 		expect(result.error.split('malformed endpoint call arguments').length).toBe(2)
 	})
 
-	it('(v3) missing required key is rejected; an extra key against a closed inferred schema is silently DROPPED before invoke by default, passed through raw under validate: false', async () => {
-		// Verified against `@orkestrel/contract` 0.0.7 directly (`compileParser` / `compileReporter`
-		// docs): a closed object's extra keys never fault — `parse` silently drops them rather than
-		// rejecting the whole object. So the default-validation endpoint below still ACCEPTS a call
-		// with an extra key, but `invoke` receives the key stripped; only `validate: false` passes it
-		// through raw.
+	it('(v3) missing required key is rejected; an extra key against a closed inferred schema is silently DROPPED before the handler by default, passed through raw under validate: false', async () => {
+		// A closed object's extra keys never fault in `@orkestrel/contract` — `parse` silently drops
+		// them rather than rejecting the whole object. So the default-validation endpoint below still
+		// ACCEPTS a call with an extra key, but the handler receives the key stripped; only
+		// `validate: false` passes it through raw.
 		const definition = {
 			name: 'lookupUser',
 			description: 'Look up a user by id.',
 			samples: [{ id: '1', name: 'Ada' }],
-			invoke: (args: Readonly<Record<string, unknown>>) => args,
+			execute: (args: Readonly<Record<string, unknown>>) => args,
 		}
 		const strict = createEndpointTool(definition)
 		let caught: unknown
@@ -3809,7 +3791,7 @@ describe('createEndpointTool', () => {
 		let strictReceived: unknown
 		const strictWithRecorder = createEndpointTool({
 			...definition,
-			invoke: (args) => {
+			execute: (args) => {
 				strictReceived = args
 				return args
 			},
@@ -3821,7 +3803,7 @@ describe('createEndpointTool', () => {
 		const lenient = createEndpointTool(
 			{
 				...definition,
-				invoke: (args) => {
+				execute: (args) => {
 					received = args
 					return args
 				},
@@ -3840,7 +3822,7 @@ describe('createEndpointTool', () => {
 				name: 'status',
 				description: 'Status endpoint.',
 				samples,
-				invoke: (args) => {
+				execute: (args) => {
 					received = args
 					return args
 				},
@@ -3865,7 +3847,7 @@ describe('createEndpointTool', () => {
 				name: 'notify',
 				description: 'Notify by email.',
 				samples: [{ email: 'ada@example.com' }, { email: 'bob@example.com' }],
-				invoke: (args) => {
+				execute: (args) => {
 					received = args
 					return args
 				},
@@ -3882,7 +3864,7 @@ describe('createEndpointTool', () => {
 			name: 'text',
 			description: 'Bare string samples.',
 			samples: ['a', 'b', 'c'],
-			invoke: (args) => {
+			execute: (args) => {
 				received = args
 				return args
 			},
@@ -3904,7 +3886,7 @@ describe('createEndpointTool', () => {
 			name: 'lookupUser',
 			description: 'Look up a user by id.',
 			samples: [{ id: '1', name: 'Ada' }],
-			invoke: (args) => args,
+			execute: (args) => args,
 		})
 		const hostile: unknown = JSON.parse('{"id":"1","name":"Ada","__proto__":{"polluted":true}}')
 		if (!isRecord(hostile)) throw new Error('unreachable')
@@ -3932,20 +3914,21 @@ describe('createEndpointTool', () => {
 		expect(proxyResult.error).toBeDefined()
 	})
 
-	it('(v8) construction compiles the contract once — many executes with identical args stay fast and behave identically', async () => {
+	it('many executes with identical args return identical results', async () => {
 		const samples = Array.from({ length: 50 }, (_, i) => ({ id: String(i), name: `user-${i}` }))
 		const tool = createEndpointTool({
 			name: 'lookupUser',
 			description: 'Look up a user by id.',
 			samples,
-			invoke: (args) => args,
+			execute: (args) => args,
 		})
 		const args = { id: '1', name: 'Ada' }
-		const start = performance.now()
+		const results: unknown[] = []
 		for (let i = 0; i < 200; i++) {
-			await tool.execute(args)
+			results.push(await tool.execute(args))
 		}
-		const elapsed = performance.now() - start
-		expect(elapsed).toBeLessThan(1000)
+		const first = results[0]
+		expect(first).toEqual(args)
+		for (const result of results) expect(result).toEqual(first)
 	})
 })

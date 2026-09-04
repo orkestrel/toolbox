@@ -5,7 +5,7 @@ import type { ToolInterface, ToolManagerInterface } from '@orkestrel/tool'
 import type {
 	WorkflowDefinition,
 	WorkflowFunction,
-	WorkflowFunctions,
+	WorkflowRegistry,
 	WorkflowRunnerInterface,
 	TaskControllerInterface,
 } from '@orkestrel/workflow'
@@ -93,15 +93,16 @@ import { ToolboxError, isToolboxError } from './errors.js'
 import {
 	clampQuery,
 	completeDraft,
-	databaseToolCode,
 	deriveWorkflowDepth,
 	expandInclude,
 	expandSteps,
 	extendLineage,
+	inferDatabaseCode,
+	inferRelationCode,
 	inferTerminalCode,
 	normalizeLineage,
 	normalizeQuery,
-	relationToolCode,
+	resolveLimit,
 	resolveRelationManager,
 	resolveRelationModel,
 	summarizeWorkflow,
@@ -317,12 +318,12 @@ export function createAgentFunction(
 export function createWorkflowFunctions(
 	runner: WorkflowRunnerInterface,
 	options?: WorkflowToolOptions,
-): WorkflowFunctions {
+): WorkflowRegistry {
 	const lineage = normalizeLineage(options?.lineage)
 	if (lineage.length > 0 && !lineage.at(-1)?.startsWith('workflow:')) {
 		throw new ToolboxError('TOOL', 'workflow functions lineage must end with a workflow tag')
 	}
-	const functions: WorkflowFunctions =
+	const functions: WorkflowRegistry =
 		options?.functions === undefined ? Object.freeze({}) : Object.freeze({ ...options.functions })
 	const agents: WorkflowAgents =
 		options?.agents === undefined ? Object.freeze({}) : Object.freeze({ ...options.agents })
@@ -510,7 +511,7 @@ export function createWorkflowTool(
 
 /**
  * Builds an LLM-callable workspace-editing tool — it ADVERTISES the `operation`-discriminated
- * 13-op union ({@link import('./shapers.js').workspaceToolShape}) as its `parameters`, and its
+ * union ({@link import('./shapers.js').workspaceToolShape}) as its `parameters`, and its
  * handler PARSES the model-supplied args against that contract and DISPATCHES the matched
  * operation against the manager's ACTIVE workspace (the registry ops drive the manager itself),
  * returning the plain result. A malformed operation throws this package's `ToolboxError`; a
@@ -539,8 +540,8 @@ export function createWorkflowTool(
  * The handler conforms to the universal tool-handler contract: it `contract.parse`s
  * the args, THROWS a `TOOL` `ToolboxError` when no operation arm matched (a malformed / unknown
  * operation), else `switch`es on `op.operation` and RETURNS the plain result — letting a
- * `WorkspaceError` raised by the live workspace (`MODALITY` / `PATTERN` / `RANGE`) PROPAGATE
- * uncaught. The range edit is the FLAT `'splice'` op: its four flat caret integers are
+ * `WorkspaceError` raised by the live workspace (`MISSING` / `MODALITY` / `PATTERN` / `RANGE`)
+ * PROPAGATE uncaught. The range edit is the FLAT `'splice'` op: its four flat caret integers are
  * reassembled into a `Range` (`@orkestrel/workspace`) by `rangeOf` and fed to the workspace's
  * ranged `write`.
  *
@@ -991,11 +992,11 @@ export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 	})
 }
 
-// === Database definition stores (SRC-1 — the tool factories land in a later unit)
+// === Database definition stores
 
 /**
  * Creates the in-memory {@link DefinitionStoreInterface} — a process-lifetime `Map` of database
- * definitions, the DEFAULT store the upcoming database / relation tools will persist their
+ * definitions, the DEFAULT store the database and relation tools persist their
  * `DatabaseDefinition` configs through.
  *
  * @returns A {@link DefinitionStoreInterface}
@@ -1037,7 +1038,7 @@ export function createDatabaseDefinitionStore(
 	return new DatabaseDefinitionStore(table)
 }
 
-// === Database tool (SRC-2 — createDatabaseTool itself)
+// === Database tool
 
 /**
  * Builds an LLM-callable database tool — it creates, queries, and mutates `@orkestrel/database`
@@ -1069,7 +1070,7 @@ export function createDatabaseDefinitionStore(
  * not an outer deadline for resolution, construction, schema inspection, `get`, or `close`. A typed `@orkestrel/database`
  * failure (`DatabaseError`) re-surfaces as a typed `DATABASE` `ToolboxError` carrying the
  * original {@link import('@orkestrel/database').DatabaseErrorCode} in `context.code`
- * ({@link import('./helpers.js').databaseToolCode}); an `ToolboxError` thrown by this tool's own
+ * ({@link import('./helpers.js').inferDatabaseCode}); an `ToolboxError` thrown by this tool's own
  * guards passes through unwrapped.
  *
  * A lazily re-minted database over the DEFAULT in-memory driver yields an EMPTY database — only
@@ -1274,7 +1275,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 				}
 			} catch (error) {
 				if (isToolboxError(error)) throw error
-				const code = databaseToolCode(error)
+				const code = inferDatabaseCode(error)
 				if (code === undefined) throw error
 				throw new ToolboxError('DATABASE', error instanceof Error ? error.message : String(error), {
 					code,
@@ -1287,7 +1288,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 	})
 }
 
-// === Relation tool (SRC-3 — createRelationTool, the final unit of the database / relation spine)
+// === Relation tool
 
 /**
  * Builds an LLM-callable relation tool — it traverses and edits `@orkestrel/relation` relationships
@@ -1313,10 +1314,10 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * (positional many-key form — an array key is read as many keys rather than one) or a single key.
  * `'find'` and `'links'` clamp their
  * result to {@link import('./types.js').RelationToolOptions.limit} (default
- * {@link import('./constants.js').RELATION_TOOL_LIMIT}) — `'find'` probes one row past the
- * effective limit (mirroring {@link import('./helpers.js').clampQuery}'s idiom) to report
- * `truncated`; `'links'` (which has no upstream pagination) fetches the FULL linked-key list and
- * slices/truncates it the same way. `'link'` / `'unlink'` write / remove one `through` junction
+ * {@link import('./constants.js').RELATION_TOOL_LIMIT}), taken through
+ * {@link import('./helpers.js').resolveLimit} — `'find'` probes one row past the effective limit to
+ * report `truncated`; `'links'` (which has no upstream pagination) fetches the FULL linked-key
+ * list and slices/truncates it the same way. `'link'` / `'unlink'` write / remove one `through` junction
  * row.
  *
  * A typed `@orkestrel/relation` failure (`RelationError`) re-surfaces as a typed `RELATION`
@@ -1367,7 +1368,7 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 					}
 					case 'find': {
 						const include = expandInclude(call.include, depth)
-						const effective = Math.min(call.limit ?? cap, cap)
+						const effective = resolveLimit(call.limit, cap)
 						const rows = await model.find(include, {
 							limit: effective + 1,
 							...(call.offset === undefined ? {} : { offset: call.offset }),
@@ -1387,15 +1388,16 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 						return { unlinked: true }
 					}
 					case 'links': {
+						const effective = resolveLimit(undefined, cap)
 						const keys = await model.links(call.key, call.relation)
-						const truncated = keys.length > cap
-						const sliced = keys.slice(0, cap)
-						return { keys: sliced, count: sliced.length, truncated, limit: cap }
+						const truncated = keys.length > effective
+						const sliced = keys.slice(0, effective)
+						return { keys: sliced, count: sliced.length, truncated, limit: effective }
 					}
 				}
 			} catch (error) {
 				if (isToolboxError(error)) throw error
-				const relation = relationToolCode(error)
+				const relation = inferRelationCode(error)
 				if (relation !== undefined) {
 					throw new ToolboxError(
 						'RELATION',
@@ -1408,7 +1410,7 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 						},
 					)
 				}
-				const database = databaseToolCode(error)
+				const database = inferDatabaseCode(error)
 				if (database === undefined) throw error
 				throw new ToolboxError('DATABASE', error instanceof Error ? error.message : String(error), {
 					code: database,
@@ -1447,7 +1449,7 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * NORMALIZING parse accept this value", i.e. would {@link createEndpointTool}'s default enforcement
  * admit it (`checker.parse(candidate) !== undefined`) — computed for every candidate regardless of
  * `valid`; by the house parse/guard round-trip guarantee, a `valid: true` entry is
- * ALWAYS also `coercible: true`. `@orkestrel/contract` 0.0.7's `explain` mirrors the normalizing
+ * ALWAYS also `coercible: true`. `@orkestrel/contract`'s `explain` mirrors the normalizing
  * `parse`'s leniency, not `is`'s strictness — so a strictly-invalid but coercible candidate (`7`
  * against a string slot) yields `{ valid: false, coercible: true, faults: [] }`: EMPTY faults, since
  * the mismatch the normalizing parse would silently fix is not one `explain` reports. `faults`
@@ -1544,20 +1546,20 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * `format` / `enum`), wrapping a non-object root as `{ value: <schema> }` via `schemaToObject` —
  * the SAME object-rooted schema is both the ADVERTISED `parameters` and, by default
  * ({@link import('./types.js').EndpointToolOptions.validate} `true`), the ENFORCED contract:
- * `@orkestrel/contract` 0.0.7's `schemaToShape` compiles it ONCE (via `createContract`) into a
- * `ContractInterface` whose `.parse` runs on every call's `args` before `definition.invoke` — a
+ * `@orkestrel/contract`'s `schemaToShape` compiles it ONCE (through `createContract`) into a
+ * `ContractInterface` whose `.parse` runs on every call's `args` before `definition.execute` — a
  * NORMALIZING parse, not a strict type check: a scalar is COERCED to its inferred type where the
  * house parsers coerce (a number to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/
- * `'false'`/`1`/`0`), so `definition.invoke` receives the COERCED value (e.g. `7` sent for a
+ * `'false'`/`1`/`0`), so `definition.execute` receives the COERCED value (e.g. `7` sent for a
  * string slot arrives as `'7'`), not the raw call value. A call whose `args` fails to parse into
  * a record — a required key missing, or a value not coercible to its slot's type — THROWS a
  * typed `TOOL` {@link import('./errors.js').ToolboxError} carrying the compiled contract's
- * structured `explain` faults, and `definition.invoke` is never called. `format` annotations are
+ * structured `explain` faults, and `definition.execute` is never called. `format` annotations are
  * NEVER asserted, and a key outside the closed inferred schema is SILENTLY DROPPED rather than
  * rejected (see {@link import('./types.js').EndpointToolOptions.validate}). With
- * `validate: false`, `execute` PASSES THROUGH the model-supplied `args` to `definition.invoke`
- * WITHOUT re-validation — the pre-0.0.7 behavior, preserved as an explicit opt-out. Either way,
- * `invoke`'s return flows back as the tool call's plain result; a throw PROPAGATES uncaught,
+ * `validate: false`, the tool's `execute` PASSES THROUGH the model-supplied `args` to
+ * `definition.execute` WITHOUT re-validation — the raw-passthrough opt-out. Either way, the
+ * definition's return flows back as the tool call's plain result; a throw PROPAGATES uncaught,
  * isolated by the `ToolManagerInterface` (`@orkestrel/tool`) into the canonical error envelope
  * — never caught or re-wrapped here.
  *
@@ -1576,12 +1578,12 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * 	name: 'lookupUser',
  * 	description: 'Look up a user by id.',
  * 	samples: [{ id: '1', name: 'Ada' }, { id: '2', name: 'Bob' }],
- * 	invoke: (args) => ({ id: args.id, name: 'Ada' }),
+ * 	execute: (args) => ({ id: args.id, name: 'Ada' }),
  * })
  * const tools = createToolManager()
  * tools.add(tool)
  *
- * // conforming args (all required keys present) parse and reach `invoke`
+ * // conforming args (all required keys present) parse and reach the definition's `execute`
  * const result = await tools.execute({
  * 	id: 'call-1',
  * 	name: 'lookupUser',
@@ -1590,7 +1592,7 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * // result.value -> { id: '1', name: 'Ada' }
  *
  * // a nonconforming call (id is not coercible to the required string) is rejected before
- * // `invoke` runs
+ * // the definition's `execute` runs
  * const rejected = await tools.execute({
  * 	id: 'call-2',
  * 	name: 'lookupUser',
@@ -1622,7 +1624,7 @@ export function createEndpointTool(
 			description: definition.description,
 			...(parameters === undefined ? {} : { parameters }),
 			execute(args) {
-				return definition.invoke(args)
+				return definition.execute(args)
 			},
 		})
 	}
@@ -1639,7 +1641,7 @@ export function createEndpointTool(
 					faults: contract.explain(args),
 				})
 			}
-			return definition.invoke(parsed)
+			return definition.execute(parsed)
 		},
 	})
 }

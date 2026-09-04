@@ -17,6 +17,21 @@ import {
 	parseManifest,
 	resolveLink,
 } from '@orkestrel/guide'
+import {
+	clampQuery,
+	completeTaskDraft,
+	createEndpointTool,
+	createWorkflowDraftContract,
+	deriveWorkflowDepth,
+	expandInclude,
+	extendLineage,
+	isAgentFunction,
+	isWorkflowLineage,
+	normalizeLineage,
+	tagAgent,
+	tagWorkflow,
+} from '@src/core'
+import { createToolManager } from '@orkestrel/tool'
 import { readFileSync } from 'node:fs'
 import { requireValue } from '@orkestrel/test'
 import { readInventory } from '@orkestrel/test/server'
@@ -40,7 +55,10 @@ const MODULES = Object.freeze({
  * intentional rather than forgotten — and the second assertion below fails when a name
  * here stops being stranded, so the list cannot rot.
  */
-const INTERNAL: readonly string[] = Object.freeze(['class TerminalConnection'])
+const INTERNAL: readonly string[] = Object.freeze([
+	'class TerminalBridge',
+	'class TerminalConnection',
+])
 
 /** Root-level files this package's guides link to. `readInventory` walks directories only. */
 const ROOT_FILES = Object.freeze(['AGENTS.md'])
@@ -122,7 +140,7 @@ for (const entry of manifest) {
 				.map((fence) => fence.code)
 			const names = guide
 				.surface()
-				.filter((symbol) => symbol.kind === 'function')
+				.filter((symbol) => symbol.keyword === 'function')
 				.map((symbol) => symbol.name)
 			expect(findUnexampled(names, fences, source.examples())).toEqual([])
 		})
@@ -173,3 +191,63 @@ for (const entry of manifest) {
 		})
 	})
 }
+
+// Change a fence, change the transcription beside it. Name resolution proves a symbol exists; only
+// these executed transcriptions prove the values the guide's comments claim.
+
+describe('flagship fences', () => {
+	it('the ancestry-tag fence returns the tags, depth, and guard verdicts it claims', () => {
+		expect(tagWorkflow('release')).toBe('workflow:release')
+		expect(tagAgent('reviewer')).toBe('agent:reviewer')
+		const lineage = normalizeLineage(['workflow:release'])
+		expect(isWorkflowLineage(extendLineage(lineage, tagAgent('reviewer')))).toBe(true)
+		expect(deriveWorkflowDepth(lineage)).toBe(0)
+		expect(isAgentFunction(() => 'opaque')).toBe(false)
+	})
+
+	it('the draft-completion fence fills the ids and names it claims', () => {
+		expect(
+			createWorkflowDraftContract().parse({ phases: [{ tasks: [{ behavior: 'compile' }] }] }),
+		).toBeDefined()
+		expect(completeTaskDraft({ behavior: 'compile' }, 'phase-0', 0)).toEqual({
+			id: 'phase-0-task-0',
+			name: 'phase-0-task-0',
+			behavior: 'compile',
+		})
+	})
+
+	it('the relation-include fence expands the flat dot-paths into the tree it claims', () => {
+		expect(expandInclude(['contacts', 'contacts.account'], 3)).toEqual({
+			contacts: { account: true },
+		})
+	})
+
+	it('the clampQuery fence probes one row past the effective limit it claims', () => {
+		const { query, limit } = clampQuery(undefined, 100)
+		expect(limit).toBe(100)
+		expect(query.limit).toBe(101)
+	})
+
+	it('the endpoint-bridge fence returns the row its comment claims', async () => {
+		const tool = createEndpointTool({
+			name: 'lookupUser',
+			description: 'Look up a user by id.',
+			samples: [
+				{ id: '1', name: 'Ada' },
+				{ id: '2', name: 'Bob' },
+			],
+			execute: async (args) => ({ id: args.id, name: 'Ada' }),
+		})
+		const tools = createToolManager()
+		tools.add(tool)
+
+		const result = await tools.execute({
+			id: 'call-1',
+			name: 'lookupUser',
+			arguments: { id: '1', name: 'Ada' },
+		})
+
+		if (!result.success) throw new Error('expected the endpoint call to succeed')
+		expect(result.value).toEqual({ id: '1', name: 'Ada' })
+	})
+})

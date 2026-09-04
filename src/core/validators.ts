@@ -1,6 +1,6 @@
 import type {
 	AgentFunction,
-	ColumnKind,
+	ColumnPrimitive,
 	ColumnSpec,
 	DatabaseDefinition,
 	WorkflowLineage,
@@ -54,18 +54,28 @@ export function isAgentFunction(value: unknown): value is AgentFunction {
 	return inspected.success && inspected.value
 }
 
-/** Narrows an unknown value to a {@link ColumnSpec} — a valid {@link ColumnKind} shorthand, or `{ type, optional }` with a valid `type`. */
+/**
+ * Narrows an unknown value to a {@link ColumnSpec}.
+ *
+ * @param value - The value to inspect
+ * @returns True if `value` is a valid {@link ColumnPrimitive} shorthand or a `{ primitive, optional }` record with a valid `primitive`; false otherwise
+ */
 export function isColumnSpec(value: unknown): value is ColumnSpec {
-	if (isColumnKind(value)) return true
+	if (isColumnPrimitive(value)) return true
 	if (!isRecord(value)) return false
 	return (
-		isColumnKind(value.type) &&
+		isColumnPrimitive(value.primitive) &&
 		(value.optional === undefined || typeof value.optional === 'boolean')
 	)
 }
 
-/** Narrows an unknown value to a {@link ColumnKind}. */
-export function isColumnKind(value: unknown): value is ColumnKind {
+/**
+ * Narrows an unknown value to a {@link ColumnPrimitive}.
+ *
+ * @param value - The value to inspect
+ * @returns True if `value` is `'string'`, `'integer'`, `'number'`, or `'boolean'`; false otherwise
+ */
+export function isColumnPrimitive(value: unknown): value is ColumnPrimitive {
 	return value === 'string' || value === 'integer' || value === 'number' || value === 'boolean'
 }
 
@@ -75,6 +85,9 @@ export function isColumnKind(value: unknown): value is ColumnKind {
  * `primary`, `indexes`, and finite `version` schema configuration. The boundary guard a
  * {@link import('./types.js').DefinitionStoreInterface} applies to an untrusted persisted blob
  * before trusting it as a definition (never an `as`).
+ *
+ * @param value - The value to inspect
+ * @returns True if `value` is a complete {@link DatabaseDefinition}; false otherwise
  */
 export function isDatabaseDefinition(value: unknown): value is DatabaseDefinition {
 	if (!isRecord(value)) return false

@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 // tests/src/core/stores/MemoryDefinitionStore.test.ts — mirrors src/core/stores/MemoryDefinitionStore.ts.
 // The store is one half of a twin pair: it shares the `DefinitionStoreInterface` contract with
 // DatabaseDefinitionStore, so the scenarios below are the SAME contract scenarios its twin's test
-// runs (AGENTS §5 — Stores: point-access, own-id set, no-op delete-of-absent), asserted here
+// runs (AGENTS' Stores rule — point-access, own-id set, no-op delete-of-absent), asserted here
 // against the plain-Map tier.
 
 describe('MemoryDefinitionStore — DefinitionStoreInterface conformance', () => {
@@ -63,7 +63,7 @@ describe('MemoryDefinitionStore — DefinitionStoreInterface conformance', () =>
 		const columns: Record<string, ColumnSpec> = {
 			id: 'string',
 			name: 'string',
-			price: { type: 'number', optional: true },
+			price: { primitive: 'number', optional: true },
 		}
 		const tables: Record<string, { columns: Record<string, ColumnSpec> }> = {
 			items: { columns },

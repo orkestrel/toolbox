@@ -31,7 +31,7 @@ export interface TerminalRoute {
 }
 
 /**
- * Represents the `token` gate {@link TerminalBridgeOptions} may configure — a plain string compared for
+ * Represents the `token` gate {@link TerminalRoutesOptions} may configure — a plain string compared for
  * equality against the `x-orkestrel-token` header, OR a validator function the consumer fully
  * controls, enabling expiry/rotation (a JWT `exp` check, a revocation-list lookup, anything
  * time-varying) that a fixed string cannot express. `undefined` disables the auth check entirely.
@@ -39,8 +39,8 @@ export interface TerminalRoute {
 export type TerminalToken = string | ((value: string | undefined) => boolean)
 
 /**
- * Represents the options for a {@link import('./terminals/TerminalBridge.js').TerminalBridge} and for the
- * {@link import('./factories.js').createTerminalRoutes} factory that projects its routes.
+ * Represents the options {@link import('./factories.js').createTerminalRoutes} takes — the shared
+ * route, authorization, keepalive, timer, and body-limit configuration both routes read.
  *
  * @remarks
  * - `path` — the shared `:name`-templated path both the GET (SSE) and POST (answer) routes
@@ -64,7 +64,7 @@ export type TerminalToken = string | ((value: string | undefined) => boolean)
  *   a body exceeding it is rejected `413` and `manager.answer` is never called. Defaults to
  *   `@orkestrel/server`'s own `DEFAULT_BODY_LIMIT` (1 MiB).
  */
-export interface TerminalBridgeOptions {
+export interface TerminalRoutesOptions {
 	readonly path?: string
 	readonly token?: TerminalToken
 	readonly keepalive?: number

@@ -3,7 +3,8 @@ import { createTerminalManager } from '@orkestrel/terminal'
 // `TerminalConnection` is internal: it is not exported from the `@orkestrel/toolbox/server`
 // barrel, so the test reaches it by its real path.
 import { TerminalConnection } from '../../../../src/server/terminals/TerminalConnection.js'
-import { createTestTimer, readAvailable } from '../../../setupServer.js'
+import { createTestTimer } from '../../../setup.js'
+import { readAvailable } from '../../../setupServer.js'
 import { describe, expect, it } from 'vitest'
 
 describe('TerminalConnection', () => {

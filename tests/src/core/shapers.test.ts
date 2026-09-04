@@ -16,13 +16,13 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 
 // tests/src/core/shapers.test.ts — mirrors src/core/shapers.ts. Each shape compiles
 // (`createContract`, `@orkestrel/contract`) into a lockstep guard/parser/schema/generator
-// (AGENTS §14); these tests pin the guard accept/reject behavior, the parser soundness, and
-// the JSON Schema shape each `create*Tool` factory advertises.
+// (AGENTS' narrow-untrusted-input-with-guards rule); these tests pin the guard accept/reject
+// behavior, the parser soundness, and the JSON Schema shape each `create*Tool` factory advertises.
 
 describe('promptToolShape — createPromptTool call args', () => {
 	const contract = createContract(promptToolShape)
 
-	it('Infer<typeof promptToolShape> stays structurally locked to { to: string, schema: JSONValue } — no hand-written call-args type exists for this factory (factories.ts createPromptTool reads `call.to` / `call.schema` off the inferred shape directly), so the lock pins the inferred shape itself against drift (AGENTS §5)', () => {
+	it('Infer<typeof promptToolShape> stays structurally locked to { to: string, schema: JSONValue } — no hand-written call-args type exists for this factory (factories.ts createPromptTool reads `call.to` / `call.schema` off the inferred shape directly), so the lock pins the inferred shape itself against drift (the export-and-test-reusable-logic law in AGENTS)', () => {
 		expectTypeOf<Infer<typeof promptToolShape>>().toEqualTypeOf<{
 			readonly to: string
 			readonly schema: JSONValue
@@ -66,7 +66,7 @@ describe('promptToolShape — createPromptTool call args', () => {
 describe('answerToolShape — createAnswerTool call args', () => {
 	const contract = createContract(answerToolShape)
 
-	it('Infer<typeof answerToolShape> stays structurally locked to the pending/answer discriminated union — no hand-written call-args type exists for this factory (factories.ts createAnswerTool reads `call.id` / `call.values` off the inferred shape directly), so the lock pins the inferred shape itself against drift (AGENTS §5)', () => {
+	it('Infer<typeof answerToolShape> stays structurally locked to the pending/answer discriminated union — no hand-written call-args type exists for this factory (factories.ts createAnswerTool reads `call.id` / `call.values` off the inferred shape directly), so the lock pins the inferred shape itself against drift (the export-and-test-reusable-logic law in AGENTS)', () => {
 		expectTypeOf<Infer<typeof answerToolShape>>().toEqualTypeOf<
 			| { readonly operation: 'pending' }
 			| { readonly operation: 'answer'; readonly id: string; readonly values: JSONValue }
@@ -130,7 +130,7 @@ describe('answerToolShape — createAnswerTool call args', () => {
 describe('agentToolShape — createAgentTool call args', () => {
 	const contract = createContract(agentToolShape)
 
-	it('Infer<typeof agentToolShape> stays structurally locked to the hand-written AgentToolArguments (types.ts) — a compile-time guard against silent two-copy drift (AGENTS §5)', () => {
+	it('Infer<typeof agentToolShape> stays structurally locked to the hand-written AgentToolArguments (types.ts) — a compile-time guard against silent two-copy drift (the export-and-test-reusable-logic law in AGENTS)', () => {
 		expectTypeOf<Infer<typeof agentToolShape>>().toEqualTypeOf<AgentToolArguments>()
 	})
 
@@ -260,10 +260,10 @@ describe('workflowStepsShape — the advertised flat authoring surface', () => {
 	})
 })
 
-describe('workspaceToolShape — the 13-op discriminated union', () => {
+describe('workspaceToolShape — the operation-discriminated union', () => {
 	const contract = createContract(workspaceToolShape)
 
-	it('Infer<typeof workspaceToolShape> stays structurally locked to the hand-written WorkspaceOperation (types.ts) — a compile-time guard against silent two-copy drift (AGENTS §5)', () => {
+	it('Infer<typeof workspaceToolShape> stays structurally locked to the hand-written WorkspaceOperation (types.ts) — a compile-time guard against silent two-copy drift (the export-and-test-reusable-logic law in AGENTS)', () => {
 		expectTypeOf<Infer<typeof workspaceToolShape>>().toEqualTypeOf<WorkspaceOperation>()
 	})
 
@@ -379,7 +379,7 @@ describe('workspaceToolShape — the 13-op discriminated union', () => {
 	})
 })
 
-describe('databaseToolShape — the 11-op discriminated union', () => {
+describe('databaseToolShape — the operation-discriminated union', () => {
 	const contract = createContract(databaseToolShape)
 
 	const valid: ReadonlyArray<readonly [string, Readonly<Record<string, unknown>>]> = [
@@ -392,7 +392,7 @@ describe('databaseToolShape — the 11-op discriminated union', () => {
 					users: {
 						columns: {
 							username: 'string',
-							age: { type: 'integer', optional: true },
+							age: { primitive: 'integer', optional: true },
 						},
 					},
 				},
@@ -505,7 +505,7 @@ describe('databaseToolShape — the 11-op discriminated union', () => {
 				operation: 'create',
 				id: 'db1',
 				tables: {
-					users: { columns: { name: 'string', age: { type: 'integer', optional: true } } },
+					users: { columns: { name: 'string', age: { primitive: 'integer', optional: true } } },
 				},
 			}),
 		).toBe(true)
@@ -580,7 +580,7 @@ describe('databaseToolShape — the 11-op discriminated union', () => {
 	})
 })
 
-describe('relationToolShape — the 5-op discriminated union', () => {
+describe('relationToolShape — the operation-discriminated union', () => {
 	const contract = createContract(relationToolShape)
 
 	const valid: ReadonlyArray<readonly [string, Readonly<Record<string, unknown>>]> = [
