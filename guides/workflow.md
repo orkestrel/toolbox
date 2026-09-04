@@ -1,14 +1,14 @@
 # Workflow
 
-> Orchestration as DATA: a JSON-serializable `Workflow → Phase → Task` tree — a strict three levels, positional, no DAG — that a UI or an LLM authors, persistence stores, and a thin engine drives by COMPOSING the shipped execution substrate. Not a general DAG engine: it trades arbitrary dependency graphs for a fixed, deterministic shape, and writes none of its own concurrency / retry / abort machinery — it reuses what already ships.
+> Orchestration as DATA: a JSON-serializable `Workflow → Phase → Task` tree — strictly those levels, positional, no DAG — that a UI or an LLM authors, persistence stores, and a thin engine drives by COMPOSING the shipped execution substrate. Not a general DAG engine: it trades arbitrary dependency graphs for a fixed, deterministic shape, and writes none of its own concurrency / retry / abort machinery — it reuses what already ships.
 
-Read the module as five layers of one substrate, top to bottom:
+Read the module as layers of one substrate, top to bottom:
 
 - **The tree describes.** The **definition** family (`WorkflowDefinition → PhaseDefinition → TaskDefinition`) is pure JSON — behavior referenced BY NAME, never inline functions — so the whole tree serializes, round-trips, and is safe for a 2B model to emit. One compiled [contract](contract.md) (`createWorkflowContract`) keeps the JSON Schema + guard + parser + seeded generator in lockstep with the hand-written interfaces, so definition and runtime can never drift.
-- **The entities control.** The live **entity** family (`Workflow` / `Phase` / `Task`) is the runtime mirror BUILT from a definition: each node is an [§13-observable](emitter.md) synchronous state machine whose status is DERIVED from its children, mutable through its own `add` / `remove` / `move` / `update`, pausable, and snapshot-able at any instant.
+- **The entities control.** The live **entity** family (`Workflow` / `Phase` / `Task`) is the runtime mirror BUILT from a definition: each node is an [observable](emitter.md) synchronous state machine whose status is DERIVED from its children, mutable through its own `add` / `remove` / `move` / `update`, pausable, and snapshot-able at any instant.
 - **The engine drives.** The `WorkflowRunner` is a PURE engine that walks the live tree — phases sequentially, each phase's tasks concurrently — COMPOSING the substrate rather than re-implementing status / concurrency / retries / abort, under a `bail` failure policy: `false` (graceful, the default) records each leaf failure as data and finishes every phase; `true` (the database-transaction halt) aborts the in-flight siblings on the first failure and skips the rest.
-- **The substrate executes.** Underneath sit the shipped primitives the engine composes: the `Scheduler` paces the host between work, the queue-backed `Runner` bounds and drives a set of units, and a `Controller` is the per-unit handle a handler receives. The engine folds [abort](abort.md) / [timeout](timeout.md) / [budget](budget.md) through this same substrate.
-- **The consumer supplies behavior.** A task's `run` is a PLAIN STRING naming a behavior in the `WorkflowOptions.functions` registry — resolved ONCE at construction into the task's `handler` (a `WorkflowFunction`); the engine dispatches by invoking `task.handler` directly and carries no registry or provider knowledge of its own. Integrations compose real `WorkflowFunction`s at the application edge.
+- **The substrate executes.** Underneath sit the shipped primitives the engine composes: the `Scheduler` paces the host between work, the queue-backed `Runner` bounds and drives a set of units, and a `ControllerInterface` is the per-unit handle a handler receives. The engine folds [abort](abort.md) / [timeout](timeout.md) / [budget](budget.md) through this same substrate.
+- **The consumer supplies behavior.** A task's `behavior` is a PLAIN STRING naming a behavior in the `WorkflowOptions.functions` registry — resolved ONCE at construction into the task's `handler` (a `WorkflowFunction`); the engine dispatches by invoking `task.handler` directly and carries no registry or provider knowledge of its own. Integrations compose real `WorkflowFunction`s at the application edge.
 
 **Determinism is fixed by design, not configured: tasks within a phase run concurrently; phases run sequentially.** A dependency is expressed STRUCTURALLY — a task that needs another's output goes in a later phase — so the same tree always sequences the same way and there is no DAG to misconfigure. The only per-phase knob is an optional `concurrency` throttle (max-in-flight), never a sequencing control.
 
@@ -18,7 +18,7 @@ Source: [`src/core`](../src/core). Published through `@orkestrel/workflow`.
 
 ## Surface
 
-The 80% use case is two steps: author a `WorkflowDefinition` (pure JSON — phases in order, each phase's tasks concurrent, each task naming a registered behavior), then run it through a `WorkflowRunner` that builds the live tree and drives it to a `WorkflowResult`:
+The use case is: author a `WorkflowDefinition` (pure JSON — phases in order, each phase's tasks concurrent, each task naming a registered behavior), then run it through a `WorkflowRunner` that builds the live tree and drives it to a `WorkflowResult`:
 
 ```ts
 import { createWorkflowRunner } from '@orkestrel/workflow'
@@ -32,14 +32,14 @@ const definition: WorkflowDefinition = {
 			id: 'build',
 			name: 'Build',
 			tasks: [
-				{ id: 'compile', name: 'Compile', run: 'compile' },
-				{ id: 'lint', name: 'Lint', run: 'lint' },
+				{ id: 'compile', name: 'Compile', behavior: 'compile' },
+				{ id: 'lint', name: 'Lint', behavior: 'lint' },
 			],
 		},
 		{
 			id: 'ship',
 			name: 'Ship',
-			tasks: [{ id: 'publish', name: 'Publish', run: 'publish' }],
+			tasks: [{ id: 'publish', name: 'Publish', behavior: 'publish' }],
 		},
 	],
 }
@@ -58,51 +58,75 @@ result.workflow.phase('build')?.task('compile')?.status // 'completed'
 result.results // every settled task's TaskResult, in positional order
 ```
 
-Why this is safe: the definition is the SINGLE source of truth. `execute` builds the live tree from the definition itself — there is no separately-supplied tree to fall out of sync — so the executed entity can never drift from the `run` string / `concurrency` metadata, and the freshly-built live `workflow` is returned in the result. Each task's `run` string is resolved ONCE at construction against `options.functions` into its `handler`; the runner then simply invokes `task.handler`. Phase `ship` starts only once phase `build` has fully settled; within `build`, `compile` and `lint` run concurrently. Omitting `run` deliberately creates a no-op task whose JSON result is `null`. A present `run` must resolve before execution; an absent registry entry is rejected rather than silently skipping named work.
+Why this is safe: the definition is the SINGLE source of truth. `execute` builds the live tree from the definition itself — there is no separately-supplied tree to fall out of sync — so the executed entity can never drift from the `behavior` string / `concurrency` metadata, and the freshly-built live `workflow` is returned in the result. Each task's `behavior` string is resolved ONCE at construction against `options.functions` into its `handler`; the runner then invokes `task.handler`. Phase `ship` starts only after phase `build` has fully settled; within `build`, `compile` and `lint` run concurrently. Omitting `behavior` deliberately creates a no-op task whose JSON result is `null`. A present `behavior` must resolve before execution; an absent registry entry is rejected rather than silently skipping named work.
 
 ### Factories
 
-| API                           | Kind     | Summary                                                                                                                                     |
-| ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createWorkflowContract`      | function | Compile the workflow-definition `ContractInterface` — JSON Schema + guard + parser + seeded generator, all from one shape.                  |
-| `createWorkflow`              | function | Build the live `WorkflowInterface` entity tree from a `WorkflowDefinition` (every node `pending`).                                          |
-| `createRestoredWorkflow`      | function | Build an equivalent live tree from a `WorkflowSnapshot` — the inverse of `snapshot()` (structure + status + results + order).               |
-| `createRecoveredWorkflow`     | function | Build an interrupted tree back to life — running leaves return to their remaining retry budget, or normalize to recovery failures.          |
-| `createMemoryWorkflowStore`   | function | Create the in-memory default `WorkflowStoreInterface` — persists `WorkflowSnapshot`s by id (the durable-store seam; no TTL, no options).    |
-| `createDatabaseWorkflowStore` | function | Create the driver-pluggable `WorkflowStoreInterface` over a `databases` table (the snapshot as one JSON column; driver defaults to memory). |
-| `createWorkflowRunner`        | function | Create a PURE `WorkflowRunnerInterface` engine over an optional `scheduler` — no behavior or provider registry.                             |
-| `createWorkflowManager`       | function | Create a store-backed live-workflow registry; optional functions make hydrated named work runnable, while omission remains inspectable.     |
-| `createScheduler`             | function | Create the cross-environment `setTimeout`-based default `SchedulerInterface`.                                                               |
-| `createRunner`                | function | Create a `RunnerInterface` over a handler — drives a `Queue`, ordered + fail-fast `execute`.                                                |
-| `createDeferred`              | function | Create a `DeferredInterface` — a promise whose settlement (`resolve` / `reject`) is driven externally.                                      |
+| API                           | Kind     | Summary                                                                                                                              |
+| ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `createWorkflowContract`      | function | The compiled workflow-definition `ContractInterface` — JSON Schema + guard + parser + seeded generator, all from one shape.          |
+| `createWorkflow`              | function | The live `WorkflowInterface` entity tree built from a `WorkflowDefinition` (every node `pending`).                                   |
+| `createWorkflowTree`          | function | That tree built from an already-owned options bag — the one construction path the factory, the manager, and the runner share.        |
+| `createRestoredWorkflow`      | function | An equivalent live tree built from a `WorkflowSnapshot` — the inverse of `snapshot()` (structure + status + results + order).        |
+| `createRecoveredWorkflow`     | function | An interrupted tree brought back to life — running leaves return to their remaining retry budget, or normalize to recovery failures. |
+| `createMemoryWorkflowStore`   | function | The in-memory default `WorkflowStoreInterface` — persists `WorkflowSnapshot`s by id (the durable-store seam; no TTL, no options).    |
+| `createDatabaseWorkflowStore` | function | The driver-pluggable `WorkflowStoreInterface` over a `databases` table (the snapshot as one JSON column; driver defaults to memory). |
+| `createWorkflowRunner`        | function | The PURE `WorkflowRunnerInterface` engine over an optional `scheduler` — no behavior or provider registry.                           |
+| `createWorkflowManager`       | function | The store-backed live-workflow registry; optional functions make hydrated named work runnable, while omission remains inspectable.   |
+| `createScheduler`             | function | The cross-environment `setTimeout`-based default `SchedulerInterface`.                                                               |
+| `createRunner`                | function | A `RunnerInterface` over a handler — drives a `Queue`, ordered + fail-fast `execute`.                                                |
 
 ### The entity tree
 
-The live runtime mirror of a definition. Each entity class implements its interface exactly, so the `## Methods` tables below double as its per-instance method surface (AGENTS §22).
+The live runtime mirror of a definition. Each entity class implements its interface exactly, so the `## Methods` tables following double as its per-instance method surface.
+
+A phase and a task are minted by their parent and reached as `PhaseInterface` and `TaskInterface` — through `workflow.phase(id)` and `phase.task(id)`, or through the managers below. Their constructors take values only the parent produces, so the package keeps those classes internal and a consumer never builds one.
+
+Every tier declares `description` as a required `string | undefined` member backed by a getter, so `'description' in entity` reports `true` whatever the definition declared and a reader takes absence from the value. The pure-JSON snapshot still omits the key when no prose was declared.
 
 | Class          | Kind  | Role                                                                                                                                                                                                                          |
 | -------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Workflow`     | class | The live DERIVED root — status from its phases under `bail`, the cascade's top, `pause` / `resume` / `wait` / `destroy`, `add` / `remove` / `move` / `update` its phases, `snapshot()` / `skip` / `stop`, an owned `emitter`. |
-| `Phase`        | class | The live DERIVED middle tier — status from its tasks, recomputes + escalates on a child transition, `pause` / `resume` / `wait`, `add` / `remove` / `move` / `update` / `patch` its tasks, an owned `emitter`.                |
-| `Task`         | class | The live leaf — guarded lifecycle, bounded current activity, task signal, cooperative pause gate, and silence observation.                                                                                                    |
 | `PhaseManager` | class | The lean child registry of a workflow's live phases — insertion-ordered `append` / `add` / `remove` / `move` / `update` / `phase` / `phases` / `count`.                                                                       |
 | `TaskManager`  | class | The lean child registry of a phase's live tasks — insertion-ordered `append` / `add` / `remove` / `move` / `update` / `task` / `tasks` / `count` (order survives a `skip`).                                                   |
+| `Collection`   | class | The insertion-ordered gated store both managers hold — the `Map`, the reorder step, the bounds checks, and the gated mutation quartet in one engine, built with the entity noun its refusals name.                            |
+
+### The positional collection
+
+`PhaseManager` and `TaskManager` differ only in the entity noun their refusals name and the patch shape they validate, so both hold one `Collection` and add nothing but their domain accessors (`phase` / `phases`, `task` / `tasks`). The store keys entities by `id` in a `Map` whose insertion order is the single source of positional truth, so order survives an interior `skip` (a status change, never a removal) and a snapshot restore reproduces it by re-`append`ing in order. `append` is the build-time wiring path and throws a `MUTATION` `WorkflowError` on a duplicate id; `add` / `remove` / `move` / `update` are its graceful `Result` counterparts, gating only on the target's own existence, `pending` status, id, and bounds. Build one over any entity carrying `id`, `status`, and `patch` — the `CollectionEntry` contract both live entities satisfy:
+
+```ts
+import { compileGuard } from '@orkestrel/contract'
+import { Collection, taskUpdateShape } from '@orkestrel/workflow'
+import type { TaskInterface, TaskUpdate } from '@orkestrel/workflow'
+
+const store = new Collection<TaskInterface, TaskUpdate>('task', compileGuard(taskUpdateShape))
+store.append(first) // the build-time wiring path
+store.add(second, 0) // a Result boxing `second`, inserted before `first`
+store.move(second.id, 1) // a Result — repositioned back to the end
+store.update(first.id, { name: 'Renamed task' }) // a Result — patched while pending
+store.entry(first.id) // the same task
+store.entries() // [first, second], in positional order
+store.count // 2
+store.remove(second.id) // a Result boxing the dropped task
+```
 
 ### The execution substrate
 
-Beneath the engine sit the shipped primitives it composes — it re-implements none of them. The pure `WorkflowRunner` engine DRIVES the live entity tree and folds the run-level bounds; the queue-backed `Runner` bounds and drives a set of units under a fail-fast policy; a `Controller` is the per-unit handle a `Runner` handler receives; and `TaskController` mirrors `Controller` one tier up, as the handle a workflow-task `WorkflowFunction` receives. The engine carries NO behavior or provider registry of its own — each live task resolves its `run` string ONCE at construction into its own `handler`, and the engine simply invokes it.
+Beneath the engine sit the shipped primitives it composes — it re-implements none of them. The pure `WorkflowRunner` engine DRIVES the live entity tree and folds the run-level bounds; the queue-backed `Runner` bounds and drives a set of units under a fail-fast policy; a `ControllerInterface` is the per-unit handle a `Runner` handler receives; and `TaskControllerInterface` mirrors it one tier up, as the handle a workflow-task `WorkflowFunction` receives. The engine carries NO behavior or provider registry of its own — each live task resolves its `behavior` string ONCE at construction into its own `handler`, and the engine invokes it.
 
-| Class                 | Kind  | Role                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkflowRunner`      | class | The PURE engine — phases sequential (a plain await loop), each phase's tasks concurrent (one substrate `createRunner` per phase), dispatching each task's OWN resolved `handler`. `execute` has TWO overloads: build-and-drive from a `WorkflowDefinition`, or drive an ALREADY-BUILT caller-owned `WorkflowInterface` (re-reading its live phases/tasks every iteration so a mid-run `add` lands). |
-| `WorkflowPersistence` | class | Advanced runner-owned one-writer durability infrastructure, normally composed through `execute({ store })`; implements `WorkflowPersistenceInterface`.                                                                                                                                                                                                                                              |
-| `Runner`              | class | The substrate orchestrator over a set of units — drives a `Queue`, ordered result aggregation, fail-fast, `pause` / `resume` / graceful `stop`, one-shot.                                                                                                                                                                                                                                           |
-| `Controller`          | class | The per-unit handle a `Runner` handler receives — `id` / `input` / `signal` + `wait` / `spawn` / `abort`.                                                                                                                                                                                                                                                                                           |
-| `TaskController`      | class | The attempt-scoped handle — folded cancellation and pause state, activity checkpoints, input/lineage, and read-up results.                                                                                                                                                                                                                                                                          |
+Both handles are minted per dispatch from values only the driving engine holds — the unit's abort, the attempt signal, the spawn callback — so the package keeps their classes internal and a handler receives one rather than building one.
+
+| Class                 | Kind  | Role                                                                                                                                                                                                                                                                                                                                                                                        |
+| --------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WorkflowRunner`      | class | The PURE engine — phases sequential (a plain await loop), each phase's tasks concurrent (one substrate `createRunner` per phase), dispatching each task's OWN resolved `handler`. `execute` overloads: build-and-drive from a `WorkflowDefinition`, or drive an ALREADY-BUILT caller-owned `WorkflowInterface` (re-reading its live phases/tasks every iteration so a mid-run `add` lands). |
+| `WorkflowPersistence` | class | Advanced runner-owned one-writer durability infrastructure, normally composed through `execute({ store })`; implements `WorkflowPersistenceInterface`.                                                                                                                                                                                                                                      |
+| `Runner`              | class | The substrate orchestrator over a set of units — drives a `Queue`, ordered result aggregation, fail-fast, `pause` / `resume` / graceful `stop`, one-shot.                                                                                                                                                                                                                                   |
+| `RunHolder`           | class | The plain cell holding whichever phase `Runner` is live for one `execute` call — `hold(runner)` takes it as a phase starts, `hold()` releases it as the phase settles, and `runner` reads it back; implements `RunHolderInterface`.                                                                                                                                                         |
 
 ### Scheduler (pacing)
 
-The cooperative host-yield primitive that paces the engine between phases: a loop decides WHAT to do; the scheduler decides WHEN the host regains control. Every backend delegates setup, exact settlement, caller cancellation, and handle cleanup to the exported `scheduleHost` lifecycle helper. It links an owned native composite to the optional caller signal before host work is armed, so patched caller listener methods cannot strand a wait, pre-abort schedules nothing, and the first completion, exact host failure, or exact caller reason settles once. A returned cancellation closure is cleanup only: even if it throws during a later caller abort or host failure, the already-winning exact reason still settles the promise without escaping or hanging.
+The cooperative host-yield primitive that paces the engine between phases: a loop decides WHAT to do; the scheduler decides WHEN the host regains control. Every backend delegates setup, exact settlement, caller cancellation, and handle cleanup to the exported `scheduleHost` lifecycle helper, and every `delay` — plus each macrotask fallback — routes its timer through the one exported `delayHost` boundary, so no backend arms a `setTimeout` of its own. It links an owned native composite to the optional caller signal before host work is armed, so patched caller listener methods cannot strand a wait, pre-abort schedules nothing, and the first completion, exact host failure, or exact caller reason settles once. A returned cancellation closure is cleanup only: even if it throws during a later caller abort or host failure, the already-winning exact reason still settles the promise without escaping or hanging.
 
 ```ts
 import { scheduleHost } from '@orkestrel/workflow'
@@ -120,15 +144,15 @@ await scheduleHost((complete) => {
 
 ### Environment backends
 
-Beyond the cross-environment default, each host has a native cooperative-yield primitive a `yield()` should reach for. The backends are standalone `SchedulerInterface` implementations that retain only feature detection and native start/cancel boundaries; `scheduleHost` is the one shared lifecycle. A pending `yield` / `delay` rejects with `signal.reason` _verbatim_, an already-aborted signal rejects with that same reason before arming, a signal that is not a native `AbortSignal` rejects before arming with a `WorkflowError` carrying the `SCHEDULE` code, caller signal method mutation is harmless, cancellation clears the returned handle once, cancellation-closure failure is contained after the winner is captured, and native composite arbitration prevents late completion, abort, or failure from resettling. Each backend's `delay(ms)` is a real `setTimeout`; only the `yield` primitive differs.
+Beyond the cross-environment default, each host has a native cooperative-yield primitive a `yield()` can reach for. The backends are standalone `SchedulerInterface` implementations that retain only feature detection and native start/cancel boundaries; `scheduleHost` is the one shared lifecycle. A pending `yield` / `delay` rejects with `signal.reason` _verbatim_, an already-aborted signal rejects with that same reason before arming, a signal that is not a native `AbortSignal` rejects before arming with a `WorkflowError` carrying the `SCHEDULE` code, caller signal method mutation is harmless, cancellation clears the returned handle once, cancellation-closure failure is contained after the winner is captured, and native composite arbitration prevents late completion, abort, or failure from resettling. Each backend's `delay(ms)` is a real `setTimeout`; only the `yield` primitive differs.
 
 The **Node** backend ships in [`src/server`](../src/server), published through `@orkestrel/workflow/server`. `NodeScheduler.yield()` waits on `setImmediate` — the canonical Node "give the event loop a turn", running after the current operation and pending I/O. It deliberately does **not** use `node:timers/promises` (whose `{ signal }` option rejects with a Node `AbortError`, `code: 'ABORT_ERR'`, _not_ the caller's `reason`); its `setImmediate` / `setTimeout` boundaries compose `scheduleHost` to preserve the caller reason. `priority` is accepted but a no-op — Node has no priority primitive.
 
-The **browser** backends ship in [`src/browser`](../src/browser), published through `@orkestrel/workflow/browser`, one per host-turn strategy. All three feature-detect their native API through `@orkestrel/contract` guards (`isRecord` / `isFunction`), never an `as` (AGENTS §14), and fall back to a real macrotask where it is absent:
+The **browser** backends ship in [`src/browser`](../src/browser), published through `@orkestrel/workflow/browser`, one per host-turn strategy. Each browser backend feature-detects its native API through `@orkestrel/contract` guards (`isRecord` / `isFunction`), never an `as`, and fall back to a real macrotask where it is absent:
 
 - `BrowserScheduler.yield()` posts to the **Prioritized Task Scheduling API** (`scheduler.postTask`) at the mapped priority (`user` → `'user-blocking'`, `normal` → `'user-visible'`, `background` → `'background'`) — so the urgency hint is honoured — falling back to a `setTimeout(0)` macrotask where `scheduler.postTask` is absent (Firefox today). The caller's `signal` is **not** handed to `postTask` (whose own abort rejects with a platform `AbortError`, not the caller's `reason`); an internal controller cancels the posted task while the scheduler rejects with the verbatim caller reason, and an unexpected native promise rejection remains the exact host failure.
-- `FrameScheduler.yield()` resumes just before the next paint via `requestAnimationFrame` (and `cancelAnimationFrame` on abort) — for work that should batch per render frame and naturally pause while the tab is hidden. `priority` is a no-op.
-- `IdleScheduler.yield()` resumes when the host is idle via `requestIdleCallback` (and `cancelIdleCallback` on abort), falling back to a `setTimeout(0)` macrotask where it is absent (Safari today) — for low-priority background work that must not contend with rendering or input. `priority` is a no-op.
+- `FrameScheduler.yield()` resumes just before the next paint through `requestAnimationFrame` (and `cancelAnimationFrame` on abort) — for work that must batch per render frame and naturally pause while the tab is hidden. `priority` is a no-op.
+- `IdleScheduler.yield()` resumes when the host is idle through `requestIdleCallback` (and `cancelIdleCallback` on abort), falling back to a `setTimeout(0)` macrotask where it is absent (Safari today) — for low-priority background work that must not contend with rendering or input. `priority` is a no-op.
 
 | API                | Kind  | Summary                                                                                                                               |
 | ------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------- |
@@ -137,28 +161,28 @@ The **browser** backends ship in [`src/browser`](../src/browser), published thro
 | `FrameScheduler`   | class | The frame-aligned browser backend — `yield` over `requestAnimationFrame` (resume before paint); priority a no-op; verbatim abort.     |
 | `IdleScheduler`    | class | The idle-time browser backend — `yield` over `requestIdleCallback`, falling back to a macrotask; priority a no-op; verbatim abort.    |
 
-| API                      | Kind     | Summary                                                                                                 |
-| ------------------------ | -------- | ------------------------------------------------------------------------------------------------------- |
-| `createNodeScheduler`    | function | Create the Node-native `SchedulerInterface` (`yield` over `setImmediate`).                              |
-| `createBrowserScheduler` | function | Create the browser-native `SchedulerInterface` (`yield` over `scheduler.postTask`, macrotask fallback). |
-| `createFrameScheduler`   | function | Create the frame-aligned `SchedulerInterface` (`yield` over `requestAnimationFrame`).                   |
-| `createIdleScheduler`    | function | Create the idle-time `SchedulerInterface` (`yield` over `requestIdleCallback`, macrotask fallback).     |
+| API                      | Kind     | Summary                                                                                          |
+| ------------------------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `createNodeScheduler`    | function | The Node-native `SchedulerInterface` (`yield` over `setImmediate`).                              |
+| `createBrowserScheduler` | function | The browser-native `SchedulerInterface` (`yield` over `scheduler.postTask`, macrotask fallback). |
+| `createFrameScheduler`   | function | The frame-aligned `SchedulerInterface` (`yield` over `requestAnimationFrame`).                   |
+| `createIdleScheduler`    | function | The idle-time `SchedulerInterface` (`yield` over `requestIdleCallback`, macrotask fallback).     |
 
-The browser backends also publish two supporting members through `@orkestrel/workflow/browser`: the `POST_TASK_PRIORITY` map `BrowserScheduler` reads to translate a portable `SchedulerPriority` into a `scheduler.postTask` priority level, and the `IdleAPI` shape of the feature-detected `requestIdleCallback` / `cancelIdleCallback` pair `IdleScheduler` narrows to (or resolves to `undefined`, falling back to a macrotask).
+The browser backends also publish supporting members through `@orkestrel/workflow/browser`: the `POST_TASK_PRIORITY` map `BrowserScheduler` reads to translate a portable `SchedulerPriority` into a `scheduler.postTask` priority level, and the `IdleInterface` shape of the feature-detected `requestIdleCallback` / `cancelIdleCallback` pair `IdleScheduler` narrows to (or resolves to `undefined`, falling back to a macrotask).
 
-| Type      | Kind      | Shape                                                                                                            |
-| --------- | --------- | ---------------------------------------------------------------------------------------------------------------- |
-| `IdleAPI` | interface | `{ request: (callback) => number; cancel: (handle) => void }` — the feature-detected `requestIdleCallback` pair. |
+| Type            | Kind      | Shape                                                                                                            |
+| --------------- | --------- | ---------------------------------------------------------------------------------------------------------------- |
+| `IdleInterface` | interface | `{ request: (callback) => number; cancel: (handle) => void }` — the feature-detected `requestIdleCallback` pair. |
 
 | API                  | Kind  | Summary                                                                                                                                               |
 | -------------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST_TASK_PRIORITY` | const | The `SchedulerPriority` → `scheduler.postTask` priority map (`user` → `'user-blocking'`, `normal` → `'user-visible'`, `background` → `'background'`). |
 
-Each backend is a standalone `implements SchedulerInterface`, so its public methods are exactly `yield` / `delay` — the same [Methods](#methods) table below governs every one (AGENTS §22).
+Each backend is a standalone `implements SchedulerInterface`, so its public methods are exactly `yield` / `delay` — the same [Methods](#methods) table governs every one.
 
 ### Stores
 
-The durable persistence seam (W-d) — a DUAL-store convention (the `QueueStore` / `SessionStore` pattern). A `WorkflowStoreInterface` persists the pure-JSON `WorkflowSnapshot` keyed by workflow id through two interchangeable backends: `MemoryWorkflowStore` (a plain `Map`, the zero-plumbing DEFAULT, `createMemoryWorkflowStore`) and `DatabaseWorkflowStore` (the opt-in, driver-pluggable twin over a `databases` table, the snapshot stored as ONE OPAQUE JSON column, `createDatabaseWorkflowStore`). Both live under `src/core/stores/`. The Database store's driver DEFAULTS to memory, so it ALSO works in memory out of the box; you opt into the durable plumbing (JSON / SQLite / IndexedDB) by passing a driver — and it swaps in through the SAME interface, without touching the engine or the entity tree. Restore stays the shipped `createRestoredWorkflow`.
+The durable persistence seam (W-d) — a DUAL-store convention (the `QueueStore` / `SessionStore` pattern). A `WorkflowStoreInterface` persists the pure-JSON `WorkflowSnapshot` keyed by workflow id through interchangeable backends: `MemoryWorkflowStore` (a plain `Map`, the zero-plumbing DEFAULT, `createMemoryWorkflowStore`) and `DatabaseWorkflowStore` (the opt-in, driver-pluggable twin over a `databases` table, the snapshot stored as ONE OPAQUE JSON column, `createDatabaseWorkflowStore`). Both live under `src/core/stores/`. The Database store's driver DEFAULTS to memory, so it ALSO works in memory out of the box; you opt into the durable plumbing (JSON / SQLite / IndexedDB) by passing a driver — and it swaps in through the SAME interface, without touching the engine or the entity tree. Restore stays the shipped `createRestoredWorkflow`.
 
 | Class                   | Kind  | Role                                                                                                                                    |
 | ----------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -167,7 +191,7 @@ The durable persistence seam (W-d) — a DUAL-store convention (the `QueueStore`
 
 ### Registry
 
-The additive manager tier (§9 + the `@orkestrel/agent` line's store standard): `WorkflowManager` (`createWorkflowManager`) is an insertion-ordered registry of live `WorkflowInterface`s keyed by `id`, mirroring `ConversationManager` / `WorkspaceManager` — with the SAME optional `store` seam (`open` hydrates on a registry miss, `save` persists) BUT no `active` / `switch` pointer (nothing in this domain renders "the current workflow"). The workflow-specific nuance: the manager also carries an optional `functions` registry threaded into every mint (`add`, via `createWorkflow`) AND every hydrate (`open`, via `createRestoredWorkflow`). With functions, named work is runnable; without them, exact hydrated state remains inspectable and execution refuses unresolved names.
+The additive manager tier, following the `@orkestrel/agent` line's store standard: `WorkflowManager` (`createWorkflowManager`) is an insertion-ordered registry of live `WorkflowInterface`s keyed by `id`, mirroring `ConversationManager` / `WorkspaceManager` — with the SAME optional `store` seam (`open` hydrates on a registry miss, `save` persists) BUT no `active` / `switch` pointer (nothing in this domain renders "the current workflow"). The workflow-specific nuance: the manager also carries an optional `functions` registry threaded into every mint (`add`, through `createWorkflow`) AND every hydrate (`open`, through `createRestoredWorkflow`). With functions, named work is runnable; without them, exact hydrated state remains inspectable and execution refuses unresolved names.
 
 | Class             | Kind  | Role                                                                                                                                                  |
 | ----------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -175,61 +199,70 @@ The additive manager tier (§9 + the `@orkestrel/agent` line's store standard): 
 
 ### Errors
 
-| API               | Kind     | Summary                                                                                                                                  |
-| ----------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `WorkflowError`   | class    | Carries a `WorkflowErrorCode` (`TRANSITION` / `RESTORE` / `MUTATION` / `SCHEDULE`) + an optional `context` naming the node or parameter. |
-| `isWorkflowError` | function | Narrow an unknown caught value to a `WorkflowError`.                                                                                     |
+| API               | Kind     | Summary                                                                                                                                                |
+| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WorkflowError`   | class    | Carries a `WorkflowErrorCode` (`TRANSITION` / `RESTORE` / `MUTATION` / `SCHEDULE` / `INVARIANT`) + an optional `context` naming the node or parameter. |
+| `isWorkflowError` | function | The narrower from an unknown caught value to a `WorkflowError`.                                                                                        |
 
-Every error this package raises for a refused operation of its own is a `WorkflowError`, narrowable with `isWorkflowError`. Four values are deliberately NOT translated and reach the caller unchanged: a value thrown by a consumer-supplied `WorkflowFunction`, a value thrown or rejected by a consumer-supplied `WorkflowStoreInterface`, a value thrown by the `start` closure a caller hands `scheduleHost` or reported through its `failure` callback, and the `reason` an `AbortSignal` carries — a pending wait rejects with that reason verbatim, which is what makes cancellation identity-preserving. Those four are caller-owned values the package passes through on purpose, not package faults it failed to wrap.
+Every error this package raises for a refused operation of its own is a `WorkflowError`, narrowable with `isWorkflowError`. These values are deliberately not translated and reach the caller unchanged: a value thrown by a consumer-supplied `WorkflowFunction`, a value thrown or rejected by a consumer-supplied `WorkflowStoreInterface`, a value thrown by the `start` closure a caller hands `scheduleHost` or reported through its `failure` callback, and the `reason` an `AbortSignal` carries — a pending wait rejects with that reason verbatim, which is what makes cancellation identity-preserving. Each is a caller-owned value the package passes through on purpose, not a package fault it failed to wrap.
 
-Two dependency-owned errors still reach callers untranslated. These are known gaps, not intended pass-throughs: `createRunner` surfaces `@orkestrel/queue`'s `QueueError` for an invalid `concurrency` / `retries` / `timeout`, and `createDatabaseWorkflowStore`'s `get` / `set` / `delete` surface `@orkestrel/database`'s `DatabaseError`. Until they are folded into `WorkflowError`, narrow them with the owning package's own guard rather than `isWorkflowError`.
+Dependency-owned errors still reach callers untranslated. These are known gaps, not intended pass-throughs: `createRunner` surfaces `@orkestrel/queue`'s `QueueError` for an invalid `concurrency` / `retries` / `timeout`, and `createDatabaseWorkflowStore`'s `get` / `set` / `delete` surface `@orkestrel/database`'s `DatabaseError`. Until they are folded into `WorkflowError`, narrow them with the owning package's own guard rather than `isWorkflowError`.
 
 ### Helpers & guards
 
-Centralized, exhaustively unit-tested helpers and guards (AGENTS §4.3 / §14). The status derivations are pure and encode the §10 / §14 truth tables; the lineage / snapshot builders seed the entity tree; `scheduleHost` owns the scheduler's intentionally effectful host lifecycle.
+Centralized, exhaustively unit-tested helpers and guards. The status derivations are pure and encode the lifecycle truth tables; the lineage / snapshot builders seed the entity tree; `scheduleHost` owns the scheduler's intentionally effectful host lifecycle.
 
 Generic exact-JSON ownership comes directly from [`@orkestrel/contract`](contract.md):
 consumers import its `JSONRecord`, `cloneJSONValue`, and `cloneJSONRecord` from their
 originating package. Workflow does not re-export them. Its domain cloners below add
 workflow-specific validation and translate ownership failures into `WorkflowError`.
 
-| API                         | Kind     | Behavior                                                                                                                                     |
-| --------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cloneWorkflowSnapshot`     | function | Deep-own and semantically validate a hostile snapshot before live construction or persistence.                                               |
-| `isWorkflowSnapshot`        | function | Total hostile-boundary guard for a coherent, exact-JSON `WorkflowSnapshot`.                                                                  |
-| `isOwnedWorkflowSnapshot`   | function | Validate the semantics of an already-owned exact-JSON snapshot graph.                                                                        |
-| `isLifecycleStatus`         | function | Narrow a value to the shared lifecycle vocabulary.                                                                                           |
-| `isTaskFailure`             | function | Narrow a value to normalized JSON-safe task failure data.                                                                                    |
-| `isTaskResult`              | function | Validate a boxed result and its full lineage against its containing snapshot nodes.                                                          |
-| `matchesDescription`        | function | Compare two optional description values without inventing an absence sentinel.                                                               |
-| `hasWorkflowHandlers`       | function | Whether every snapshot run resolves to a once-read callable registry binding, or every live named task already carries a callable handler.   |
-| `workflowSnapshotContext`   | function | Locate the nearest identifiable phase/task for an inconsistent snapshot diagnostic.                                                          |
-| `isTerminalStatus`          | function | Whether a `LifecycleStatus` is terminal — the ONE check across all three tiers (`completed` / `failed` / `skipped` / `stopped`).             |
-| `derivePhaseStatus`         | function | Derive a `PhaseStatus` from its tasks' statuses (order-insensitive; most-severe terminal wins; `bail`-agnostic).                             |
-| `deriveWorkflowStatus`      | function | Derive a `WorkflowStatus` from its phases' statuses UNDER `bail` (`failed` reachable only when `bail: true`).                                |
-| `deriveBoundary`            | function | Derive the PENDING SUFFIX boundary from a positional statuses list — the index of the first `pending` entry (or `length` if none).           |
-| `canTransitionTask`         | function | Whether the live task state machine may move from one `TaskStatus` to another (reads `TASK_TRANSITIONS`).                                    |
-| `resolveTaskSilence`        | function | Resolve a task override against the workflow default to a host-safe `1..MAX_TIMER_MS` window or `undefined`.                                 |
-| `cloneTaskActivity`         | function | Validate, clone, and freeze one activity frame; stamps or restores `updated` without double-reading input.                                   |
-| `isTaskActivityInput`       | function | Total guard for a reporter frame, including progress bounds, unique ids, hostile getters, and proxies.                                       |
-| `isTaskActivity`            | function | Total guard for persisted activity, including finite non-negative `updated`; never throws on hostile input.                                  |
-| `captureWorkflowOptions`    | function | Capture every root `WorkflowOptions` property once into an owned plain bag while retaining nested bag and function-registry identities.      |
-| `scheduleHost`              | function | Reject an invalid `signal` (`SCHEDULE`); link an owned settlement composite before host setup; keep the exact winner; contain cleanup.       |
-| `success`                   | function | Box a value as a `Success` — the graceful outcome half of a `Result` (`{ success: true, value }`).                                           |
-| `failure`                   | function | Box an error as a `Failure` — the graceful outcome half of a `Result` (`{ success: false, error }`).                                         |
-| `errorToMessage`            | function | Normalize an unknown thrown value to a non-empty persistence-safe message.                                                                   |
-| `findFailure`               | function | Find the first `TaskResult` in a positional list whose boxed outcome is a `Failure`, or `undefined` if none.                                 |
-| `buildWorkflowContext`      | function | Build a `WorkflowContext` (the identity every level inherits) from a node's `id` / `name` / optional `description`.                          |
-| `buildPhaseContext`         | function | Build a `PhaseContext` (own identity + the workflow back-reference) from the parent context + a phase node.                                  |
-| `buildTaskContext`          | function | Build a `TaskContext` (own identity + the phase back-reference) from the parent phase context + a task node.                                 |
-| `definitionToSnapshot`      | function | Convert a `WorkflowDefinition` into an INITIAL all-`pending` `WorkflowSnapshot` — the unified construction path.                             |
-| `phaseDefinitionToSnapshot` | function | Convert one `PhaseDefinition` into an initial all-`pending` `PhaseSnapshot` (the per-phase step).                                            |
-| `taskDefinitionToSnapshot`  | function | Convert one `TaskDefinition` into an initial `pending` `TaskSnapshot` (the per-task leaf step — no result, empty metadata).                  |
-| `recoverWorkflowSnapshot`   | function | Project interrupted running work onto its remaining budget without replenishing attempts.                                                    |
-| `collectResults`            | function | Flatten per-phase `TaskResult` lists into one positional list — the workflow tier of the result tree.                                        |
-| `parkSignal`                | function | Park until `signal` aborts — a promise that resolves on the abort event, never rejects (a one-shot listener, self-removing).                 |
-| `insertEntry`               | function | Insert a `[key, value]` entry at `index` in a readonly entries array — the pure splice step behind an insertion-ordered registry's `add`.    |
-| `moveEntry`                 | function | Reposition the entry keyed `key` to a new index in a readonly entries array — the pure remove-then-reinsert step behind a registry's `move`. |
+| API                         | Kind     | Behavior                                                                                                                                                                    |
+| --------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cloneWorkflowSnapshot`     | function | The deep-own and semantic validation pass over a hostile snapshot, before live construction or persistence.                                                                 |
+| `isWorkflowSnapshot`        | function | The total hostile-boundary guard for a coherent, exact-JSON `WorkflowSnapshot`.                                                                                             |
+| `isOwnedWorkflowSnapshot`   | function | The semantic pass over an already-owned exact-JSON snapshot graph.                                                                                                          |
+| `isLifecycleStatus`         | function | The narrower to the shared lifecycle vocabulary.                                                                                                                            |
+| `isTaskFailure`             | function | The narrower to normalized JSON-safe task failure data.                                                                                                                     |
+| `isTaskResult`              | function | The validation of a boxed result and its full lineage against its containing snapshot nodes.                                                                                |
+| `matchesDescription`        | function | The comparison of two optional description values, without inventing an absence sentinel.                                                                                   |
+| `hasWorkflowHandlers`       | function | Whether every snapshot behavior resolves to a once-read callable registry binding, or every live named task already carries a callable handler.                             |
+| `scanSnapshotContext`       | function | The locator of the nearest identifiable phase or task for an inconsistent snapshot diagnostic.                                                                              |
+| `isTerminalStatus`          | function | Whether a `LifecycleStatus` is terminal — the ONE check every tier shares (`completed` / `failed` / `skipped` / `stopped`).                                                 |
+| `derivePhaseStatus`         | function | A phase's `LifecycleStatus` derived from its tasks' statuses (order-insensitive; most-severe terminal wins; `bail`-agnostic).                                               |
+| `deriveWorkflowStatus`      | function | A workflow's `LifecycleStatus` derived from its phases' statuses UNDER `bail` (`failed` reachable only when `bail: true`).                                                  |
+| `deriveBoundary`            | function | The PENDING SUFFIX boundary derived from a positional statuses list — the index of the first `pending` entry (or `length` if none).                                         |
+| `canTransitionTask`         | function | Whether the live task state machine may move from one `LifecycleStatus` to another (reads `TASK_TRANSITIONS`).                                                              |
+| `resolveTaskSilence`        | function | A task override resolved against the workflow default to a host-safe `1..MAX_TIMER_MS` window, or `undefined`.                                                              |
+| `cloneTaskActivity`         | function | One activity frame validated, cloned, and frozen; stamps or restores `updated` without double-reading input.                                                                |
+| `isTaskActivityInput`       | function | The total guard for a reporter frame, including progress bounds, unique ids, hostile getters, and proxies.                                                                  |
+| `isTaskActivity`            | function | The total guard for persisted activity, including finite non-negative `updated`; never throws on hostile input.                                                             |
+| `captureWorkflowOptions`    | function | Every root `WorkflowOptions` property captured once into an owned plain bag, retaining nested bag and function-registry identities.                                         |
+| `scheduleHost`              | function | The host-schedule lifecycle: rejects an invalid `signal` (`SCHEDULE`), links an owned settlement composite before host setup, keeps the exact winner, and contains cleanup. |
+| `success`                   | function | A value boxed as a `Success` — the graceful outcome half of a `Result` (`{ success: true, value }`).                                                                        |
+| `failure`                   | function | An error boxed as a `Failure` — the graceful outcome half of a `Result` (`{ success: false, error }`).                                                                      |
+| `errorToMessage`            | function | An unknown thrown value normalized to a non-empty persistence-safe message.                                                                                                 |
+| `findFailure`               | function | The first `TaskResult` in a positional list whose boxed outcome is a `Failure`, or `undefined` if none.                                                                     |
+| `buildWorkflowContext`      | function | A `WorkflowContext` (the identity every level inherits) built from a node's `id` / `name` / optional `description`.                                                         |
+| `buildPhaseContext`         | function | A `PhaseContext` (own identity + the workflow back-reference) built from the parent context + a phase node.                                                                 |
+| `buildTaskContext`          | function | A `TaskContext` (own identity + the phase back-reference) built from the parent phase context + a task node.                                                                |
+| `definitionToSnapshot`      | function | An INITIAL all-`pending` `WorkflowSnapshot` converted from a `WorkflowDefinition` — the unified construction path.                                                          |
+| `phaseDefinitionToSnapshot` | function | An initial all-`pending` `PhaseSnapshot` converted from one `PhaseDefinition` (the per-phase step).                                                                         |
+| `taskDefinitionToSnapshot`  | function | An initial `pending` `TaskSnapshot` converted from one `TaskDefinition` (the per-task leaf step — no result, empty metadata).                                               |
+| `recoverWorkflowSnapshot`   | function | Interrupted running work projected onto its remaining budget without replenishing attempts.                                                                                 |
+| `collectResults`            | function | One positional list flattened from per-phase `TaskResult` lists — the workflow tier of the result tree.                                                                     |
+| `parkSignal`                | function | A park until `signal` aborts — a promise that resolves on the abort event and never rejects (a one-shot listener, self-removing).                                           |
+| `insertEntry`               | function | A `[key, value]` entry inserted at `index` in a readonly entries array — the pure splice step behind an insertion-ordered registry's `add`.                                 |
+| `moveEntry`                 | function | The entry keyed `key` repositioned to a new index in a readonly entries array — the pure remove-then-reinsert step behind a registry's `move`.                              |
+| `delayHost`                 | function | The one host `setTimeout` boundary that every scheduler's `delay` and macrotask fallback resumes from.                                                                      |
+| `isWorkflowInterface`       | function | Total guard telling a live workflow entity from a pure-JSON `WorkflowDefinition` (it carries `destroyed` and a callable `snapshot`).                                        |
+| `isTaskClaimList`           | function | Total guard for one activity claim list — exact keys, non-empty `id` / `name`, finite `started`, ids unique within the list.                                                |
+| `cloneTaskClaims`           | function | One activity claim list validated, cloned, and frozen, naming the claim noun in any refusal.                                                                                |
+| `isHalted`                  | function | Whether a driving run must stop giving a workflow — or one forced phase — more work.                                                                                        |
+| `isStoppable`               | function | Whether forcing a workflow `stopped` would still record the cancellation (`completed` and `skipped` still would).                                                           |
+| `isCompletable`             | function | Whether a naturally-finished run may force its vacuously-done workflow `completed` (its status is still exactly `pending`).                                                 |
+| `isSkipping`                | function | Whether a task attempt is being genuinely cancelled rather than merely timed out — the discriminator that keeps a deadline retryable.                                       |
+| `ownsAttempt`               | function | Whether one attempt still owns the task it launched — the run-local ledger and the task's own `attempts` tally must both name it.                                           |
 
 Every exported `is*` guard is total over every traversed argument. In particular,
 `isTaskFailure`, `isTaskResult`, and `isOwnedWorkflowSnapshot` contain throwing
@@ -249,7 +282,7 @@ import {
 	isTaskResult,
 	matchesDescription,
 	recoverWorkflowSnapshot,
-	workflowSnapshotContext,
+	scanSnapshotContext,
 } from '@orkestrel/workflow'
 
 const functions = { work: () => null }
@@ -261,7 +294,7 @@ const workflow = createWorkflow(
 			{
 				id: 'phase',
 				name: 'Phase',
-				tasks: [{ id: 'task', name: 'Task', run: 'work', retries: 1 }],
+				tasks: [{ id: 'task', name: 'Task', behavior: 'work', retries: 1 }],
 			},
 		],
 	},
@@ -279,7 +312,7 @@ if (phase !== undefined && task !== undefined) {
 }
 matchesDescription(snapshot.description, workflow.description)
 hasWorkflowHandlers(snapshot, functions)
-workflowSnapshotContext({ ...snapshot, bail: 'invalid' })
+scanSnapshotContext({ ...snapshot, bail: 'invalid' })
 errorToMessage(new Error('provider failed'))
 recoverWorkflowSnapshot(snapshot)
 ```
@@ -302,11 +335,11 @@ resolveTaskSilence(0, 30_000) // undefined: the task explicitly disables inherit
 
 ### Shapes
 
-The shape VALUES `createWorkflowContract` compiles into the four lockstep outputs. They agree with the hand-written definition interfaces (the source of truth, AGENTS §14); a round-trip parity test (`generate → is → parse`) guards against drift.
+The shape VALUES `createWorkflowContract` compiles into its lockstep JSON Schema, guard, parser, and generator. They agree with the hand-written definition interfaces (the source of truth); a round-trip parity test (`generate → is → parse`) guards against drift.
 
 | API                | Kind  | Summary                                                                                                           |
 | ------------------ | ----- | ----------------------------------------------------------------------------------------------------------------- |
-| `taskShape`        | const | The `TaskDefinition` shape — identity + an optional `run` string behavior reference.                              |
+| `taskShape`        | const | The `TaskDefinition` shape — identity + an optional `behavior` registry-key string.                               |
 | `phaseShape`       | const | The `PhaseDefinition` shape — identity + ordered `taskShape` tasks + an optional positive-integer `concurrency`.  |
 | `workflowShape`    | const | The `WorkflowDefinition` shape (the contract root) — identity + ordered `phaseShape` phases + an optional `bail`. |
 | `taskUpdateShape`  | const | The `TaskUpdate` shape — a partial edit to a `pending` task's `name` / `description`, both optional.              |
@@ -317,90 +350,87 @@ The shape VALUES `createWorkflowContract` compiles into the four lockstep output
 | Constant                    | Kind  | Value                                                                                                              |
 | --------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------ |
 | `DEFAULT_BAIL`              | const | The default `bail` — `false` (graceful: continue on a leaf failure).                                               |
-| `TASK_STATUSES`             | const | Every `TaskStatus`, frozen (`pending` → `running` → the four terminals).                                           |
-| `PHASE_STATUSES`            | const | Every `PhaseStatus`, frozen.                                                                                       |
-| `WORKFLOW_STATUSES`         | const | Every `WorkflowStatus`, frozen.                                                                                    |
-| `TERMINAL_TASK_STATUSES`    | const | The terminal `TaskStatus` values, frozen (`completed` / `failed` / `skipped` / `stopped`).                         |
-| `TASK_TRANSITIONS`          | const | The legal `TaskStatus` transition graph — each status mapped to those it may move to directly, frozen.             |
+| `LIFECYCLE_STATUSES`        | const | Every `LifecycleStatus`, frozen (`pending` → `running` → the terminals).                                           |
+| `TERMINAL_STATUSES`         | const | The terminal `LifecycleStatus` values, frozen (`completed` / `failed` / `skipped` / `stopped`).                    |
+| `TASK_TRANSITIONS`          | const | The legal `LifecycleStatus` transition graph — each status mapped to those it may move to directly, frozen.        |
 | `DEFAULT_PHASE_CONCURRENCY` | const | The per-phase task concurrency when a `PhaseDefinition` omits `concurrency` — a large cap (effectively unbounded). |
 | `MAX_TIMER_MS`              | const | The largest host-safe timer delay (`2_147_483_647` milliseconds).                                                  |
+| `PERSISTED_NODE_EVENTS`     | const | The workflow / phase events a durable observer re-persists on, frozen (`add` / `remove` bind their own handler).   |
+| `PERSISTED_TASK_EVENTS`     | const | The task events a durable observer re-persists on, frozen — the lifecycle events plus `report` and `pulse`.        |
 
 ### Types
 
-| Type                           | Kind      | Shape                                                                                                                                                                                                                                   |
-| ------------------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TaskDefinition`               | interface | `{ id, name, description?, run?, retries?, timeout? }` — one task's serializable definition (`run` = an optional plain behavior-name string; `retries` / `timeout` are per-task reliability overrides).                                 |
-| `PhaseDefinition`              | interface | `{ id, name, description?, tasks, concurrency?, bail? }` — ordered tasks (concurrent) + an optional throttle + an optional per-phase `bail` override.                                                                                   |
-| `WorkflowDefinition`           | interface | `{ id, name, description?, phases, bail? }` — the root a UI/LLM authors and the contract validates.                                                                                                                                     |
-| `WorkflowContext`              | interface | `{ id, name, description? }` — the ambient identity every level inherits (the context chain's root).                                                                                                                                    |
-| `PhaseContext`                 | interface | `WorkflowContext` + `{ workflow }` — a phase's identity plus the back-reference UP the tree.                                                                                                                                            |
-| `TaskContext`                  | interface | `WorkflowContext` + `{ phase }` — a task's identity plus its full lineage (workflow → phase → task).                                                                                                                                    |
-| `WorkflowInput`                | type      | `Partial<WorkflowContext>` — the minimal data to create a workflow context.                                                                                                                                                             |
-| `PhaseInput`                   | type      | `Partial<PhaseContext>` — the minimal data to create a phase context.                                                                                                                                                                   |
-| `TaskInput`                    | interface | `Partial<TaskContext>` + `{ metadata? }` — plus the open consumer bag stored + snapshotted, never interpreted.                                                                                                                          |
-| `TaskProgress`                 | interface | `{ progress, total?, message? }` — the reported count, a `total` when the work's size is known, and observer-facing text for the reported state.                                                                                        |
-| `TaskOperation`                | interface | `{ id, name, started }` — one flat nested operation claimed active when the complete frame was accepted.                                                                                                                                |
-| `TaskConstraint`               | interface | `{ id, name, started }` — one constraint claimed active when the complete frame was accepted, without supervisor policy.                                                                                                                |
-| `TaskActivityInput`            | interface | `{ note?, progress?, operations?, constraints? }` — one whole-frame replacement; omitted collections mean empty.                                                                                                                        |
-| `TaskActivity`                 | interface | `TaskActivityInput` normalized to required readonly collections plus `{ updated }`; the last accepted reporter claim.                                                                                                                   |
-| `TaskUpdate`                   | interface | `{ name?, description? }` — a declarative partial edit to a `pending` task, accepted by `TaskInterface.patch` / `TaskManagerInterface.update`.                                                                                          |
-| `PhaseUpdate`                  | interface | `{ name?, description?, concurrency?, bail? }` — a declarative partial edit to a `pending` phase, accepted by `PhaseInterface.patch` / `PhaseManagerInterface.update`.                                                                  |
-| `WorkflowErrorCode`            | type      | `'TRANSITION' \| 'RESTORE' \| 'MUTATION' \| 'SCHEDULE'` — the machine-readable code of a `WorkflowError` (`MUTATION` = a refused structural/patch edit; `SCHEDULE` = an invalid-signal host schedule refusal).                          |
-| `LifecycleStatus`              | type      | `'pending' \| 'running' \| 'completed' \| 'failed' \| 'skipped' \| 'stopped'` — the ONE vocabulary the three tiers alias.                                                                                                               |
-| `TaskStatus`                   | type      | A semantic tier of `LifecycleStatus` — a task's lifecycle status.                                                                                                                                                                       |
-| `PhaseStatus`                  | type      | A semantic tier of `LifecycleStatus` — a phase's status, derived from its tasks.                                                                                                                                                        |
-| `WorkflowStatus`               | type      | A semantic tier of `LifecycleStatus` — a workflow's status, derived from its phases under `bail`.                                                                                                                                       |
-| `PhaseDerivation`              | interface | `{ status, bail }` — one phase's contribution to the workflow-status derivation (its status + the EFFECTIVE bail it ran under); the input shape of `deriveWorkflowStatus`.                                                              |
-| `TaskFailureOrigin`            | type      | `'handler' \| 'timeout' \| 'recovery'` — the persisted axis identifying where a task failure arose.                                                                                                                                     |
-| `TaskFailure`                  | interface | `{ origin, message }` — JSON-safe failure data.                                                                                                                                                                                         |
-| `TaskResult`                   | interface | `{ task, phase, workflow, status, result?, timestamp }` — lineage + `Result<JSONValue, TaskFailure>` (present for `completed` / `failed`).                                                                                              |
-| `TaskSnapshot`                 | interface | `{ id, name, description?, status, result?, metadata, attempts, run?, retries?, timeout?, activity? }` — owns its JSON graph and persists consumed launches.                                                                            |
-| `PhaseSnapshot`                | interface | `{ id, name, description?, status, override?, bail, concurrency?, tasks }` — `bail` + `concurrency` are the effective per-phase policy/throttle (both persisted); `override` present only when a whole-phase `skip` / `stop` forced it. |
-| `WorkflowSnapshot`             | interface | `{ id, name, description?, status, override?, bail, phases, created, updated }` — the COMPLETE self-contained durable payload.                                                                                                          |
-| `WorkflowStoreInterface`       | interface | The durable persistence seam — async `get` / `set` / `delete` over a `WorkflowSnapshot` by id (the `SessionStore` driver-swap pattern; no TTL).                                                                                         |
-| `WorkflowSnapshotRow`          | interface | `{ id, snapshot }` — one row of the `DatabaseWorkflowStore` table, the snapshot held as one opaque JSON column (`unknown`, narrowed on `get`); keeps the row flat to dodge TS2589.                                                      |
-| `WorkflowEventMap`             | type      | The workflow's §13 push surface — lifecycle includes `start(id)` · `complete()` · `fail(result)` · `pause()` · `resume()` · `skip()` · `stop()` plus structural events.                                                                 |
-| `PhaseEventMap`                | type      | The phase's §13 push surface — lifecycle includes `start(id)` · `complete()` · `fail(result)` · `pause()` · `resume()` · `skip()` · `stop()` plus structural events.                                                                    |
-| `TaskEventMap`                 | type      | The task's ten-event push surface — `start` · `complete` · `fail` · `pause` · `resume` · `skip` · `stop` · `report` · `pulse` · `silence`.                                                                                              |
-| `WorkflowHooks`                | type      | `EmitterHooks<WorkflowEventMap>` — initial workflow listeners (the reserved `on` option).                                                                                                                                               |
-| `PhaseHooks`                   | type      | `EmitterHooks<PhaseEventMap>` — initial phase listeners.                                                                                                                                                                                |
-| `TaskHooks`                    | type      | `EmitterHooks<TaskEventMap>` — initial task listeners.                                                                                                                                                                                  |
-| `TaskOptions`                  | interface | `{ on?, error?, metadata?, silence? }` — runtime task construction; a value outside `1..MAX_TIMER_MS` disables inheritance.                                                                                                             |
-| `PhaseOptions`                 | interface | `{ on?, error?, tasks? }` — the live phase's bag; `tasks` keys per-task `TaskOptions` by id.                                                                                                                                            |
-| `WorkflowOptions`              | interface | `{ on?, bail?, error?, phases?, functions?, silence? }` — live workflow construction plus the runtime-only default task silence window.                                                                                                 |
-| `WorkflowInterface`            | interface | The live DERIVED root entity — `emitter` / `status` / `bail` / `phases` / `paused` / `destroyed` / `signal` + the methods (see [Methods](#workflowinterface)).                                                                          |
-| `PhaseInterface`               | interface | The live DERIVED phase entity — `emitter` / `status` / `bail` / `concurrency` / `paused` / `tasks` + the methods (see [Methods](#phaseinterface)).                                                                                      |
-| `TaskInterface`                | interface | The live leaf entity — lifecycle plus persisted `attempts`, activity/liveness, cooperative `paused`, and task-owned `signal`; see [Methods](#taskinterface).                                                                            |
-| `TaskManagerInterface`         | interface | The lean tasks manager — `count` + `append` / `add` / `remove` / `move` / `update` / `task` / `tasks`.                                                                                                                                  |
-| `PhaseManagerInterface`        | interface | The lean phases manager — `count` + `append` / `add` / `remove` / `move` / `update` / `phase` / `phases`.                                                                                                                               |
-| `WorkflowFunction`             | type      | `(controller: TaskControllerInterface) => Promise<JSONValue> \| JSONValue` — the JSON-safe behavior a named task runs.                                                                                                                  |
-| `WorkflowFunctions`            | type      | `Readonly<Record<string, WorkflowFunction>>` — every present `run` name must resolve before execution; exact restore may remain inspectable without it.                                                                                 |
-| `TaskControllerInterface`      | interface | The attempt-scoped handle — persisted one-based `attempt`, folded `signal`, `paused`, activity checkpoints, lineage, JSON input, and read-up results.                                                                                   |
-| `WorkflowResult`               | interface | `{ workflow, status, results, durable?, fault? }` — live result plus final persistence outcome when a store was supplied.                                                                                                               |
-| `WorkflowCheckpoint`           | type      | `'initial' \| 'attempt' \| 'settlement' \| 'final'` — the required durability boundaries.                                                                                                                                               |
-| `WorkflowFault`                | interface | Normalized first required persistence failure with checkpoint, message, and optional task/attempt identity.                                                                                                                             |
-| `WorkflowPersistenceInterface` | interface | Advanced run-local durability coordinator — readonly `fault` plus required `checkpoint`, `finalize`, and `detach`; normally runner-owned.                                                                                               |
-| `WorkflowRunOptions`           | type      | `WorkflowOptions` + `{ signal?, timeout?, budget?, store? }` — construction, bounds, and optional run-owned durability.                                                                                                                 |
-| `WorkflowRunnerOptions`        | interface | `{ scheduler? }` — the PURE engine's only option (pacing); a task resolves its own `handler` at construction.                                                                                                                           |
-| `WorkflowRunnerInterface`      | interface | The PURE-engine orchestrator — `execute(definition, options?)` builds + drives a live tree to a `WorkflowResult`; `execute(workflow, options?)` drives an already-built, caller-owned live tree instead.                                |
-| `WorkflowManagerOptions`       | interface | `{ store?, functions? }` — the optional durable store plus the optional registry that makes hydrated named work runnable; omission remains inspectable.                                                                                 |
-| `WorkflowManagerInterface`     | interface | The store-backed registry — `count` + `workflow` / `workflows` + the methods (see [Methods](#workflowmanagerinterface)); NO `active` / `switch` (unlike its `ConversationManager` / `WorkspaceManager` twins).                          |
-| `SchedulerPriority`            | type      | `'user' \| 'normal' \| 'background'` — a relative urgency hint (uniform in the default; backends honour it).                                                                                                                            |
-| `SchedulerOptions`             | interface | `{ priority?: SchedulerPriority; signal?: AbortSignal }` — options for a single `yield` / `delay`.                                                                                                                                      |
-| `SchedulerInterface`           | interface | The `yield` / `delay` cooperative-yield methods.                                                                                                                                                                                        |
-| `ControllerInterface`          | interface | The per-unit handle a runner handler receives — `id` / `input` / `signal` / `aborted` data members + `wait` / `spawn` / `abort` methods.                                                                                                |
-| `RunnerHandler`                | type      | `(controller) => Promise<TResult> \| TResult` — runs one unit's work against its `Controller`.                                                                                                                                          |
-| `RunnerOptions`                | interface | `createRunner` options — `handler` + strict Queue values: positive-safe-integer `concurrency?`, nonnegative-safe-integer `retries?`, integer `timeout?` in `0..2_147_483_647` (`0` disables), plus `entries?` / `on?` / `error?`.       |
-| `RunnerEntryOptions`           | interface | The per-entry reliability overrides for one unit — `{ retries?, timeout? }`, resolved from its input via `entries`.                                                                                                                     |
-| `RunnerInterface`              | interface | `emitter` / `active` / `stopped` / `paused` data members + `execute` / `spawn` / `abort` / `pause` / `resume` / `stop` / `destroy` methods.                                                                                             |
-| `RunnerEventMap`               | type      | The `Runner`'s observable events — `start` / `unit` / `spawn` / `settle` / `fail` / `finish` / `abort`.                                                                                                                                 |
-| `RunnerUnit`                   | interface | One tracked unit's queue payload — `id` (keys its order + value) + `input` (the handler's work).                                                                                                                                        |
-| `UnitOutcome`                  | type      | One unit's settled outcome — `{ ok: true; value }` \| `{ ok: false; error }`, so `undefined` is still a success.                                                                                                                        |
-| `DeferredInterface`            | interface | `{ promise, resolve, reject }` — a promise whose settlement is driven externally, e.g. for deterministic async test scenarios.                                                                                                          |
+| Type                           | Kind      | Shape                                                                                                                                                                                                                                                                    |
+| ------------------------------ | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `TaskDefinition`               | interface | `{ id, name, description?, behavior?, retries?, timeout? }` — one task's serializable definition (`behavior` = an optional plain registry-key string; `retries` / `timeout` are per-task reliability overrides).                                                         |
+| `PhaseDefinition`              | interface | `{ id, name, description?, tasks, concurrency?, bail? }` — ordered tasks (concurrent) + an optional throttle + an optional per-phase `bail` override.                                                                                                                    |
+| `WorkflowDefinition`           | interface | `{ id, name, description?, phases, bail? }` — the root a UI/LLM authors and the contract validates.                                                                                                                                                                      |
+| `WorkflowContext`              | interface | `{ id, name, description? }` — the ambient identity every level inherits (the context chain's root).                                                                                                                                                                     |
+| `PhaseContext`                 | interface | `WorkflowContext` + `{ workflow }` — a phase's identity plus the back-reference UP the tree.                                                                                                                                                                             |
+| `TaskContext`                  | interface | `WorkflowContext` + `{ phase }` — a task's identity plus its full lineage (workflow → phase → task).                                                                                                                                                                     |
+| `WorkflowInput`                | type      | `Partial<WorkflowContext>` — the minimal data to create a workflow context.                                                                                                                                                                                              |
+| `PhaseInput`                   | type      | `Partial<PhaseContext>` — the minimal data to create a phase context.                                                                                                                                                                                                    |
+| `TaskInput`                    | interface | `Partial<TaskContext>` + `{ metadata? }` — plus the open consumer bag stored + snapshotted, never interpreted.                                                                                                                                                           |
+| `TaskProgress`                 | interface | `{ progress, total?, message? }` — the reported count, a `total` when the work's size is known, and observer-facing text for the reported state.                                                                                                                         |
+| `TaskClaim`                    | interface | `{ id, name, started }` — the shape `TaskOperation` and `TaskConstraint` share, guarded and cloned by one leaf each.                                                                                                                                                     |
+| `TaskOperation`                | interface | `{ id, name, started }` — one flat nested operation claimed active when the complete frame was accepted.                                                                                                                                                                 |
+| `TaskConstraint`               | interface | `{ id, name, started }` — one constraint claimed active when the complete frame was accepted, without supervisor policy.                                                                                                                                                 |
+| `TaskActivityInput`            | interface | `{ note?, progress?, operations?, constraints? }` — one whole-frame replacement; omitted collections mean empty.                                                                                                                                                         |
+| `TaskActivity`                 | interface | `TaskActivityInput` normalized to required readonly collections plus `{ updated }`; the last accepted reporter claim.                                                                                                                                                    |
+| `TaskUpdate`                   | interface | `{ name?, description? }` — a declarative partial edit to a `pending` task, accepted by `TaskInterface.patch` / `TaskManagerInterface.update`.                                                                                                                           |
+| `PhaseUpdate`                  | interface | `{ name?, description?, concurrency?, bail? }` — a declarative partial edit to a `pending` phase, accepted by `PhaseInterface.patch` / `PhaseManagerInterface.update`.                                                                                                   |
+| `WorkflowErrorCode`            | type      | `'TRANSITION' \| 'RESTORE' \| 'MUTATION' \| 'SCHEDULE' \| 'INVARIANT'` — the machine-readable code of a `WorkflowError` (`MUTATION` = a refused structural/patch edit; `SCHEDULE` = an invalid-signal host schedule refusal; `INVARIANT` = a broken internal invariant). |
+| `LifecycleStatus`              | type      | `'pending' \| 'running' \| 'completed' \| 'failed' \| 'skipped' \| 'stopped'` — the ONE vocabulary every node carries: a task sets its own, a phase derives its own from its tasks, and a workflow derives its own from its phases under `bail`.                         |
+| `PhaseDerivation`              | interface | `{ status, bail }` — one phase's contribution to the workflow-status derivation (its status + the EFFECTIVE bail it ran under); the input shape of `deriveWorkflowStatus`.                                                                                               |
+| `TaskFailureOrigin`            | type      | `'handler' \| 'timeout' \| 'recovery'` — the persisted axis identifying where a task failure arose.                                                                                                                                                                      |
+| `TaskFailure`                  | interface | `{ origin, message }` — JSON-safe failure data.                                                                                                                                                                                                                          |
+| `TaskResult`                   | interface | `{ task, phase, workflow, status, result?, timestamp }` — lineage + `Result<JSONValue, TaskFailure>` (present for `completed` / `failed`).                                                                                                                               |
+| `TaskSnapshot`                 | interface | `{ id, name, description?, status, result?, metadata, attempts, behavior?, retries?, timeout?, activity? }` — owns its JSON graph and persists consumed launches.                                                                                                        |
+| `PhaseSnapshot`                | interface | `{ id, name, description?, status, override?, bail, concurrency?, tasks }` — `bail` + `concurrency` are the effective per-phase policy/throttle (both persisted); `override` present only when a whole-phase `skip` / `stop` forced it.                                  |
+| `WorkflowSnapshot`             | interface | `{ id, name, description?, status, override?, bail, phases, created, updated }` — the COMPLETE self-contained durable payload.                                                                                                                                           |
+| `WorkflowStoreInterface`       | interface | The durable persistence seam — async `get` / `set` / `delete` over a `WorkflowSnapshot` by id (the `SessionStore` driver-swap pattern; no TTL).                                                                                                                          |
+| `WorkflowSnapshotRow`          | interface | `{ id, snapshot }` — one row of the `DatabaseWorkflowStore` table, the snapshot held as one opaque JSON column (`unknown`, narrowed on `get`); keeps the row flat to dodge TS2589.                                                                                       |
+| `WorkflowEventMap`             | type      | The workflow's push surface — lifecycle includes `start(id)` · `complete()` · `fail(result)` · `pause()` · `resume()` · `skip()` · `stop()` plus structural events.                                                                                                      |
+| `PhaseEventMap`                | type      | The phase's push surface — lifecycle includes `start(id)` · `complete()` · `fail(result)` · `pause()` · `resume()` · `skip()` · `stop()` plus structural events.                                                                                                         |
+| `TaskEventMap`                 | type      | The task's push surface — `start` · `complete` · `fail` · `pause` · `resume` · `skip` · `stop` · `report` · `pulse` · `silence`.                                                                                                                                         |
+| `TaskOptions`                  | interface | `{ on?, error?, metadata?, silence? }` — runtime task construction; a value outside `1..MAX_TIMER_MS` disables inheritance.                                                                                                                                              |
+| `PhaseOptions`                 | interface | `{ on?, error?, tasks? }` — the live phase's bag; `tasks` keys per-task `TaskOptions` by id.                                                                                                                                                                             |
+| `WorkflowOptions`              | interface | `{ on?, bail?, error?, phases?, functions?, silence? }` — live workflow construction plus the runtime-only default task silence window.                                                                                                                                  |
+| `WorkflowInterface`            | interface | The live DERIVED root entity — `emitter` / `status` / `bail` / `phases` / `paused` / `destroyed` / `signal` + the methods (see [Methods](#workflowinterface)).                                                                                                           |
+| `PhaseInterface`               | interface | The live DERIVED phase entity — `emitter` / `status` / `bail` / `concurrency` / `paused` / `tasks` + the methods (see [Methods](#phaseinterface)).                                                                                                                       |
+| `TaskInterface`                | interface | The live leaf entity — lifecycle plus persisted `attempts`, activity/liveness, cooperative `paused`, and task-owned `signal`; see [Methods](#taskinterface).                                                                                                             |
+| `TaskManagerInterface`         | interface | The lean tasks manager — `count` + `append` / `add` / `remove` / `move` / `update` / `task` / `tasks`.                                                                                                                                                                   |
+| `PhaseManagerInterface`        | interface | The lean phases manager — `count` + `append` / `add` / `remove` / `move` / `update` / `phase` / `phases`.                                                                                                                                                                |
+| `CollectionEntry`              | interface | `{ id, status, patch }` — what the shared positional store requires of the entities it holds; both live entities satisfy it.                                                                                                                                             |
+| `CollectionInterface`          | interface | The insertion-ordered gated store both lean managers hold — `count` + `append` / `add` / `remove` / `move` / `update` / `entry` / `entries`.                                                                                                                             |
+| `WorkflowFunction`             | type      | `(controller: TaskControllerInterface) => Promise<JSONValue> \| JSONValue` — the JSON-safe behavior a named task runs.                                                                                                                                                   |
+| `WorkflowRegistry`             | type      | `Readonly<Record<string, WorkflowFunction>>` — every present `behavior` name must resolve before execution; exact restore may remain inspectable without it.                                                                                                             |
+| `TaskControllerInterface`      | interface | The attempt-scoped handle — persisted one-based `attempt`, folded `signal`, `paused`, activity checkpoints, lineage, JSON input, and read-up results.                                                                                                                    |
+| `AttemptOutcome`               | type      | `[settled: true, value]` \| `[settled: false, undefined, genuine?]` — how one task attempt left the race between its handler and its cancellation.                                                                                                                       |
+| `RunHolderInterface`           | interface | `{ runner }` + `hold` — the run-scoped cell holding the phase runner an `execute` call is driving (see [Methods](#runholderinterface)).                                                                                                                                  |
+| `WorkflowResult`               | interface | `{ workflow, status, results, durable?, fault? }` — live result plus final persistence outcome when a store was supplied.                                                                                                                                                |
+| `WorkflowCheckpoint`           | type      | `'initial' \| 'attempt' \| 'settlement' \| 'final'` — the required durability boundaries.                                                                                                                                                                                |
+| `WorkflowFault`                | interface | `{ checkpoint, message, task?, attempt? }` — the normalized first required persistence failure; every fault a workflow result carries is a persistence fault, so it names no origin.                                                                                     |
+| `WorkflowPersistenceInterface` | interface | Advanced run-local durability coordinator — readonly `fault` plus required `checkpoint`, `finalize`, and `detach`; normally runner-owned.                                                                                                                                |
+| `WorkflowRunOptions`           | type      | `WorkflowOptions` + `{ signal?, timeout?, budget?, store? }` — construction, bounds, and optional run-owned durability.                                                                                                                                                  |
+| `WorkflowRunnerOptions`        | interface | `{ scheduler? }` — the PURE engine's only option (pacing); a task resolves its own `handler` at construction.                                                                                                                                                            |
+| `WorkflowRunnerInterface`      | interface | The PURE-engine orchestrator — `execute(definition, options?)` builds + drives a live tree to a `WorkflowResult`; `execute(workflow, options?)` drives an already-built, caller-owned live tree instead.                                                                 |
+| `WorkflowManagerOptions`       | interface | `{ store?, functions? }` — the optional durable store plus the optional registry that makes hydrated named work runnable; omission remains inspectable.                                                                                                                  |
+| `WorkflowManagerInterface`     | interface | The store-backed registry — `count` + `workflow` / `workflows` + the methods (see [Methods](#workflowmanagerinterface)); NO `active` / `switch` (unlike its `ConversationManager` / `WorkspaceManager` twins).                                                           |
+| `SchedulerPriority`            | type      | `'user' \| 'normal' \| 'background'` — a relative urgency hint (uniform in the default; backends honour it).                                                                                                                                                             |
+| `SchedulerOptions`             | interface | `{ priority?: SchedulerPriority; signal?: AbortSignal }` — options for a single `yield` / `delay`.                                                                                                                                                                       |
+| `SchedulerInterface`           | interface | The `yield` / `delay` cooperative-yield methods.                                                                                                                                                                                                                         |
+| `ControllerInterface`          | interface | The per-unit handle a runner handler receives — `id` / `input` / `signal` / `aborted` data members + `wait` / `spawn` / `abort` methods.                                                                                                                                 |
+| `RunnerHandler`                | type      | `(controller) => Promise<TResult> \| TResult` — runs one unit's work against its `ControllerInterface`.                                                                                                                                                                  |
+| `RunnerOptions`                | interface | `createRunner` options — `handler` + strict Queue values: positive-safe-integer `concurrency?`, nonnegative-safe-integer `retries?`, integer `timeout?` in `0..2_147_483_647` (`0` disables), plus `entries?` / `on?` / `error?`.                                        |
+| `RunnerEntryOptions`           | interface | The per-entry reliability overrides for one unit — `{ retries?, timeout? }`, resolved from its input through `entries`.                                                                                                                                                  |
+| `RunnerInterface`              | interface | `emitter` / `active` / `stopped` / `paused` data members + `execute` / `spawn` / `abort` / `pause` / `resume` / `stop` / `destroy` methods.                                                                                                                              |
+| `RunnerEventMap`               | type      | The `Runner`'s observable events — `start` / `unit` / `spawn` / `settle` / `fail` / `finish` / `abort`.                                                                                                                                                                  |
+| `RunnerUnit`                   | interface | One tracked unit's queue payload — `id` (keys its order + value) + `input` (the handler's work).                                                                                                                                                                         |
 
 ## Methods
 
-The public methods of each behavioral interface — one table per type, keyed by its backticked name, every call-signature member listed. Its `readonly` data members stay in the Surface rows above (`emitter` is the typed [§13](emitter.md) push surface — see [Observing the live tree](#observing-the-live-tree); `status` / `result` / `context` / `signal` / `aborted` / `input` / `task` / `count` are read-state). Each entity and substrate class implements its interface exactly, so this doubles as the per-instance method surface (AGENTS §22).
+The public methods of each behavioral interface — one table per type, keyed by its backticked name, every call-signature member listed. Its `readonly` data members stay in the Surface rows above (`emitter` is the typed [emitter](emitter.md) push surface — see [Observing the live tree](#observing-the-live-tree); `status` / `result` / `context` / `signal` / `aborted` / `input` / `task` / `count` are read-state). Each entity and substrate class implements its interface exactly, so this doubles as the per-instance method surface.
 
 #### `WorkflowInterface`
 
@@ -413,7 +443,7 @@ The live DERIVED root. `status` is the override-or-derived workflow status (read
 | `skip`     | `void`                                  | FORCE the workflow `skipped`, emit `skip` exactly once, and persist the override; terminal calls are no-ops.                                                                 |
 | `stop`     | `void`                                  | FORCE the workflow `stopped` (emits `stop`).                                                                                                                                 |
 | `complete` | `void`                                  | FORCE `completed` only for a pending vacuous tree (zero tasks anywhere); pending work and all other states are unchanged.                                                    |
-| `pause`    | `void`                                  | Suspend the workflow (RUNTIME-ONLY, resumable, idempotent); a no-op once terminal or `destroyed`.                                                                            |
+| `pause`    | `void`                                  | Suspend the workflow (RUNTIME-ONLY, resumable, idempotent); a no-op after it is terminal or `destroyed`.                                                                     |
 | `resume`   | `void`                                  | Continue a paused workflow (idempotent); releases any parked `wait`.                                                                                                         |
 | `destroy`  | `void`                                  | Atomic teardown — pins stopped overrides, stops non-terminal tasks/phases, releases waiters/timers, aborts `signal`, then destroys descendant and root emitters; idempotent. |
 | `wait`     | `Promise<void>`                         | Park until not `paused` — promise-parked, resolves immediately when unpaused; NEVER rejects.                                                                                 |
@@ -433,7 +463,7 @@ The live DERIVED middle tier. `status` is derived from its tasks (override-or-de
 | `results`  | `readonly TaskResult[]`                | The settled tasks' results, in positional order (the phase tier).                                                                            |
 | `skip`     | `void`                                 | FORCE the phase `skipped` and emit `skip` exactly once; terminal calls are no-ops.                                                           |
 | `stop`     | `void`                                 | FORCE the phase `stopped` (emits `stop`).                                                                                                    |
-| `pause`    | `void`                                 | Suspend the phase (RUNTIME-ONLY, resumable, idempotent); a no-op once terminal.                                                              |
+| `pause`    | `void`                                 | Suspend the phase (RUNTIME-ONLY, resumable, idempotent); a no-op after it is terminal.                                                       |
 | `resume`   | `void`                                 | Continue a paused phase (idempotent); releases any parked `wait`.                                                                            |
 | `wait`     | `Promise<void>`                        | Park until not `paused` — promise-parked, resolves immediately when unpaused; NEVER rejects.                                                 |
 | `add`      | `Result<TaskInterface, WorkflowError>` | MINT a live task from a `TaskDefinition` and insert it — `pending` phase: any index; `running` phase: APPEND-ONLY; terminal: always refused. |
@@ -464,7 +494,7 @@ The live leaf state machine — each transition is GUARDED (an illegal move thro
 
 #### `PhaseManagerInterface`
 
-The lean phases manager (AGENTS §9) — `count` is read-state (in the Surface row).
+The lean phases manager — `count` is read-state (in the Surface row).
 
 | Method   | Returns                                 | Behavior                                                                                                                        |
 | -------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -478,7 +508,7 @@ The lean phases manager (AGENTS §9) — `count` is read-state (in the Surface r
 
 #### `TaskManagerInterface`
 
-The lean tasks manager (AGENTS §9) — `count` is read-state (in the Surface row). Order survives an interior `skip` (a skip is a status change, never a removal).
+The lean tasks manager — `count` is read-state (in the Surface row). Order survives an interior `skip` (a skip is a status change, never a removal).
 
 | Method   | Returns                                | Behavior                                                                                                                      |
 | -------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -490,21 +520,35 @@ The lean tasks manager (AGENTS §9) — `count` is read-state (in the Surface ro
 | `task`   | `TaskInterface \| undefined`           | Look up one task by `id`.                                                                                                     |
 | `tasks`  | `readonly TaskInterface[]`             | List the tasks in positional order.                                                                                           |
 
+#### `CollectionInterface`
+
+The insertion-ordered gated store both lean managers hold — `count` is read-state (in the Surface row). Each refusal names the entity noun the store was built with.
+
+| Method    | Returns                         | Behavior                                                                                                            |
+| --------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `append`  | `void`                          | Add one entity at the end (throws `MUTATION` on a duplicate id).                                                    |
+| `add`     | `Result<TEntry, WorkflowError>` | Insert `entry` at `index` (default end); a `MUTATION` failure on a duplicate id or out-of-bounds index.             |
+| `remove`  | `Result<TEntry, WorkflowError>` | Remove the `pending` entity `id`; a `MUTATION` failure when absent or not `pending`.                                |
+| `move`    | `Result<TEntry, WorkflowError>` | Reposition the `pending` entity `id` to `index`; a `MUTATION` failure when absent, not `pending`, or out of bounds. |
+| `update`  | `Result<TEntry, WorkflowError>` | Apply a validated patch to the `pending` entity `id`; a `MUTATION` failure when absent, not `pending`, or invalid.  |
+| `entry`   | `TEntry \| undefined`           | Look up one stored entity by `id`.                                                                                  |
+| `entries` | `readonly TEntry[]`             | List the stored entities in positional order.                                                                       |
+
 #### `WorkflowRunnerInterface`
 
-| Method    | Returns                   | Behavior                                                                                                                                                                                   |
-| --------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `execute` | `Promise<WorkflowResult>` | TWO overloads: build-and-drive a definition, or synchronously claim and drive a fresh live workflow once across all runner instances. Both run phases sequentially and tasks concurrently. |
+| Method    | Returns                   | Behavior                                                                                                                                                                               |
+| --------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `execute` | `Promise<WorkflowResult>` | Overloads: build-and-drive a definition, or synchronously claim and drive a fresh live workflow once across all runner instances. Both run phases sequentially and tasks concurrently. |
 
 #### `WorkflowPersistenceInterface`
 
 `fault` is read-state: the first required checkpoint failure, if one occurred. `WorkflowPersistence` implements this interface exactly and is advanced runner-owned infrastructure normally reached through `execute({ store })`.
 
-| Method       | Returns            | Behavior                                                                                                   |
-| ------------ | ------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `checkpoint` | `Promise<boolean>` | Make the latest live state durable at an `initial`, `attempt`, `settlement`, or `final` required boundary. |
-| `finalize`   | `Promise<boolean>` | Detach observers, drain the latest obligation, and report whether the final live state reached the store.  |
-| `detach`     | `void`             | Stop observing workflow, phase, and task events; idempotent.                                               |
+| Method       | Returns            | Behavior                                                                                                        |
+| ------------ | ------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `checkpoint` | `Promise<boolean>` | Make the most recent live state durable at an `initial`, `attempt`, `settlement`, or `final` required boundary. |
+| `finalize`   | `Promise<boolean>` | Detach observers, drain the most recent obligation, and report whether the final live state reached the store.  |
+| `detach`     | `void`             | Stop observing workflow, phase, and task events; idempotent.                                                    |
 
 ```ts
 import { WorkflowPersistence, createMemoryWorkflowStore, createWorkflow } from '@orkestrel/workflow'
@@ -518,27 +562,27 @@ persistence.detach() // idempotent after finalize
 
 #### `WorkflowManagerInterface`
 
-The store-backed registry (§9 + the store standard) — `count` is read-state (in the Surface row). `add` mints from a `WorkflowDefinition` (flowing the manager's `functions` in); `open` / `save` are the optional `store` seam. Hydration also flows `functions` when present; without them, named work remains inspectable but non-drivable.
+The store-backed registry following the store standard — `count` is read-state (in the Surface row). `add` mints from a `WorkflowDefinition` (flowing the manager's `functions` in); `open` / `save` are the optional `store` seam. Hydration also flows `functions` when present; without them, named work remains inspectable but non-drivable.
 
 | Method      | Returns                                   | Behavior                                                                                                                                                                                           |
 | ----------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `workflow`  | `WorkflowInterface \| undefined`          | Look up one registered workflow by `id`.                                                                                                                                                           |
 | `workflows` | `readonly WorkflowInterface[]`            | List the registered workflows in insertion order.                                                                                                                                                  |
-| `add`       | `WorkflowInterface`                       | MINT a live workflow from a `WorkflowDefinition` (via `createWorkflow`, flowing `functions` in) and register it under `definition.id`; an already-registered id OVERWRITES.                        |
+| `add`       | `WorkflowInterface`                       | MINT a live workflow from a `WorkflowDefinition` (through `createWorkflow`, flowing `functions` in) and register it under `definition.id`; an already-registered id OVERWRITES.                    |
 | `open`      | `Promise<WorkflowInterface \| undefined>` | Resolve a registered workflow directly, else reserve and coalesce the same-id promise before store access; registry mutation wins pending-read races and wrong-key payloads reject with `RESTORE`. |
 | `save`      | `Promise<boolean>`                        | Capture the snapshot and reserve the same-id write before store access; serialize same-id writes in call order while different ids remain independent.                                             |
-| `remove`    | `boolean`                                 | Drop one by `id`, or a batch by `readonly string[]` (§9.2, array overload first); `true` when any was removed.                                                                                     |
+| `remove`    | `boolean`                                 | Drop one by `id`, or a batch by `readonly string[]` (array overload first); `true` only when every id was removed, so an empty list reports `true` vacuously.                                      |
 | `clear`     | `void`                                    | Empty the registry.                                                                                                                                                                                |
 
 #### `TaskControllerInterface`
 
-The attempt-scoped handle a `WorkflowFunction` receives. `signal` / `aborted` / JSON `input` / `task` / persisted one-based `attempt` / `paused` are read-state. Its activity closures refuse once its folded signal aborts or a newer retry owns the task.
+The attempt-scoped handle a `WorkflowFunction` receives. `signal` / `aborted` / JSON `input` / `task` / persisted one-based `attempt` / `paused` are read-state. Its activity closures refuse after its folded signal aborts or a newer retry owns the task.
 
 | Method    | Returns                               | Behavior                                                                                                |
 | --------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `report`  | `Result<TaskActivity, WorkflowError>` | Replace activity only while this attempt owns the task and remains un-aborted; refusal is `TRANSITION`. |
 | `pulse`   | `boolean`                             | Refresh liveness only while this attempt owns the task and remains un-aborted.                          |
-| `wait`    | `Promise<void>`                       | Park on the currently closed workflow, phase, and task gates, raced against cancellation.               |
+| `wait`    | `Promise<void>`                       | Park on the closed workflow, phase, and task gates, raced against cancellation.                         |
 | `results` | `readonly TaskResult[]`               | Every settled task's result across already-finished phases (read-up, read-only).                        |
 
 #### `SchedulerInterface`
@@ -552,7 +596,7 @@ The attempt-scoped handle a `WorkflowFunction` receives. `signal` / `aborted` / 
 
 #### `RunnerInterface`
 
-`execute` runs the declared units (and their spawns) once and resolves ordered results; `spawn` injects a unit into an in-flight run; `pause` / `resume` / `stop` are the §10 lifecycle verbs (`stop` is a GRACEFUL stop — in-flight finishes, never-dispatched pending entries settle without a fail-fast trip); `abort` / `destroy` remain the hard-cancel verbs. The `active` / `stopped` / `paused` members are Surface rows.
+`execute` runs the declared units (and their spawns) once and resolves ordered results; `spawn` injects a unit into an in-flight run; `pause` / `resume` / `stop` are the lifecycle verbs (`stop` is a GRACEFUL stop — in-flight finishes, never-dispatched pending entries settle without a fail-fast trip); `abort` / `destroy` remain the hard-cancel verbs. The `active` / `stopped` / `paused` members are Surface rows.
 
 | Method    | Returns                         | Behavior                                                                                                                                                          |
 | --------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -563,6 +607,14 @@ The attempt-scoped handle a `WorkflowFunction` receives. `signal` / `aborted` / 
 | `resume`  | `void`                          | Continue a paused runner; idempotent.                                                                                                                             |
 | `stop`    | `Promise<void>`                 | GRACEFUL permanent stop — no further dispatch; in-flight units finish; never-dispatched pending units settle WITHOUT tripping fail-fast; stable cleanup barrier.  |
 | `destroy` | `Promise<void>`                 | Tear down once, awaiting Queue destruction before destroying the Runner emitter last; the barrier is stable and idempotent.                                       |
+
+#### `RunHolderInterface`
+
+`hold` takes the phase runner a starting phase hands the run, or releases the held one when called with no argument. The `runner` member is a Surface row.
+
+| Method | Returns | Behavior                                                                                                      |
+| ------ | ------- | ------------------------------------------------------------------------------------------------------------- |
+| `hold` | `void`  | Take `runner` as the run's active phase runner; called with no argument, release the held one to `undefined`. |
 
 #### `ControllerInterface`
 
@@ -576,7 +628,7 @@ The attempt-scoped handle a `WorkflowFunction` receives. `signal` / `aborted` / 
 
 #### `WorkflowStoreInterface`
 
-The durable persistence seam (W-d) — three async primitives over a `WorkflowSnapshot`, keyed by its own id. BOTH stores implement exactly these — the in-memory `MemoryWorkflowStore` and the driver-pluggable `DatabaseWorkflowStore` (the snapshot one opaque JSON column) — so a durable backend (JSON / SQLite / IndexedDB) swaps in through the same three. There is NO TTL / eviction — a persisted run-state lives until an explicit `delete`.
+The durable persistence seam (W-d) — the async `get` / `set` / `delete` primitives over a `WorkflowSnapshot`, keyed by its own id. BOTH stores implement exactly these — the in-memory `MemoryWorkflowStore` and the driver-pluggable `DatabaseWorkflowStore` (the snapshot one opaque JSON column) — so a durable backend (JSON / SQLite / IndexedDB) swaps in through the same primitives. There is NO TTL / eviction — a persisted run-state lives until an explicit `delete`.
 
 | Method   | Returns                                  | Behavior                                                           |
 | -------- | ---------------------------------------- | ------------------------------------------------------------------ |
@@ -588,37 +640,37 @@ The durable persistence seam (W-d) — three async primitives over a `WorkflowSn
 
 These invariants hold across `src/core` ↔ `workflow.md`:
 
-1. **DOC ↔ SOURCE bijection.** Every `function` / `const` / `class` / `interface` / `type` row in the `## Surface` tables is a real export of `src/core`, and every export appears as a Surface row — exhaustive, both directions (AGENTS §22).
+1. **DOC ↔ SOURCE bijection.** Every `function` / `const` / `class` / `interface` / `type` row in the `## Surface` tables is a real export of `src/core`, and every export appears as a Surface row — exhaustive, both directions.
 
-2. **DOC ↔ SOURCE method bijection.** Every behavioral interface's `## Methods` table lists exactly its public methods (call-signature members) — exhaustive, both directions — and each implementing class (`Workflow` / `Phase` / `Task` / `WorkflowRunner` / `TaskController` / `PhaseManager` / `TaskManager` / `Runner` / `Controller`) exposes exactly its interface's methods, no extra public surface (AGENTS §22). The `readonly` data members (`emitter` / `status` / `result` / `context` / `signal` / `aborted` / `input` / `task` / `attempt` / `attempts` / `count` / `id` / `name` / `description` / `bail` / `phases` / `tasks` / `paused` / `destroyed` / `run` / `handler` / `retries` / `timeout` / `concurrency` / `activity` / `silence` / `silent` / `active` / `stopped`) stay in the Surface rows.
+2. **DOC ↔ SOURCE method bijection.** Every behavioral interface's `## Methods` table lists exactly its public methods (call-signature members) — exhaustive, both directions — and each implementing class (`Workflow` / `Phase` / `Task` / `WorkflowRunner` / `TaskController` / `PhaseManager` / `TaskManager` / `Runner` / `Controller`) exposes exactly its interface's methods, no extra public surface. The `readonly` data members (`emitter` / `status` / `result` / `context` / `signal` / `aborted` / `input` / `task` / `attempt` / `attempts` / `count` / `id` / `name` / `description` / `bail` / `phases` / `tasks` / `paused` / `destroyed` / `behavior` / `handler` / `retries` / `timeout` / `concurrency` / `activity` / `silence` / `silent` / `active` / `stopped`) stay in the Surface rows.
 
-3. **Definition is DATA; the runtime is the tree.** A `WorkflowDefinition → PhaseDefinition → TaskDefinition` is pure JSON — behavior referenced BY NAME through a registry, never inline functions — so it round-trips through `createWorkflowContract` (the LLM-tool-args / boundary-validation / restore / test-fixture spine) and persists unchanged. The `Workflow` / `Phase` / `Task` entity classes are the live mirror BUILT from a definition; the definition interfaces are hand-written (the source of truth, AGENTS §14), and the compiled contract's `is` / `parse` / `generate` narrow to them natively (no `as`) — a `generate → is → parse` round-trip parity test guards against drift between the two.
+3. **Definition is DATA; the runtime is the tree.** A `WorkflowDefinition → PhaseDefinition → TaskDefinition` is pure JSON — behavior referenced BY NAME through a registry, never inline functions — so it round-trips through `createWorkflowContract` (the LLM-tool-args / boundary-validation / restore / test-fixture spine) and persists unchanged. The `Workflow` / `Phase` / `Task` entity classes are the live mirror BUILT from a definition; the definition interfaces are hand-written (the source of truth), and the compiled contract's `is` / `parse` / `generate` narrow to them natively (no `as`) — a `generate → is → parse` round-trip parity test guards against drift between the definition and the contract.
 
-4. **Determinism is fixed by design.** Tasks within a phase run CONCURRENTLY; phases run SEQUENTIALLY. There is no per-task concurrent/sequential toggle and no dependency machinery — a dependency is structural (a later phase), so the same tree always sequences the same way. The per-phase knobs are `concurrency` (an optional resource THROTTLE — max-in-flight; omitted ⇒ `DEFAULT_PHASE_CONCURRENCY`, effectively unbounded) and `bail` (an optional per-phase failure-policy OVERRIDE; omitted ⇒ inherits the workflow `bail`), never a sequencing control; the per-task knobs are `retries` (extra attempts routed through the substrate) and `timeout` (a workflow-owned per-attempt deadline in `0..MAX_TIMER_MS`). The status derivations (`derivePhaseStatus` / `deriveWorkflowStatus`) are therefore order-insensitive set reductions, total (never throw), mirroring the contracts guards' totality (AGENTS §14).
+4. **Determinism is fixed by design.** Tasks within a phase run CONCURRENTLY; phases run SEQUENTIALLY. There is no per-task concurrent/sequential toggle and no dependency machinery — a dependency is structural (a later phase), so the same tree always sequences the same way. The per-phase knobs are `concurrency` (an optional resource THROTTLE — max-in-flight; omitted ⇒ `DEFAULT_PHASE_CONCURRENCY`, effectively unbounded) and `bail` (an optional per-phase failure-policy OVERRIDE; omitted ⇒ inherits the workflow `bail`), never a sequencing control; the per-task knobs are `retries` (extra attempts routed through the substrate) and `timeout` (a workflow-owned per-attempt deadline in `0..MAX_TIMER_MS`). The status derivations (`derivePhaseStatus` / `deriveWorkflowStatus`) are therefore order-insensitive set reductions, total (never throw), mirroring the contract guards' totality.
 
-5. **Status is derived from children, per-phase-bail-aware.** A `PhaseStatus` is derived from its tasks' statuses (`bail`-agnostic — a phase surfaces a task failure as `failed` so the policy can decide); a `WorkflowStatus` is derived from its phases' `PhaseDerivation`s (each phase's status paired with the EFFECTIVE `bail` it ran under, `effectiveBail = phase.bail ?? workflow.bail`). A `failed` phase propagates `failed` to the workflow ONLY when ITS effective `bail` is `true` — so a `bail: true` phase HALTS the run even under a graceful (`false`) workflow default, and a `bail: false` phase folds into completion (recorded as data in the result tree) even under a strict (`true`) workflow default. `deriveWorkflowStatus(PhaseDerivation[])` therefore takes the per-phase policy on each phase, not one scalar. The three §10 status tiers (`TaskStatus` / `PhaseStatus` / `WorkflowStatus`) alias ONE `LifecycleStatus` vocabulary, so the single `isTerminalStatus` predicate covers them all.
+5. **Status is derived from children, per-phase-bail-aware.** A phase's `LifecycleStatus` is derived from its tasks' statuses (`bail`-agnostic — a phase surfaces a task failure as `failed` so the policy can decide); a workflow's `LifecycleStatus` is derived from its phases' `PhaseDerivation`s (each phase's status paired with the EFFECTIVE `bail` it ran under, `effectiveBail = phase.bail ?? workflow.bail`). A `failed` phase propagates `failed` to the workflow ONLY when ITS effective `bail` is `true` — so a `bail: true` phase HALTS the run even under a graceful (`false`) workflow default, and a `bail: false` phase folds into completion (recorded as data in the result tree) even under a strict (`true`) workflow default. `deriveWorkflowStatus(PhaseDerivation[])` therefore takes the per-phase policy on each phase, not one scalar. Task, phase, and workflow all carry ONE `LifecycleStatus` vocabulary, so the single `isTerminalStatus` predicate covers every tier.
 
-6. **The leaf is a guarded state machine; the override round-trips.** A `Task`'s transitions read the `TASK_TRANSITIONS` graph via `canTransitionTask` — an illegal move (completing a non-`running` task, starting a settled one) throws a `TRANSITION` `WorkflowError`, so the leaf can never reach an impossible state. A `skip` / `stop` on a DERIVED `Phase` / `Workflow` sets an `#override` that is PERSISTED in the snapshot's own `override` field and restored DIRECTLY (no fragile status-divergence guess). The root's `completed` override is narrower: only a pending tree with zero tasks anywhere is vacuously complete; hostile completed overrides over pending work or a non-pending derivation are rejected. A leaf's terminal status IS its forced marker, so a `TaskSnapshot` needs no `override`.
+6. **The leaf is a guarded state machine; the override round-trips.** A `Task`'s transitions read the `TASK_TRANSITIONS` graph through `canTransitionTask` — an illegal move (completing a non-`running` task, starting a settled one) throws a `TRANSITION` `WorkflowError`, so the leaf can never reach an impossible state. A `skip` / `stop` on a DERIVED `Phase` / `Workflow` sets an `#override` that is PERSISTED in the snapshot's own `override` field and restored DIRECTLY (no fragile status-divergence guess). The root's `completed` override is narrower: only a pending tree with zero tasks anywhere is vacuously complete; hostile completed overrides over pending work or a non-pending derivation are rejected. A leaf's terminal status IS its forced marker, so a `TaskSnapshot` needs no `override`.
 
-7. **The result tree is lineage-navigable, three tiers.** A `TaskResult` carries its full lineage (`task` / `phase` / `workflow` contexts) and BOXES the produced outcome in a [`Result`](contract.md): present exactly for `completed` (a `Success`) / `failed` (a `Failure`), absent for `skipped` / `stopped` (terminal without an outcome) and for a non-terminal task. `Phase.results()` is the phase tier; `Workflow.results()` flattens every phase's via `collectResults` (the workflow tier). A `TaskController.results()` reads UP the live tree — every settled task across already-finished phases — so a later phase's `function` task reads an earlier phase's output (the result tree IS the inter-task data-flow map, read-only).
+7. **The result tree is lineage-navigable, at the task, phase, and workflow tiers.** A `TaskResult` carries its full lineage (`task` / `phase` / `workflow` contexts) and BOXES the produced outcome in a [`Result`](contract.md): present exactly for `completed` (a `Success`) / `failed` (a `Failure`), absent for `skipped` / `stopped` (terminal without an outcome) and for a non-terminal task. `Phase.results()` is the phase tier; `Workflow.results()` flattens every phase's through `collectResults` (the workflow tier). A `TaskController.results()` reads UP the live tree — every settled task across already-finished phases — so a later phase's `function` task reads an earlier phase's output (the result tree IS the inter-task data-flow map, read-only).
 
-8. **`pause` / `resume` / `wait` are RUNTIME-ONLY at all three entity tiers.** `paused` is NEVER a `LifecycleStatus` and NEVER persisted in a snapshot — a paused node's `status` still reports its ordinary value. `pause()` is idempotent and ignored for terminal nodes; it emits only after `paused` becomes true. `resume()` emits only when it actually opens a paused gate. Terminal cleanup, `stop`, and `destroy` release gates without inventing a `resume` event. An entity `wait()` NEVER rejects: it resolves immediately when not paused and otherwise parks on that entity's gate; `Task.wait()` alone never observes ancestors. When the runner or `TaskController` composes those gates, every park is raced against cancellation and relevant ancestor Workflow/Phase `skip` / `stop` events. An ancestor terminal override therefore wakes descendant parks without a fabricated `resume`; queued or not-yet-dispatched work then skips, while a handler dispatched before a graceful stop may finish naturally.
+8. **`pause` / `resume` / `wait` are RUNTIME-ONLY at the workflow, phase, and task tiers.** `paused` is NEVER a `LifecycleStatus` and NEVER persisted in a snapshot — a paused node's `status` still reports its ordinary value. `pause()` is idempotent and ignored for terminal nodes; it emits only after `paused` becomes true. `resume()` emits only when it actually opens a paused gate. Terminal cleanup, `stop`, and `destroy` release gates without inventing a `resume` event. An entity `wait()` NEVER rejects: it resolves immediately when not paused and otherwise parks on that entity's gate; `Task.wait()` alone never observes ancestors. When the runner or `TaskController` composes those gates, every park is raced against cancellation and relevant ancestor Workflow/Phase `skip` / `stop` events. An ancestor terminal override therefore wakes descendant parks without a fabricated `resume`; queued or not-yet-dispatched work then skips, while a handler dispatched before a graceful stop may finish naturally.
 
-9. **`stop` (graceful) vs `destroy` (hard) — two different cancels, at two different tiers.** A `Workflow.stop()` / `Phase.stop()` FORCES a terminal status (an override) — the §10 forced-terminal verb. `Workflow.destroy()` is the STRONGER, TERMINAL teardown: it marks `destroyed` before any event, pins non-terminal workflow/phase overrides to `stopped`, stops every non-terminal task, releases gates and liveness timers, aborts `signal`, then destroys task emitters, phase emitters, and the workflow emitter in that ownership order. Already-terminal genuine completed/failed nodes retain their state. The operation is reentrant-safe and idempotent; structural mutation from a final stop listener is refused, recursive `destroy()` is a no-op, and state/snapshots remain inspectable after emitter resources are gone. The substrate `Runner.stop()` is a DIFFERENT, GRACEFUL verb at the execution-substrate tier: no further unit is dispatched, but every already-in-flight unit finishes normally, and a never-dispatched (still-pending) unit is rejected WITHOUT being recorded as a failure (it never trips fail-fast) — `execute()` RESOLVES (never rejects) with whatever settled. Declared units are launched and ordered before the run emits `start`, while native Queue dispatch remains asynchronous, so a public `spawn()` from a start listener is accepted after every declared result but still before any handler runs. A resolved entry's reliability properties are read before its id is classified as queued; that classification happens before `queue.enqueue`, so an `entries` resolver that synchronously requests graceful stop and returns produces never-dispatched stop work, while resolver/property throws remain genuine failures. `Runner.stop()` / `abort()` / `destroy()` return stable cleanup barriers; a graceful stop may still be escalated when a dispatched unit fails or the caller aborts/destroys, and `destroy()` awaits the backing Queue before destroying Runner observation last. A driving `WorkflowRunnerInterface.execute(workflow)` folds `workflow.signal` into its run signal, so `destroy()` aborts in-flight work IMMEDIATELY, while `workflow.stop()` alone lets not-yet-started work skip gracefully and in-flight work finish.
+9. **`stop` (graceful) against `destroy` (hard) — different cancels at different tiers.** A `Workflow.stop()` / `Phase.stop()` FORCES a terminal status (an override) — the forced-terminal verb. `Workflow.destroy()` is the STRONGER, TERMINAL teardown: it marks `destroyed` before any event, pins non-terminal workflow/phase overrides to `stopped`, stops every non-terminal task, releases gates and liveness timers, aborts `signal`, then destroys task emitters, phase emitters, and the workflow emitter in that ownership order. Already-terminal genuine completed/failed nodes retain their state. The operation is reentrant-safe and idempotent; structural mutation from a final stop listener is refused, recursive `destroy()` is a no-op, and state/snapshots remain inspectable after emitter resources are gone. The substrate `Runner.stop()` is a DIFFERENT, GRACEFUL verb at the execution-substrate tier: no further unit is dispatched, but every already-in-flight unit finishes normally, and a never-dispatched (still-pending) unit is rejected WITHOUT being recorded as a failure (it never trips fail-fast) — `execute()` RESOLVES (never rejects) with whatever settled. Declared units are launched and ordered before the run emits `start`, while native Queue dispatch remains asynchronous, so a public `spawn()` from a start listener is accepted after every declared result but still before any handler runs. A resolved entry's reliability properties are read before its id is classified as queued; that classification happens before `queue.enqueue`, so an `entries` resolver that synchronously requests graceful stop and returns produces never-dispatched stop work, while resolver/property throws remain genuine failures. `Runner.stop()` / `abort()` / `destroy()` return stable cleanup barriers; a graceful stop may still be escalated when a dispatched unit fails or the caller aborts/destroys, and `destroy()` awaits the backing Queue before destroying Runner observation last. A driving `WorkflowRunnerInterface.execute(workflow)` folds `workflow.signal` into its run signal, so `destroy()` aborts in-flight work IMMEDIATELY, while `workflow.stop()` alone lets not-yet-started work skip gracefully and in-flight work finish.
 
-10. **Observation is a pure side-channel (§13).** Each live `Workflow` / `Phase` / `Task` owns a typed `emitter` (`WorkflowEventMap` / `PhaseEventMap` / `TaskEventMap`) firing strictly AFTER each transition — a leaf's OWN event before the cascade re-derives the parents (cause before effect), so an observer sees the leaf changed before the phase / workflow does. The emitter isolates a listener throw and routes it to its OWN `error` handler (the `error` option, surfaced as `(error, event)`, NOT a domain event) — so a buggy observer can NEVER corrupt a transition or the cascade. The `WorkflowRunner` and `TaskController` are EVENT-FREE by design (the runner drives the entities' own emitters; the child managers `PhaseManager` / `TaskManager` are purely structural and observe nothing).
+10. **Observation is a pure side-channel.** Each live `Workflow` / `Phase` / `Task` owns a typed `emitter` (`WorkflowEventMap` / `PhaseEventMap` / `TaskEventMap`) firing strictly AFTER each transition — a leaf's OWN event before the cascade re-derives the parents (cause before effect), so an observer sees the leaf changed before the phase / workflow does. The emitter isolates a listener throw and routes it to its OWN `error` handler (the `error` option, surfaced as `(error, event)`, NOT a domain event) — so a buggy observer can NEVER corrupt a transition or the cascade. The `WorkflowRunner` and `TaskController` are EVENT-FREE by design (the runner drives the entities' own emitters; the child managers `PhaseManager` / `TaskManager` are purely structural and observe nothing).
 
-11. **Running-phase append-only; every structural edit is gated by the pending-suffix boundary.** `Phase.add` (and its manager delegate) accepts any `index` while the phase is `pending`, but ONLY a pure append (`index` omitted or `=== tasks.count`) while `running` — a live runner subscribed to the phase's own `add` event picks the new task up for same-run execution, and the derived-status model guarantees the phase cannot reach a terminal status while that newly-accepted `pending` task is still outstanding; a terminal phase always refuses. `remove` / `move` / `update` on a phase's tasks are allowed ONLY while the phase itself is `pending`. At the workflow tier, `Workflow.add` / `remove` / `move` / `update` on its phases are refused outright while the workflow is terminal or `destroyed`; otherwise every target index (and, for `add`, the effective insertion index `index ?? phases.count`) must fall within the PENDING SUFFIX — the contiguous trailing run of `pending` phases (phases run sequentially, so every already-started phase forms a contiguous leading prefix) — whose boundary is `deriveBoundary`. Every refusal (at either tier) is a graceful `Result` `MUTATION` failure, never a throw, and fires no `add` / `remove` / `move` / `update` event.
+11. **Running-phase append-only; every structural edit is gated by the pending-suffix boundary.** `Phase.add` (and its manager delegate) accepts any `index` while the phase is `pending`, but ONLY a pure append (`index` omitted or `=== tasks.count`) while `running` — a live runner subscribed to the phase's own `add` event picks the new task up for same-run execution, and the derived-status model keeps the phase from reaching a terminal status while that newly-accepted `pending` task is still outstanding; a terminal phase always refuses. `remove` / `move` / `update` on a phase's tasks are allowed ONLY while the phase itself is `pending`. At the workflow tier, `Workflow.add` / `remove` / `move` / `update` on its phases are refused outright while the workflow is terminal or `destroyed`; otherwise every target index (and, for `add`, the effective insertion index `index ?? phases.count`) must fall within the PENDING SUFFIX — the contiguous trailing run of `pending` phases (phases run sequentially, so every already-started phase forms a contiguous leading prefix) — whose boundary is `deriveBoundary`. Every refusal (at either tier) is a graceful `Result` `MUTATION` failure, never a throw, and fires no `add` / `remove` / `move` / `update` event.
 
 12. **The runner COMPOSES a PURE engine.** `WorkflowRunner.execute` builds the live tree from the definition and drives phases SEQUENTIALLY, with each phase's tasks CONCURRENTLY through one substrate `Runner`. The substrate owns concurrency and declared retries; the workflow layer owns each task's deadline because it must distinguish timeout failure from genuine cancellation and settle the live leaf under the phase's `bail` policy. Non-final timeout rejects to trigger a retry; final timeout fails the task and rejects only for fail-fast. Run-level abort / [timeout](timeout.md) / [budget](budget.md) fold through `AbortSignal.any`; pacing is the shipped scheduler. The engine carries no behavior/provider registry and invokes each task's already-resolved handler directly.
 
-13. **A task's behavior is a plain string, resolved ONCE into a `handler`; present names must resolve before execution.** A live `TaskInterface`'s `run` is resolved at construction against `WorkflowOptions.functions`. Exact restore without functions remains usable for inspection: it preserves the present `run` and leaves `handler` undefined. Definition execution, recovery, and entity execution reject a present name without a handler before external dispatch, so named work never false-completes. A task that deliberately omits `run` is the only no-op form and completes with JSON `null`. External integrations enter through ordinary application-supplied functions.
+13. **A task's behavior is a plain string, resolved ONCE into a `handler`; present names must resolve before execution.** A live `TaskInterface`'s `behavior` is resolved at construction against `WorkflowOptions.functions`. Exact restore without functions remains usable for inspection: it preserves the present `behavior` and leaves `handler` undefined. Definition execution, recovery, and entity execution reject a present name without a handler before external dispatch, so named work never false-completes. A task that deliberately omits `behavior` is the only no-op form and completes with JSON `null`. External integrations enter through ordinary application-supplied functions.
 
     Construction options are hostile-boundary inputs: every root `WorkflowOptions` property is captured by direct access exactly once before fresh construction, restore, recovery validation, or definition execution; inherited and non-enumerable values remain valid. `Workflow`, `Phase`, and `Task` likewise snapshot their nested phase/task bags and keyed child values once, so accessor-backed caller options cannot shift policy, hooks, metadata, silence, or handler resolution between levels. The exact `functions` registry accepted by recovery validation supplies every recovered handler and remains the registry used by later live additions. The live-workflow `execute` overload reads only run-control bounds and never touches construction getters.
 
 14. **`WorkflowError` names only Workflow failures.** `TRANSITION` guards lifecycle moves, `RESTORE` rejects invalid durable state, and `MUTATION` reports refused structural, metadata, or activity changes. Integration-specific failures remain outside this package and must not expand Workflow's error vocabulary speculatively.
 
-15. **`WorkflowRunnerInterface.execute(workflow)` claims one coherent drivable object synchronously and once.** The entity overload accepts a fresh pending tree or a quiescent recovered tree with terminal and pending work. It rejects destroyed, terminal, currently running, handler-incomplete, inconsistent, empty-of-pending-work, or previously claimed objects. The internal `WeakSet` is process-local object-identity protection only: two separately restored objects with the same workflow id are distinct claims. A distributed adapter must provide an external workflow-id + epoch lease and idempotent side effects; core does not pretend its local claim is a cross-process lease. Exact restore preserves a running leaf and is therefore intentionally not drivable; call `createRecoveredWorkflow` first.
+15. **`WorkflowRunnerInterface.execute(workflow)` claims one coherent drivable object synchronously and once.** The entity overload accepts a fresh pending tree or a quiescent recovered tree with terminal and pending work. It rejects destroyed, terminal, running, handler-incomplete, inconsistent, empty-of-pending-work, or previously claimed objects. The internal `WeakSet` is process-local object-identity protection only: two separately restored objects with the same workflow id are distinct claims. A distributed adapter must provide an external workflow-id + epoch lease and idempotent side effects; core does not pretend its local claim is a cross-process lease. Exact restore preserves a running leaf and is therefore intentionally not drivable; call `createRecoveredWorkflow` first.
 
 16. **A run-level `timeout` / `budget` keeps counting while paused.** `pause` suspends DISPATCH, not the clock — an external `WorkflowRunOptions.timeout` deadline or `budget` ceiling continues to elapse / accumulate while a run sits paused, so a long pause can still fire the bound and unpark the run into a cancelled (`stopped`) outcome; pausing is not a way to freeze a run's external bounds.
 
@@ -636,15 +688,15 @@ These invariants hold across `src/core` ↔ `workflow.md`:
 
 21. **Event-free by contract.** The scheduler is a functional pacing primitive with no Emitter, `EventMap`, or `on` hook; observation belongs to the entities and runners that compose it.
 
-22. **Environment backends honour priority and the native primitive; abort semantics are identical.** Each backend (`NodeScheduler` over `setImmediate`; `BrowserScheduler` over `scheduler.postTask`, `FrameScheduler` over `requestAnimationFrame`, `IdleScheduler` over `requestIdleCallback`) is a standalone `SchedulerInterface` that changes only the `yield` primitive — `delay(ms)` stays a real `setTimeout` — and preserves the contract's abort discipline byte-for-byte: reject with `signal.reason` verbatim, no arming when pre-aborted, full handle + listener cleanup on either settle path, settle-once. Native APIs are feature-detected through guards (`isRecord` / `isFunction`), never an `as` (AGENTS §14), with a real-macrotask fallback where absent. `NodeScheduler` does **not** delegate to `node:timers/promises` (it would replace `signal.reason` with a Node `AbortError`); the timer is hand-rolled. `BrowserScheduler` honours `priority` via `postTask`'s priority levels; the others accept `priority` as a documented no-op.
+22. **Environment backends honour priority and the native primitive; abort semantics are identical.** Each backend (`NodeScheduler` over `setImmediate`; `BrowserScheduler` over `scheduler.postTask`, `FrameScheduler` over `requestAnimationFrame`, `IdleScheduler` over `requestIdleCallback`) is a standalone `SchedulerInterface` that changes only the `yield` primitive — `delay(ms)` stays a real `setTimeout` — and preserves the contract's abort discipline byte-for-byte: reject with `signal.reason` verbatim, no arming when pre-aborted, full handle + listener cleanup on either settle path, settle-once. Native APIs are feature-detected through guards (`isRecord` / `isFunction`), never an `as`, with a real-macrotask fallback where absent. `NodeScheduler` does **not** delegate to `node:timers/promises` (it would replace `signal.reason` with a Node `AbortError`); the timer is hand-rolled. `BrowserScheduler` honours `priority` through `postTask`'s priority levels; the others accept `priority` as a documented no-op.
 
-23. **DOC ↔ SOURCE method bijection (scheduler).** The `## Methods` table lists exactly `SchedulerInterface`'s public methods — exhaustive, both directions — and `Scheduler` plus every backend (`NodeScheduler` / `BrowserScheduler` / `FrameScheduler` / `IdleScheduler`) exposes the same public methods, no more (AGENTS §22).
+23. **DOC ↔ SOURCE method bijection (scheduler).** The `## Methods` table lists exactly `SchedulerInterface`'s public methods — exhaustive, both directions — and `Scheduler` plus every backend (`NodeScheduler` / `BrowserScheduler` / `FrameScheduler` / `IdleScheduler`) exposes the same public methods, no more.
 
 24. **Snapshot is an owned, hostile-boundary durable payload.** `Workflow.snapshot()` returns a deeply cloned, frozen, exact-JSON graph containing policy, statuses, lineage-safe normalized results, task metadata/activity, and consumed `attempts`. Accessors, cycles, class instances, symbols, holes, non-finite numbers, unknown keys, impossible topology, invalid results, and derived-status drift are rejected before live construction. Task order carries no lifecycle topology because tasks are concurrent; phase order uses a sequential frontier that ignores forced skipped/stopped gaps and permits at most one running phase. `createRestoredWorkflow` is an exact inspectable state round-trip even without functions; it does not make interrupted work runnable. `createRecoveredWorkflow` is an explicit two-pass transform per phase: every exhausted running task is classified first. Graceful recovery fails those exhausted tasks, returns retryable running tasks to pending, and continues eligible work. In a strict (`bail: true`) phase, an existing persisted failed task is retained as an established halt boundary; eligible siblings and later work are skipped. Exhausted running tasks still normalize to recovery failures, and every other eligible sibling on both sides is skipped. Attempts never replenish. Recovery and live recompute use the greater of the host clock and the persisted `updated`, so restored future stamps never regress. Terminal workflow/phase overrides are not recoverable.
 
-25. **The durable store owns values on both sides, and the runner can compose it.** Both store implementations deep-clone and validate on `set` and `get`, so callers cannot mutate stored state by alias. `DatabaseWorkflowStore.get` returns `undefined` only for an absent row; present malformed data rejects with the normalized `RESTORE` error. Supplying `WorkflowRunOptions.store` adds required initial, pre-handler attempt, terminal settlement, and final checkpoints. Activity, structural, and skip events trigger best-effort coalesced writes; `WorkflowPersistence` reserves its writer promise before the drain can call external `store.set`, so a synchronous store-triggered entity mutation joins the current obligation instead of starting a second write. There is at most one write in flight, and a newer revision is persisted by the same drain or its latest follow-up. A required failure stops advancement and is returned as `WorkflowResult.fault`; `durable` reports whether the final live state reached the store. Persistence rejection never masks or rewrites the task's normalized handler/timeout/recovery outcome.
+25. **The durable store owns values on both sides, and the runner can compose it.** Both store implementations deep-clone and validate on `set` and `get`, so callers cannot mutate stored state by alias. `DatabaseWorkflowStore.get` returns `undefined` only for an absent row; present malformed data rejects with the normalized `RESTORE` error. Supplying `WorkflowRunOptions.store` adds required initial, pre-handler attempt, terminal settlement, and final checkpoints. Activity, structural, and skip events trigger best-effort coalesced writes; `WorkflowPersistence` reserves its writer promise before the drain can call external `store.set`, so a synchronous store-triggered entity mutation joins the current obligation instead of starting a second write. There is at most one write in flight, and a newer revision is persisted by the same drain or its most recent follow-up. A required failure stops advancement and is returned as `WorkflowResult.fault`; `durable` reports whether the final live state reached the store. Persistence rejection never masks or rewrites the task's normalized handler/timeout/recovery outcome.
 
-What ships is **W-a → W-d**: the definition contract + type surface + derivation helpers (W-a), the live entity tree + result tree + snapshot/restore/recovery (W-b), the PURE `WorkflowRunner` engine + `run`-string / `handler` model (W-c), and the durable `WorkflowStore` (W-d — `WorkflowStoreInterface` plus the in-memory and driver-pluggable implementations). The shipped `WorkflowManager` is the higher-level live registry over that store seam. Provider, Tool, MCP, Terminal, persistent-driver selection, and resource-pool policy are deliberately outside Workflow core.
+What ships is **W-a → W-d**: the definition contract + type surface + derivation helpers (W-a), the live entity tree + result tree + snapshot/restore/recovery (W-b), the PURE `WorkflowRunner` engine + `behavior`-string / `handler` model (W-c), and the durable `WorkflowStore` (W-d — `WorkflowStoreInterface` plus the in-memory and driver-pluggable implementations). The shipped `WorkflowManager` is the higher-level live registry over that store seam. Provider, Tool, MCP, Terminal, persistent-driver selection, and resource-pool policy are deliberately outside Workflow core.
 
 ## Patterns
 
@@ -667,8 +719,8 @@ const definition: WorkflowDefinition = {
 			name: 'Fetch',
 			concurrency: 4, // an optional resource throttle (max in flight); omit ⇒ unbounded
 			tasks: [
-				{ id: 'a', name: 'Fetch A', run: 'fetch' },
-				{ id: 'b', name: 'Fetch B', run: 'fetch' },
+				{ id: 'a', name: 'Fetch A', behavior: 'fetch' },
+				{ id: 'b', name: 'Fetch B', behavior: 'fetch' },
 			],
 		},
 		// `summarize` is placed in a LATER phase, so the fetch results are ready when it runs —
@@ -676,7 +728,7 @@ const definition: WorkflowDefinition = {
 		{
 			id: 'reduce',
 			name: 'Reduce',
-			tasks: [{ id: 's', name: 'Summarize', run: 'summarizer' }],
+			tasks: [{ id: 's', name: 'Summarize', behavior: 'summarizer' }],
 		},
 	],
 }
@@ -717,7 +769,7 @@ result.status // 'completed' (graceful) — even if a leaf failed
 result.workflow.results() // every settled task's TaskResult, lineage-navigable
 ```
 
-`execute` is single-source — it builds the live tree from `definition` itself and returns it in `result.workflow`. Each task's `run` string is resolved ONCE at construction against `options.functions`; an omitted `run` completes as a JSON `null` no-op, while a present but absent registry name is rejected before execution.
+`execute` is single-source — it builds the live tree from `definition` itself and returns it in `result.workflow`. Each task's `behavior` string is resolved ONCE at construction against `options.functions`; an omitted `behavior` completes as a JSON `null` no-op, while a present but absent registry name is rejected before execution.
 
 ### The `bail` policy — graceful vs halt
 
@@ -730,7 +782,7 @@ const graceful = await runner.execute(definition) // a failed leaf is recorded; 
 const transactional = await runner.execute(definition, { bail: true })
 ```
 
-A `bail` override on `execute` wins over the definition's `bail` (which wins over `DEFAULT_BAIL`). Under `bail: true`, a mid-flight sibling sees its `controller.signal` fire and should stop promptly.
+A `bail` override on `execute` wins over the definition's `bail` (which wins over `DEFAULT_BAIL`). Under `bail: true`, a mid-flight sibling sees its `controller.signal` fire and must stop promptly.
 
 A phase may OVERRIDE the workflow policy per phase (`effectiveBail = phase.bail ?? workflow.bail`) — a strict phase halts even under a graceful workflow, and a graceful phase settles-all even under a strict one:
 
@@ -762,7 +814,7 @@ A task may declare per-task reliability — extra attempts on failure and a work
 const task: TaskDefinition = {
 	id: 't',
 	name: 'T',
-	run: 'fetch',
+	behavior: 'fetch',
 	retries: 3,
 	timeout: 5000,
 }
@@ -782,7 +834,7 @@ const result = await runner.execute(definition, {
 	timeout: 10_000, // non-positive, non-finite, or over MAX_TIMER_MS means no deadline
 	budget: createBudget({ max: 50_000, consume: (usage) => usage.total }), // a cost ceiling
 })
-// A fire of ANY bound folds via AbortSignal.any: it cancels every in-flight task, skips the rest,
+// A fire of ANY bound folds through AbortSignal.any: it cancels every in-flight task, skips the rest,
 // and force-stops the workflow → status === 'stopped'. `execute` RESOLVES (never rejects) on a cancel.
 ```
 
@@ -845,9 +897,9 @@ workflow.paused // true
 
 const waiter = workflow.wait() // promise-parked; NEVER rejects
 workflow.resume() // releases the parked waiter
-await waiter // resolves once unpaused
+await waiter // resolves after it is unpaused
 
-workflow.phase('build')?.pause() // pause just this phase
+workflow.phase('build')?.pause() // pause this phase alone
 workflow.phase('build')?.paused // true
 workflow.phase('build')?.resume()
 
@@ -885,7 +937,7 @@ if (added.success) {
 	const taskDefinition: TaskDefinition = {
 		id: 't1',
 		name: 'T1',
-		run: 'noop',
+		behavior: 'noop',
 	}
 	const addedTask = phase.add(taskDefinition) // MINT a live task + insert it into this phase
 	if (addedTask.success) {
@@ -907,7 +959,7 @@ Every one of these is refused gracefully (a `MUTATION` `Result` failure, never a
 
 ### Building the live tree by hand — `append`
 
-`createWorkflow` builds every phase/task from the definition via `PhaseManagerInterface.append` / `TaskManagerInterface.append` internally — the same methods are available directly on an already-built tree's managers, e.g. to graft a live phase (or task) built elsewhere onto it:
+`createWorkflow` builds every phase/task from the definition through `PhaseManagerInterface.append` / `TaskManagerInterface.append` internally — the same methods are available directly on an already-built tree's managers, for example to graft a live phase (or task) built elsewhere onto it:
 
 ```ts
 import { createWorkflow } from '@orkestrel/workflow'
@@ -920,7 +972,7 @@ const extra = createWorkflow({
 		{
 			id: 'p2',
 			name: 'P2',
-			tasks: [{ id: 't1', name: 'T1', run: 'noop' }],
+			tasks: [{ id: 't1', name: 'T1', behavior: 'noop' }],
 		},
 	],
 })
@@ -935,11 +987,11 @@ if (task && target) target.tasks.append(task) // adds one live task at the end
 target?.tasks.count // 1
 ```
 
-`append` adds one live child at the end, preserving positional order; `PhaseManagerInterface` / `TaskManagerInterface` otherwise stay lean (an accessor + `count`, no batch matrix, AGENTS §9.2).
+`append` adds one live child at the end, preserving positional order; `PhaseManagerInterface` / `TaskManagerInterface` otherwise stay lean (an accessor + `count`, no batch matrix).
 
 ### Observing the live tree
 
-Each live `Workflow` / `Phase` / `Task` exposes a typed `emitter` (AGENTS §13) carrying its lifecycle for fire-and-forget observers — logging, metrics, progress UI. Subscribe via `entity.emitter.on(...)`, or wire initial listeners through the reserved `on` option (per-node, keyed by id under `WorkflowOptions.phases[id]` / `.tasks[id]`). Emitting is observation-only — every event fires strictly AFTER the relevant transition, so a listener can never change what a transition does:
+Each live `Workflow` / `Phase` / `Task` exposes a typed `emitter` carrying its lifecycle for fire-and-forget observers — logging, metrics, progress UI. Subscribe through `entity.emitter.on(...)`, or wire initial listeners through the reserved `on` option (per-node, keyed by id under `WorkflowOptions.phases[id]` / `.tasks[id]`). Emitting is observation-only — every event fires strictly AFTER the relevant transition, so a listener can never change what a transition does:
 
 ```ts
 import { createWorkflow } from '@orkestrel/workflow'
@@ -1007,7 +1059,7 @@ workflow.phase('fetch')?.task('a')?.start() // pending → running (cascades up)
 const snapshot = workflow.snapshot() // pure JSON — write to disk, send to a prompt, load across sessions
 
 // Restore is exact and inspectable even without functions. Supplying the registry re-resolves
-// each task's `run` into a fresh handler for later recovery/execution.
+// each task's `behavior` into a fresh handler for later recovery/execution.
 const resumed = createRestoredWorkflow(snapshot, { functions })
 resumed.status === workflow.status // true — bail comes from the snapshot itself
 
@@ -1016,7 +1068,7 @@ resumed.status === workflow.status // true — bail comes from the snapshot itse
 const recovered = createRecoveredWorkflow(snapshot, { functions })
 ```
 
-The snapshot is an owned exact-JSON graph. It persists `bail`, overrides, normalized JSON results, task `run` / `retries` / `timeout`, and consumed `attempts`. Every pending snapshot omits activity. Recovery of retryable running work also removes its prior activity before returning it to pending, while preserving consumed attempts; the next real `start` creates a fresh attempt frame. Exact restore preserves unresolved names for inspection; execution still requires every present `run` to resolve. During construction, each phase reads every unique initial `run` binding once and gives duplicate-name tasks that exact captured handler; recovery validates the constructed live handlers without rereading the registry. The retained registry identity still serves later live additions, whose binding is read at their own mint time. Recovery refuses terminal workflow/phase overrides and never replenishes attempts. Within each phase it classifies all exhausted running tasks first: strict policy retains an existing failed task as an established halt boundary, normalizes exhausted running tasks to recovery failures, and skips every other eligible sibling on both sides plus later eligible phases; graceful policy fails exhausted tasks, resets retryable running tasks to pending, and continues.
+The snapshot is an owned exact-JSON graph. It persists `bail`, overrides, normalized JSON results, task `behavior` / `retries` / `timeout`, and consumed `attempts`. Every pending snapshot omits activity. Recovery of retryable running work also removes its prior activity before returning it to pending, while preserving consumed attempts; the next real `start` creates a fresh attempt frame. Exact restore preserves unresolved names for inspection; execution still requires every present `behavior` to resolve. During construction, each phase reads every unique initial `behavior` binding once and gives duplicate-name tasks that exact captured handler; recovery validates the constructed live handlers without rereading the registry. The retained registry identity still serves later live additions, whose binding is read at their own mint time. Recovery refuses terminal workflow/phase overrides and never replenishes attempts. Within each phase it classifies all exhausted running tasks first: strict policy retains an existing failed task as an established halt boundary, normalizes exhausted running tasks to recovery failures, and skips every other eligible sibling on both sides plus later eligible phases; graceful policy fails exhausted tasks, resets retryable running tasks to pending, and continues.
 
 ### Persisting & restoring (the durable store)
 
@@ -1045,6 +1097,8 @@ await store.delete(definition.id) // drop it (an absent id is a no-op)
 
 Both stores clone and validate on write and read, so stored snapshots never alias caller-owned data. A present database row whose snapshot id differs from the requested row key rejects with normalized `WorkflowError` code `RESTORE`; its safe context carries `requested` and `payload`. The store has NO TTL / eviction — a persisted workflow run-state is durable until an explicit `delete`.
 
+A `WorkflowSnapshot` written before the release that renames `run` to `behavior` carries the task registry key as `run`. `cloneWorkflowSnapshot` and every restore path — `store.get`, `createRestoredWorkflow`, `WorkflowManager.open` — refuse that snapshot with a `RESTORE` `WorkflowError`, because the exact-key validation no longer admits `run`. Rewrite the persisted key from `run` to `behavior` before restoring a snapshot written before that release.
+
 For automatic run durability, pass the same store to `execute`:
 
 ```ts
@@ -1053,11 +1107,11 @@ result.durable // whether the final state reached the store
 result.fault // first required checkpoint failure, if any
 ```
 
-The exported `WorkflowPersistence` coordinator awaits initial, attempt, settlement, and final boundaries. Activity, structural changes, and workflow/phase/task skip events request coalesced best-effort writes; only one write is in flight and one latest obligation is retained. The first required failure is retained as `fault`, stops further dispatch, and is never replaced; `durable` independently reports whether the final live state reached the store. Finalization detaches listeners before requesting the final checkpoint. Terminal live events can therefore precede their settlement write, while `execute` still waits for final durability. A store Promise that never settles also prevents the required checkpoint—and therefore `execute`—from settling; core has no storage timeout or cancellation contract. Unexpected scheduler/infrastructure faults stop and sweep the tree, attempt the final write, then reject if persistence itself settles.
+The exported `WorkflowPersistence` coordinator awaits initial, attempt, settlement, and final boundaries. Activity, structural changes, and workflow/phase/task skip events request coalesced best-effort writes; only one write is in flight and one most recent obligation is retained. The first required failure is retained as `fault`, stops further dispatch, and is never replaced; `durable` independently reports whether the final live state reached the store. Finalization detaches listeners before requesting the final checkpoint. Terminal live events can therefore precede their settlement write, while `execute` still waits for final durability. A store Promise that never settles also prevents the required checkpoint—and therefore `execute`—from settling; core has no storage timeout or cancellation contract. Unexpected scheduler/infrastructure faults stop and sweep the tree, attempt the final write, then reject if persistence itself settles.
 
 ### Managing workflows (registry + store seam)
 
-`WorkflowManager` (`createWorkflowManager`) is the additive manager tier over the section above — a store-backed REGISTRY of live workflows, mirroring the `@orkestrel/agent` line's `ConversationManager` / `WorkspaceManager`. It is PURELY ADDITIVE: direct `WorkflowStoreInterface` use and `createRestoredWorkflow` (both sections above) remain valid — a caller now has a THIRD, higher-level option that also tracks a `functions` registry so a hydrated workflow stays RUNNABLE.
+`WorkflowManager` (`createWorkflowManager`) is the additive manager tier over the section above — a store-backed REGISTRY of live workflows, mirroring the `@orkestrel/agent` line's `ConversationManager` / `WorkspaceManager`. It is PURELY ADDITIVE: direct `WorkflowStoreInterface` use and `createRestoredWorkflow` (both sections above) remain valid — a caller has a further, higher-level option that also tracks a `functions` registry so a hydrated workflow stays RUNNABLE.
 
 ```ts
 import { createMemoryWorkflowStore, createWorkflowManager } from '@orkestrel/workflow'
@@ -1093,11 +1147,11 @@ promise is reserved before `store.set` can synchronously reenter `save`; the ree
 behind that exact reservation. Writes for the same id are serialized in invocation order; writes for different ids begin independently. A
 rejected write reaches its own caller unchanged, while the next same-id write still proceeds.
 
-Unlike its `ConversationManager` / `WorkspaceManager` twins, there is NO `active` / `switch` pointer — nothing in the workflow domain renders "the current workflow" the way an agent context renders the active conversation/workspace, so carrying one would be a speculative extra (AGENTS §21). `open` / `save` are otherwise the EXACT lenient store seam: `open` resolves a registered workflow directly (no store hit), else hydrates from `store` on a miss (`undefined` on a store miss or no store); `save` persists a registered workflow (`false` on an unknown id or no store) — never a throw.
+Unlike its `ConversationManager` / `WorkspaceManager` twins, there is NO `active` / `switch` pointer — nothing in the workflow domain renders "the current workflow" the way an agent context renders the active conversation/workspace, so carrying one would be a speculative extra. `open` / `save` are otherwise the EXACT lenient store seam: `open` resolves a registered workflow directly (no store hit), else hydrates from `store` on a miss (`undefined` on a store miss or no store); `save` persists a registered workflow (`false` on an unknown id or no store) — never a throw.
 
 ### The helper functions — guards, derivation, lineage & synthesis
 
-The pure functions the entity tree and runner are built from (AGENTS §4.3 / §14) — exported directly, so a caller can reuse the same derivation or synthesis logic outside the shipped classes:
+The pure functions the entity tree and runner are built from — exported directly, so a caller can reuse the same derivation or synthesis logic outside the shipped classes:
 
 ```ts
 import {
@@ -1154,7 +1208,7 @@ await parked // resolves
 
 Every one is pure and side-effect-free: the guards and predicates never throw, and the builders and synthesizers are deterministic given the same input. The throwing snapshot boundary is `cloneWorkflowSnapshot`, which owns and validates a hostile snapshot and raises a `RESTORE` `WorkflowError`.
 
-**The execution substrate.** Beneath the engine sit the shipped primitives it composes. The `Scheduler` paces the host between work; the queue-backed `Runner` bounds and drives a set of units; a `Controller` is the per-unit handle a handler receives; and the `WorkflowRunner` engine composes all of it over the entity tree — with `TaskController` mirroring `Controller` one tier up, as the handle a workflow-task `WorkflowFunction` receives (its read-up `results()` is the inter-task data-flow map). The patterns below build that stack up from pacing to driving to the per-unit handle.
+**The execution substrate.** Beneath the engine sit the shipped primitives it composes. The `Scheduler` paces the host between work; the queue-backed `Runner` bounds and drives a set of units; a `ControllerInterface` is the per-unit handle a handler receives; and the `WorkflowRunner` engine composes all of it over the entity tree — with `TaskControllerInterface` mirroring `ControllerInterface` one tier up, as the handle a workflow-task `WorkflowFunction` receives (its read-up `results()` is the inter-task data-flow map). The patterns below build that stack up from pacing to driving to the per-unit handle.
 
 ### Pacing with the scheduler — a cooperative loop
 
@@ -1220,7 +1274,7 @@ async function pump(work: () => void, signal: AbortSignal): Promise<void> {
 import { createRunner } from '@orkestrel/workflow'
 
 // Ordered (concurrency defaults to 1): each unit runs to completion before the next.
-const runner = createRunner<Job, Output>({ handler: (controller) => run(controller.input) })
+const runner = createRunner<Job, Output>({ handler: (controller) => compile(controller.input) })
 
 const outputs = await runner.execute(jobs) // results in input order
 ```
@@ -1244,7 +1298,7 @@ const responses = await runner.execute(urls)
 // (its result is a RunnerEntryOptions — { retries?, timeout? }). An omitted field falls back.
 const runner = createRunner<Job, Output>({
 	retries: 0, // the default for every unit…
-	handler: (controller) => run(controller.input, controller.signal),
+	handler: (controller) => compile(controller.input, controller.signal),
 	entries: (job) => (job.flaky ? { retries: 3 } : {}), // …overridden per input
 })
 ```
@@ -1274,9 +1328,9 @@ const results = await runner.execute(roots) // every declared root first, then e
 
 `spawn` returns the sibling's result promise, but the run drains it whether or not you await it — so fan out and return. All declared inputs are reserved before `start` is emitted, so even a public `spawn()` from a start listener is ordered after the complete declared list; Queue dispatch remains asynchronous, so `start` still precedes handler execution. On a bounded runner, awaiting a spawn _inline_ from a slot-holding handler can deadlock; let the runner drain the closure instead.
 
-### The per-unit `Controller` handle — `wait` / `spawn` / `abort`
+### The per-unit `ControllerInterface` handle — `wait` / `spawn` / `abort`
 
-A `Runner` handler receives a `Controller` — the per-unit handle: its `id` / `input` / `signal` data plus `wait` (park until this unit is cancelled), `spawn` (fan out a sibling), and `abort` (cancel THIS unit, firing its signal with an optional reason).
+A `Runner` handler receives a `ControllerInterface` — the per-unit handle: its `id` / `input` / `signal` data plus `wait` (park until this unit is cancelled), `spawn` (fan out a sibling), and `abort` (cancel THIS unit, firing its signal with an optional reason).
 
 ```ts
 import { createRunner } from '@orkestrel/workflow'
@@ -1287,7 +1341,7 @@ const runner = createRunner<Job, Output>({
 		for (const child of discover(controller.input)) {
 			void controller.spawn(child) // fan out a sibling unit through the same queue
 		}
-		const work = run(controller.input, controller.signal) // honour the signal
+		const work = compile(controller.input, controller.signal) // honour the signal
 		await Promise.race([work, controller.wait()]) // wait() parks until cancelled — never a timer
 		if (overBudget(controller.input)) controller.abort(new Error('over budget')) // cancel THIS unit
 		return work
@@ -1302,7 +1356,7 @@ A handler observes its `controller.signal` (pass it to `fetch` / child aborts) a
 ```ts
 const runner = createRunner<Job, Output>({
 	concurrency: 4,
-	handler: (controller) => run(controller.input, controller.signal),
+	handler: (controller) => compile(controller.input, controller.signal),
 })
 const run = runner.execute(jobs)
 
@@ -1317,30 +1371,15 @@ await aborting
 await runner.destroy()
 ```
 
-### Deterministic async waits with `createDeferred`
-
-`createDeferred` builds a `DeferredInterface` — a promise whose `resolve` / `reject` are exposed to the caller, for driving an async scenario's settlement externally instead of relying on a real delay:
-
-```ts
-import { createDeferred } from '@orkestrel/workflow'
-
-const deferred = createDeferred<string>()
-
-// Somewhere else, on your own schedule:
-deferred.resolve('done')
-
-await deferred.promise // 'done'
-```
-
 ### Observing the `Runner`
 
-The `Runner` exposes a typed `emitter` (AGENTS §13) carrying its run lifecycle for fire-and-forget observers — logging, metrics, tracing. Subscribe via `runner.emitter.on(...)`, or wire initial listeners through the reserved `on?` option; supply an `error?` handler to receive a listener's throw. **Emitting is observation-only**: every event fires strictly AFTER the relevant unit-launch / settle / drain transition, so a listener can never change what the run does — and a throwing listener can never corrupt it.
+The `Runner` exposes a typed `emitter` carrying its run lifecycle for fire-and-forget observers — logging, metrics, tracing. Subscribe through `runner.emitter.on(...)`, or wire initial listeners through the reserved `on?` option; supply an `error?` handler to receive a listener's throw. **Emitting is observation-only**: every event fires strictly AFTER the relevant unit-launch / settle / drain transition, so a listener can never change what the run does — and a throwing listener can never corrupt it.
 
 ```ts
 import { createRunner } from '@orkestrel/workflow'
 
 const runner = createRunner<Job, Output>({
-	handler: (controller) => run(controller.input),
+	handler: (controller) => compile(controller.input),
 	on: { finish: (results) => console.log(`done: ${results.length}`) }, // initial listener
 })
 
@@ -1362,21 +1401,21 @@ The `RunnerEventMap<TResult>` vocabulary:
 
 A successful run fires `start` → `unit`/`settle` per unit → `finish`. A failure fires `fail` (the first failure only — later failures are ignored) then the run-level `abort`, and `execute` rejects WITHOUT a `finish`. A user `abort` fires `abort` (the units are cancelled, not failed, so no `fail`).
 
-**The listener-isolation safety guarantee.** A listener throw is NEVER allowed to escape into the engine: the emitter isolates it and routes it to its OWN `error` handler (the `error` option, surfaced as `(error, event)`), NOT to a domain event — so a buggy observer is isolated yet not silently lost. Because every emit sits after the unit-launch / settle / drain transition AND is isolated, a buggy observer **cannot corrupt the one-shot / fail-fast / spawn-tracking engine**: the outstanding-unit count gate stays balanced (the run still drains, never truncates or hangs) and fail-fast still rejects with the first error.
+**The listener-isolation safety contract.** A listener throw is NEVER allowed to escape into the engine: the emitter isolates it and routes it to its OWN `error` handler (the `error` option, surfaced as `(error, event)`), NOT to a domain event — so a buggy observer is isolated yet not silently lost. Because every emit sits after the unit-launch / settle / drain transition AND is isolated, a buggy observer **cannot corrupt the one-shot / fail-fast / spawn-tracking engine**: the outstanding-unit count gate stays balanced (the run still drains, never truncates or hangs) and fail-fast still rejects with the first error.
 
 ### Practices
 
-- **Author the definition as DATA** — reference behavior BY NAME (`run: '…'`, a plain string); register the handlers in `options.functions` at `execute`, not in the definition.
-- **Express a dependency structurally** — put a task that needs another's output in a LATER phase; the phase boundary is the only dependency edge, and it guarantees the inputs are ready.
+- **Author the definition as DATA** — reference behavior BY NAME (`behavior: '…'`, a plain string); register the handlers in `options.functions` at `execute`, not in the definition.
+- **Express a dependency structurally** — put a task that needs another's output in a LATER phase; the phase boundary is the only dependency edge, and the inputs are ready after it.
 - **Lean on the contract** — `createWorkflowContract().parse` an untrusted authored blob (an LLM tool arg) into a `WorkflowDefinition` or `undefined`; never trust raw JSON.
-- **Choose `bail` deliberately** — `false` (graceful) when failures are useful data and every phase should run; `true` (halt) for transaction semantics where the first failure aborts the rest.
+- **Choose `bail` deliberately** — `false` (graceful) when failures are useful data and every phase must run; `true` (halt) for transaction semantics where the first failure aborts the rest.
 - **Hold the live tree the engine returns** — `result.workflow` is the source of truth; navigate it (`phase(id)?.task(id)?.status` / `.result`) and read the result tree (`results()`).
 - **Snapshot for durability** — `workflow.snapshot()` is the pure-JSON payload; `createRestoredWorkflow` rebuilds an identical live tree, and the `WorkflowStore` seam persists it (W-d).
 - **`yield` to stay cooperative** — between units of long-running work, `await scheduler.yield()` so the host can flush I/O, fire timers, and paint; never busy-loop a tight synchronous loop that starves the host.
-- **Always thread a `signal` through the scheduler** — pass `options.signal` through `yield` / `delay` so cancellation rejects the pending wait at once (with the signal's `reason`) instead of stalling until the interval elapses; an aborted loop should fall out via that rejection, not a polled flag alone.
+- **Always thread a `signal` through the scheduler** — pass `options.signal` through `yield` / `delay` so cancellation rejects the pending wait at once (with the signal's `reason`) instead of stalling until the interval elapses; an aborted loop must fall out through that rejection, not a polled flag alone.
 - **`delay` for spacing, `yield` for a turn** — reach for `delay(ms)` to space retries or paced work; reach for `yield()` (a zero-delay turn) when you only need to let the host run before continuing.
 - **Type against `SchedulerInterface`** — depend on the interface, not a concrete class, and pick the backend at the composition root, so the same loop runs on any host.
-- **Honour `controller.signal`** — pass it to `fetch` / child aborts and bail when it fires, so a fail-fast or an `abort` actually stops in-flight units instead of just abandoning their results.
+- **Honour `controller.signal`** — pass it to `fetch` / child aborts and bail when it fires, so a fail-fast or an `abort` stops in-flight units instead of abandoning their results.
 - **Fan out, don't await inline** — `spawn` siblings and return; the run drains the whole closure. Awaiting a spawn inline from a bounded handler risks a slot-starvation deadlock.
 - **`concurrency: 1` for ordering** — there is no separate sequential flag; a concurrency of one runs units one-at-a-time.
 - **One-shot** — a `Runner` runs one `execute`; create a new one to run another set.
@@ -1390,7 +1429,7 @@ A successful run fires `start` → `unit`/`settle` per unit → `finish`. A fail
 - [`tests/src/core/helpers.test.ts`](../tests/src/core/helpers.test.ts) — status/lineage/snapshot helpers, bounded silence inheritance, `scheduleHost` setup/cancellation race arbitration with exact falsy failures, hostile caller signal methods, and throwing cancellation closures after caller abort or host failure, plus the snapshot-decode leaves: remaining-budget recovery, established strict halt boundaries, exhausted recovery failures, monotonic stamps, exact-restore separation, and hostile inputs.
 - [`tests/src/core/cloners.test.ts`](../tests/src/core/cloners.test.ts) — immutable activity cloning, hostile/revoked proxy containment, one-read getters, no alias retention, stamp-vs-restore `updated` handling, and exact wrong-storage-key `RESTORE` evidence.
 - [`tests/src/core/validators.test.ts`](../tests/src/core/validators.test.ts) — total activity, task-failure, task-result, and owned-snapshot guards over valid, malformed, cyclic, throwing-proxy/getter/ownKeys, and revoked inputs.
-- [`tests/src/core/shapers.test.ts`](../tests/src/core/shapers.test.ts) — the shape descriptors: the `taskShape` / `phaseShape` / `workflowShape` mirroring the hand-written definition interfaces, the per-field `description`s riding the `run` string + key fields (Rank 1), `describedLiteral`.
+- [`tests/src/core/shapers.test.ts`](../tests/src/core/shapers.test.ts) — the shape descriptors: the `taskShape` / `phaseShape` / `workflowShape` mirroring the hand-written definition interfaces, the per-field `description`s riding the `behavior` string + key fields (Rank 1), `describedLiteral`.
 - [`tests/src/core/tasks/Task.test.ts`](../tests/src/core/tasks/Task.test.ts) — lifecycle plus whole-frame activity, validation/immutability, pulse, repeatable silence rearming, task signal, terminal cleanup, and cooperative pause.
 - [`tests/src/core/phases/Phase.test.ts`](../tests/src/core/phases/Phase.test.ts) — the derived middle tier: child-transition cascade, `skip` / `stop` override, results, snapshot/restore, and isolated lifecycle emission including idempotent pause/resume.
 - [`tests/src/core/Workflow.test.ts`](../tests/src/core/Workflow.test.ts) — the derived root: bail-aware cascade, result tree, override, snapshot/restore, teardown, and isolated lifecycle emission including idempotent pause/resume.
@@ -1400,15 +1439,16 @@ A successful run fires `start` → `unit`/`settle` per unit → `finish`. A fail
 - [`tests/src/core/tasks/TaskController.test.ts`](../tests/src/core/tasks/TaskController.test.ts) — folded cancellation, lineage gates, ancestor terminal-event wakeups, activity checkpoints, input, and live result read-up.
 - [`tests/src/core/WorkflowRunner.test.ts`](../tests/src/core/WorkflowRunner.test.ts) — sequencing/concurrency/retry/cancellation plus ancestor terminal-event gate wakeups, graceful in-flight completion, retry activity reset, stale-attempt refusal, listener balance, and paused-attempt deadline exhaustion.
 - [`tests/src/core/factories.test.ts`](../tests/src/core/factories.test.ts) — definition construction, exact hostile-boundary restore, handler completeness, and snapshot diagnostics.
-- [`tests/src/core/WorkflowPersistence.test.ts`](../tests/src/core/WorkflowPersistence.test.ts) — coalesced writes including synchronous store-triggered mutation with maximum one active writer and the latest final snapshot, skipped-tier best-effort writes, attempt checkpoints awaited before dispatch, and persistence faults as data.
+- [`tests/src/core/WorkflowPersistence.test.ts`](../tests/src/core/WorkflowPersistence.test.ts) — coalesced writes including synchronous store-triggered mutation with maximum one active writer and the most recent final snapshot, skipped-tier best-effort writes, attempt checkpoints awaited before dispatch, and persistence faults as data.
 - [`tests/src/core/stores/MemoryWorkflowStore.test.ts`](../tests/src/core/stores/MemoryWorkflowStore.test.ts) — the in-memory store (W-d): a `set` → `get` round-trip returning the same `WorkflowSnapshot` and `createRestoredWorkflow`'ing an IDENTICAL live tree, for BOTH an all-pending snapshot (`createWorkflow(...).snapshot()`) and a real SETTLED one driven through `createWorkflowRunner().execute` (real `completed` statuses + recorded results); the driver-swap parity case (the retrieved payload survives `JSON.parse(JSON.stringify(...))` AND restores identically from the JSON-revived form — proving it persists unchanged across any JSON / SQLite / IndexedDB backend); `set` replacing under the same id; and `delete` (then `get` ⇒ `undefined`, an absent-id `delete` a no-op, an absent-id `get` ⇒ `undefined`). REAL data throughout (a real `WorkflowDefinition` + real `WorkflowFunction` handlers), no mocks.
 - [`tests/src/core/stores/DatabaseWorkflowStore.test.ts`](../tests/src/core/stores/DatabaseWorkflowStore.test.ts) — the driver-pluggable twin (W-d): real-table round trips and restore parity, upsert/delete/absence, exact valid-payload/wrong-row-key `RESTORE` evidence, malformed-row normalization, default-driver smoke, and distinct-id isolation. REAL `WorkflowSnapshot` values throughout, NO mocks.
 - [`tests/src/core/Runner.test.ts`](../tests/src/core/Runner.test.ts) — `execute` runs every input and returns results in declared order (even with out-of-order completion); spawned siblings and start-listener public spawns run after every declared result; nested spawns drain transitively; an entries-resolver graceful stop remains never-dispatched while resolver/property throws remain failures; bounded concurrency caps handlers in flight; `retries` re-run a flaky unit; fail-fast and abort cancellation; one-shot, empty-run lifecycle reentry, active/stopped reporting, and idempotent destroy.
+- [`tests/src/core/RunHolder.test.ts`](../tests/src/core/RunHolder.test.ts) — the run-scoped cell: it starts empty, `hold(runner)` takes the phase runner and `hold()` releases it, a later `hold` swaps to the phase that is starting, a closure armed before any phase reads the live runner, and two holders stay independent so a nested run cannot clobber the outer one.
 - [`tests/src/core/Controller.test.ts`](../tests/src/core/Controller.test.ts) — `wait()` resolves when the unit's signal aborts and stays pending across real delays until it does (promise-parked, not timer-polled), resolving immediately if already aborted; `id` / `input` / `signal` / `aborted` reflect the unit; `abort(reason)` fires the signal with the reason; `spawn` delegates to the injected callback.
 - [`tests/src/core/Scheduler.test.ts`](../tests/src/core/Scheduler.test.ts) — real-clock macrotask ordering, pre-abort and pending-abort reason fidelity, minimum elapsed delay, settle-once cleanup, untouched caller listener methods, shared-signal cancellation, concurrent deadlines, host coercion for zero / negative / `NaN`, priority composition, and modest resolved/aborted churn.
 - [`tests/src/server/NodeScheduler.test.ts`](../tests/src/server/NodeScheduler.test.ts) — the same real-clock contract over `setImmediate` / `setTimeout`, including exact primitive/string/object abort reasons, untouched caller listener methods, host timer coercion, cleanup, concurrent deadlines, and modest churn. Node may emit its native warning for negative or `NaN` timer input while applying host coercion.
 - [`tests/src/server/factories.test.ts`](../tests/src/server/factories.test.ts) — `createNodeScheduler` returns a working `SchedulerInterface` (shape + a real yield/delay round-trip), abort-aware, independent stateless instances.
-- [`tests/src/browser/BrowserScheduler.test.ts`](../tests/src/browser/BrowserScheduler.test.ts) — the browser backend in REAL headless Chromium (where `scheduler.postTask` exists): `yield()` resolves via the real `postTask` callback, every priority is accepted, abort rejects with the verbatim `signal.reason` and cancels the posted task, `delay` timing, and caller listener methods remain untouched.
+- [`tests/src/browser/BrowserScheduler.test.ts`](../tests/src/browser/BrowserScheduler.test.ts) — the browser backend in REAL headless Chromium (where `scheduler.postTask` exists): `yield()` resolves through the real `postTask` callback, every priority is accepted, abort rejects with the verbatim `signal.reason` and cancels the posted task, `delay` timing, and caller listener methods remain untouched.
 - [`tests/src/browser/FrameScheduler.test.ts`](../tests/src/browser/FrameScheduler.test.ts) — the frame backend in REAL Chromium over `requestAnimationFrame`: `yield()` resolves in a real frame callback, abort cancels the rAF handle and rejects with the verbatim reason, `delay` timing, and caller listener methods remain untouched.
 - [`tests/src/browser/IdleScheduler.test.ts`](../tests/src/browser/IdleScheduler.test.ts) — the idle backend in REAL Chromium over `requestIdleCallback`: `yield()` resolves in a real idle callback, abort cancels the idle handle and rejects with the verbatim reason, `delay` timing, and caller listener methods remain untouched; the `setTimeout(0)` fallback is covered by the guard logic + a note.
 - [`tests/src/browser/factories.test.ts`](../tests/src/browser/factories.test.ts) — `createBrowserScheduler` / `createFrameScheduler` / `createIdleScheduler` each return a working `SchedulerInterface` (shape + a real yield/delay round-trip), abort-aware, independent instances, in real Chromium.
@@ -1418,6 +1458,6 @@ A successful run fires `start` → `unit`/`settle` per unit → `finish`. A fail
 - [`contract.md`](contract.md) — the shape DSL and `createContract` the workflow definition contract is built on, and the `Result` a `TaskResult` boxes.
 - The `@orkestrel/tool` package — generic definitions, a total call-envelope guard, invocation, and registry primitives an application may compose at its integration boundary. It does not validate arguments against schemas, and Workflow does not depend on it.
 - [`abort.md`](abort.md) · [`timeout.md`](timeout.md) · [`budget.md`](budget.md) — the run-level bounds the runner (`Runner` / `WorkflowRunner`) folds; the scheduler (pacing) is documented in this guide.
-- [`emitter.md`](emitter.md) — the typed §13 emitter each live entity owns.
-- [`AGENTS.md`](../AGENTS.md) — the rules; §4.4 the `bail` boolean toggle, §10 the lifecycle vocabulary, §12 errors & `Result`, §14 totality, §22 documentation-as-contracts.
+- [`emitter.md`](emitter.md) — the typed emitter each live entity owns.
+- [`AGENTS.md`](../AGENTS.md) — the rules: § Design laws for the `bail` boolean toggle, `.claude/rules/names.md` § Fixed lifecycle vocabulary, `.claude/rules/typescript.md` § Errors and outcomes for `Result`, and `.claude/rules/documentation.md` § Parity for documentation as a contract.
 - [`README.md`](README.md) — the guides index.
