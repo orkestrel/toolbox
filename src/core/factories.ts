@@ -518,7 +518,7 @@ export function createWorkflowTool(
  * genuine workspace-domain failure propagates `@orkestrel/workspace`'s typed `WorkspaceError`.
  * EITHER drives a caller-supplied {@link WorkspaceToolOptions.manager} directly, OR
  * constructs a fresh `WorkspaceManagerInterface` (`@orkestrel/workspace`) over
- * {@link import('./types.js').WorkspaceToolOptions.store} (via `@orkestrel/workspace`'s
+ * {@link import('./types.js').WorkspaceToolOptions.store} (through `@orkestrel/workspace`'s
  * `createWorkspaceManager`); neither given constructs a manager backed by
  * `@orkestrel/workspace`'s in-memory store default.
  *
@@ -591,9 +591,9 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 					? { id: op.id, switched: false }
 					: { id: switched.id, switched: true, files: switched.count }
 			}
-			// Edit / read ops target the ACTIVE workspace. A WRITING op ensures a target — auto-creating
-			// + activating a default workspace when none is active (the no-active ergonomic seam) — while
-			// a pure-READ op returns the empty result against no active workspace rather than creating one.
+			// Edit / read ops target the ACTIVE workspace. A WRITING op auto-creates and activates a
+			// default workspace when none is active (the no-active ergonomic seam) — while a pure-READ
+			// op returns the empty result against no active workspace rather than creating one.
 			const active = manager.active
 			switch (op.operation) {
 				case 'read':
@@ -669,7 +669,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
  * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').agentToolShape}, assembles an `AgentJobInput` (`task` seeds the
  * sub-agent's conversation as a single `user` message; `provider` / `tools` / `system` fall
- * back to the tool's own {@link import('./types.js').AgentToolOptions} defaults), rehydrates the sub-agent via
+ * back to the tool's own {@link import('./types.js').AgentToolOptions} defaults), rehydrates the sub-agent through
  * `registry.build`, runs it with `agent.generate()`, and returns the settled
  * `AgentResult.content` string (the sub-agent's final text). A missing / unresolvable `provider`, or a malformed call, THROWS a typed `TOOL`
  * {@link import('./errors.js').ToolboxError}; a delegation that would exceed
@@ -766,7 +766,7 @@ export function createAgentTool(
  * tool.description` — a lean one-sentence summary stands in for a tool's full teaching
  * description when `summary` is set, keeping the advertised tool list compact for a small model.
  * This tool is the on-demand expansion seam: given a registered tool's `name`, it looks the tool
- * up via `tools.tool(name)` and returns its full `description` (falling back to `summary` when a
+ * up through `tools.tool(name)` and returns its full `description` (falling back to `summary` when a
  * tool has no `description` of its own, then a placeholder when it has neither).
  *
  * The universal tool-handler contract: validates the call args against
@@ -911,15 +911,15 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 
 /**
  * Builds an LLM-callable answer tool — the ANSWER side of the terminal seam. Lists the forms
- * currently addressed to {@link import('./types.js').AnswerToolOptions.to}, or answers one of
+ * addressed to {@link import('./types.js').AnswerToolOptions.to}, or answers one of
  * them by id.
  *
  * @remarks
  * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').answerToolShape} (discriminated by `operation`). `'pending'`
- * returns a compact list (`{ id, from, schema }`) of every form currently addressed to `to`.
+ * returns a compact list (`{ id, from, schema }`) of every form addressed to `to`.
  * `'answer'` looks the form up by `id`, narrows the supplied `values` through `@orkestrel/form`,
- * and applies it via
+ * and applies it through
  * `TerminalManagerInterface.answer` — a rejected / unknown / unresolvable outcome
  * (`TerminalAnswerResult.error`) re-surfaces as a typed `ANSWER` `ToolboxError`; success returns
  * `{ answered: id }`. `to` is FIXED at construction
@@ -1058,9 +1058,9 @@ export function createDatabaseDefinitionStore(
  *
  * `'records'` clamps its `query` to
  * {@link import('./types.js').DatabaseToolOptions.limit} (default
- * {@link import('./constants.js').DATABASE_TOOL_LIMIT}) via
+ * {@link import('./constants.js').DATABASE_TOOL_LIMIT}) through
  * {@link import('./helpers.js').clampQuery}, reporting `truncated` when storage held more rows
- * than the cap. Every operation's `query` is normalized via
+ * than the cap. Every operation's `query` is normalized through
  * {@link import('./helpers.js').normalizeQuery} (defaults an omitted condition `connector` to `'and'`).
  * When {@link import('./types.js').DatabaseToolOptions.readonly} is `true`, every mutating
  * operation throws a typed `TOOL` `ToolboxError` before doing anything. A configured
@@ -1307,7 +1307,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * dispatches to the matched operation, RETURNING a plain result on success.
  *
  * `'load'` / `'find'` expand the call's FLAT dot-path `include` list into a live
- * `@orkestrel/relation` `Include` tree via {@link import('./helpers.js').expandInclude}, capped
+ * `@orkestrel/relation` `Include` tree through {@link import('./helpers.js').expandInclude}, capped
  * at {@link import('./types.js').RelationToolOptions.depth} (default
  * {@link import('./constants.js').RELATION_TOOL_DEPTH}) — a path exceeding the cap, or carrying an
  * empty segment, throws a typed `TOOL` error. `'load'` dispatches on whether `key` is an array
@@ -1429,8 +1429,8 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * @remarks
  * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').inferToolShape} (`samples` non-empty, `format` / `enum` optional
- * booleans, `candidates` an optional array), infers a schema via `@orkestrel/contract`'s
- * `samplesToSchema`, wraps a non-object root as `{ value: <schema> }` via `schemaToObject` (mirrors
+ * booleans, `candidates` an optional array), infers a schema through `@orkestrel/contract`'s
+ * `samplesToSchema`, wraps a non-object root as `{ value: <schema> }` through `schemaToObject` (mirrors
  * the tool-parameters convention every other `create*Tool` factory advertises), and RETURNS the
  * resulting parameters record. An empty `samples` array fails `inferToolShape`'s `min: 1` bound —
  * `contract.parse` returns `undefined` and the handler throws a typed `TOOL`
@@ -1438,7 +1438,7 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  *
  * When `candidates` is ABSENT, the return is the bare parameters record — unchanged from before
  * this array existed. When `candidates` is PRESENT (any array, including empty), the handler
- * compiles a SEPARATE per-call contract from the RAW inferred schema (via `@orkestrel/contract`'s
+ * compiles a SEPARATE per-call contract from the RAW inferred schema (through `@orkestrel/contract`'s
  * `schemaToShape`, NOT the `schemaToObject`-wrapped parameters — a bare-value sample checks a
  * bare-value candidate) and returns `{ parameters, checks }`, one check per candidate at the same
  * index. Every entry has a UNIFORM shape — `{ index, valid, coercible }`, with `faults` added ONLY
@@ -1446,9 +1446,9 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * OPPOSITE of {@link createEndpointTool}'s enforcement, which coerces (`7` becomes `'7'` for a
  * string slot) — here a conformance report answers "does this value conform AS-IS": `7` against a
  * string slot is `valid: false`, full stop. `coercible` answers a SEPARATE question — "would the
- * NORMALIZING parse accept this value", i.e. would {@link createEndpointTool}'s default enforcement
+ * NORMALIZING parse accept this value", that is would {@link createEndpointTool}'s default enforcement
  * admit it (`checker.parse(candidate) !== undefined`) — computed for every candidate regardless of
- * `valid`; by the house parse/guard round-trip guarantee, a `valid: true` entry is
+ * `valid`; by the house parse/guard round-trip, a `valid: true` entry is
  * ALWAYS also `coercible: true`. `@orkestrel/contract`'s `explain` mirrors the normalizing
  * `parse`'s leniency, not `is`'s strictness — so a strictly-invalid but coercible candidate (`7`
  * against a string slot) yields `{ valid: false, coercible: true, faults: [] }`: EMPTY faults, since
@@ -1457,7 +1457,7 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * (a boolean in a string slot), a missing required key, or an out-of-enum value — where
  * `coercible: false`. `checker.is` / `.parse` / `.explain` are all total over JSON-safe input — a
  * JSON-safe hostile candidate (a `__proto__`-carrying object, deeply nested data) reaches all three
- * and yields a bounded, non-throwing per-candidate verdict; a NON-JSON-safe candidate (e.g. a
+ * and yields a bounded, non-throwing per-candidate verdict; a NON-JSON-safe candidate (for example a
  * throwing-getter `Proxy`) never reaches the checker at all — it fails the OUTER `args` parse
  * against {@link import('./shapers.js').inferToolShape} and rejects the WHOLE call with the same
  * `TOOL` {@link import('./errors.js').ToolboxError} a malformed `samples`/`format`/`enum` throws,
@@ -1541,16 +1541,16 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * {@link createInferTool}, is a standalone inference utility).
  *
  * @remarks
- * `parameters` is inferred ONCE at construction from `definition.samples` via
+ * `parameters` is inferred ONCE at construction from `definition.samples` through
  * `@orkestrel/contract`'s `samplesToSchema` (tuned by {@link import('./types.js').EndpointToolOptions}'s
- * `format` / `enum`), wrapping a non-object root as `{ value: <schema> }` via `schemaToObject` —
+ * `format` / `enum`), wrapping a non-object root as `{ value: <schema> }` through `schemaToObject` —
  * the SAME object-rooted schema is both the ADVERTISED `parameters` and, by default
  * ({@link import('./types.js').EndpointToolOptions.validate} `true`), the ENFORCED contract:
  * `@orkestrel/contract`'s `schemaToShape` compiles it ONCE (through `createContract`) into a
  * `ContractInterface` whose `.parse` runs on every call's `args` before `definition.execute` — a
  * NORMALIZING parse, not a strict type check: a scalar is COERCED to its inferred type where the
  * house parsers coerce (a number to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/
- * `'false'`/`1`/`0`), so `definition.execute` receives the COERCED value (e.g. `7` sent for a
+ * `'false'`/`1`/`0`), so `definition.execute` receives the COERCED value (for example `7` sent for a
  * string slot arrives as `'7'`), not the raw call value. A call whose `args` fails to parse into
  * a record — a required key missing, or a value not coercible to its slot's type — THROWS a
  * typed `TOOL` {@link import('./errors.js').ToolboxError} carrying the compiled contract's

@@ -643,7 +643,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 		const id = pending[0]?.id
 		if (id === undefined) throw new Error('expected a parked prompt')
 
-		// Expire it via the injected timer BEFORE posting the answer.
+		// Expire it through the injected timer BEFORE posting the answer.
 		churn.fire(0)
 		await asked.catch(() => {})
 		expect(manager.pending('assistant')).toEqual([])

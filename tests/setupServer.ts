@@ -1,8 +1,8 @@
 /**
- * Read every chunk currently buffered on an SSE response body.
+ * Read every chunk buffered on an SSE response body.
  *
  * @param response - Streaming response to drain until it closes or becomes idle
- * @returns The currently available decoded text
+ * @returns The available decoded text
  */
 export async function readAvailable(response: Response): Promise<string> {
 	const reader = response.body?.getReader()

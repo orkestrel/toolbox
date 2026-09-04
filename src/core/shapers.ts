@@ -43,7 +43,7 @@ export const promptToolShape = objectShape({
 export const answerToolShape = unionShape(
 	objectShape({
 		operation: literalShape(['pending'], {
-			description: 'List the forms currently addressed to this terminal.',
+			description: 'List the forms addressed to this terminal.',
 		}),
 	}),
 	objectShape({
@@ -238,7 +238,7 @@ export const workflowStepsShape = objectShape({
  * Describes the shape of a {@link import('./types.js').WorkspaceOperation} — a descriptive tagged union
  * over the workspace edit, read, and navigation operations, discriminated by the `operation`
  * literal (never a bare `kind`). Each variant leads with its `operation`
- * discriminant then its FLAT fields, every field via `stringShape` / `optionalShape` /
+ * discriminant then its FLAT fields, every field through `stringShape` / `optionalShape` /
  * `integerShape({ min: 1 })` / `booleanShape`, each carrying a strong field-level `description`.
  *
  * @remarks
@@ -487,7 +487,7 @@ export const queryShape = objectShape({
  *
  * @remarks
  * Every arm carries `id` (the database id). `'create'` carries `tables` (the
- * {@link import('./types.js').TableSpec} column DSL, compiled via
+ * {@link import('./types.js').TableSpec} column DSL, compiled through
  * {@link import('./compilers.js').expandTables}); `'get'` / `'update'` / `'remove'` carry `key`
  * (one key or an array of keys, positional); `'add'` / `'set'` carry `row` (one row or an array of
  * rows); `'update'` also carries `changes` (a loose partial row); `'records'` / `'count'` /
@@ -602,11 +602,11 @@ export const singleKeyShape = unionShape(
 	numberShape({ description: 'The owning row key.' }),
 )
 
-/** Describes the flat dot-path relation include list, expanded via {@link import('./helpers.js').expandInclude}. */
+/** Describes the flat dot-path relation include list, expanded through {@link import('./helpers.js').expandInclude}. */
 export const includeShape = optionalShape(
 	arrayShape(
 		stringShape({
-			description: 'A dot-separated chain of relation names, e.g. "contacts.account".',
+			description: 'A dot-separated chain of relation names, for example "contacts.account".',
 		}),
 		{ description: 'Which relations to attach, as flat dot-paths.' },
 	),

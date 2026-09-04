@@ -1114,7 +1114,7 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 	})
 })
 
-describe('createWorkspaceTool — explicit store (persistence observable via the store)', () => {
+describe('createWorkspaceTool — explicit store (persistence observable through the store)', () => {
 	it('a write through the tool is retrievable through a fresh manager over the SAME store', async () => {
 		const store = createMemoryWorkspaceStore()
 		const tool = createWorkspaceTool({ store })
@@ -1187,7 +1187,7 @@ describe('createWorkspaceTool — precedence: manager wins when BOTH manager and
 
 // ── createAgentTool — sub-agent delegation ────────────────────────────────────
 
-describe('createAgentTool — schema accept/reject via agentToolShape', () => {
+describe('createAgentTool — schema accept/reject through agentToolShape', () => {
 	it('a malformed call (missing/empty task) THROWS a typed TOOL ToolboxError', async () => {
 		const registry = createAgentRegistry({
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
@@ -1347,7 +1347,7 @@ describe('createAgentTool — optional conversation store', () => {
 		expect(result).toBe('no-store-result')
 	})
 
-	it('a store failure surfaces as the tool call`s failure via the manager envelope', async () => {
+	it('a store failure surfaces as the tool call`s failure through the manager envelope', async () => {
 		const failingStore = {
 			get: async () => undefined,
 			set: async () => {
@@ -1435,7 +1435,7 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 		expect(await describeTool.execute({ name: 'agent' })).toBe(agentTool.description)
 	})
 
-	it('an unknown tool name THROWS a typed TOOL ToolboxError via the manager`s error envelope', async () => {
+	it('an unknown tool name THROWS a typed TOOL ToolboxError through the manager`s error envelope', async () => {
 		const manager = createToolManager()
 		const describeTool = createDescribeTool(manager)
 		manager.add(describeTool)
@@ -1464,7 +1464,7 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 // ── createPromptTool / createAnswerTool — the terminal ask/answer seam ───────
 
 describe('createPromptTool / createAnswerTool — the terminal ask/answer seam', () => {
-	it('ask BLOCKS then resolves when the peer answers via the answer tool', async () => {
+	it('ask BLOCKS then resolves when the peer answers through the answer tool', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
@@ -1657,7 +1657,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 
-		// Passing `from`/`to` in args is simply ignored — the shapes don't even accept them, and the
+		// Passing `from`/`to` in args is ignored — the shapes don't even accept them, and the
 		// handler never reads them: an ask still parks under the FIXED `from`, never `spoof`.
 		const pending = Promise.resolve(askTool.execute(createAskCall('reviewer', 'confirm', 'ok?')))
 		pending.catch(() => {})
@@ -2204,7 +2204,7 @@ describe('createDatabaseTool — get', () => {
 })
 
 describe('createDatabaseTool — records (serialized query)', () => {
-	it('conditions/order/limit/offset are honored via the SERIALIZED query form', async () => {
+	it('conditions/order/limit/offset are honored through the SERIALIZED query form', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
 		await tool.execute({
@@ -2589,7 +2589,7 @@ describe('createDatabaseTool — lazy re-mint over a shared store', () => {
 	it('a second tool over the SAME store re-mints the handle; destroy through it deletes the store definition', async () => {
 		const store = createMemoryDefinitionStore()
 		// A shared driver instance (not a fresh one per tool) so the re-minted handle reads the
-		// SAME underlying storage — proving the re-mint itself works, not just that it doesn't throw.
+		// SAME underlying storage — proving the re-mint itself works, not that it doesn't throw.
 		const sharedDriver = createMemoryDriver()
 		const drivers = { memory: () => sharedDriver }
 		const toolA = createDatabaseTool({ store, drivers })
@@ -2709,9 +2709,9 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice
 
 // ── createRelationTool — traverse/edit `@orkestrel/relation` relationships ───
 
-// A shared 4-table relation graph: `accounts` has-many `contacts` and has-through `reps` via
+// A shared 4-table relation graph: `accounts` has-many `contacts` and has-through `reps` through
 // the `accountReps` junction; `contacts` belongs-to `account`; `reps` has-through `accounts`
-// via the SAME junction (the inverse side) — enough shapes to exercise belongs/many/through.
+// through the SAME junction (the inverse side) — enough shapes to exercise belongs/many/through.
 function buildRelationDatabase(): DatabaseInterface {
 	return createDatabase({
 		driver: createMemoryDriver(),
@@ -3334,7 +3334,7 @@ describe('createInferTool', () => {
 			samples: [{ name: 'Ada' }],
 			candidates: [{ name: 7 }],
 		})
-		// contrast: createEndpointTool's enforcement NORMALIZES via `.parse` (7 coerces to '7' and
+		// contrast: createEndpointTool's enforcement NORMALIZES through `.parse` (7 coerces to '7' and
 		// would be accepted); createInferTool's candidate check uses the strict `.is` guard, where a
 		// number is never a string regardless of whether it coerces cleanly. `coercible: true` reports
 		// that the normalizing parse WOULD accept it, and `.explain` mirrors that leniency — so
@@ -3450,7 +3450,7 @@ describe('createInferTool', () => {
 
 		// a throwing-getter Proxy is not a JSON-safe value at all — the outer args parse rejects it
 		// (same shape family as `samples`/`format`/`enum`), surfaced through the EXISTING malformed
-		// -args TOOL error path via the manager envelope, never as an unhandled exception.
+		// -args TOOL error path through the manager envelope, never as an unhandled exception.
 		const proxy = new Proxy(
 			{ name: 'Ada' },
 			{

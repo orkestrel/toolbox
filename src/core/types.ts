@@ -197,7 +197,7 @@ export interface WorkflowToolOptions {
  * @remarks
  * - `manager` — drive THIS manager directly (its `active` workspace is what every edit / read
  *   operation targets). Takes priority over `store` when both are supplied.
- * - `store` — construct a manager over this durable {@link WorkspaceStoreInterface} (via
+ * - `store` — construct a manager over this durable {@link WorkspaceStoreInterface} (through
  *   `@orkestrel/workspace`'s `createWorkspaceManager`) — used only when `manager` is omitted.
  *   The store only backs the manager's own `open` / `save` operations: the tool's edits are
  *   NOT auto-persisted — durability requires an explicit caller `save` on the manager
@@ -277,7 +277,7 @@ export type WorkspaceOperation =
 	 *
 	 * @remarks
 	 * The FLAT range edit — the four positive-integer caret components reassemble into a `Range`
-	 * (`@orkestrel/workspace`) via `rangeOf`. An empty span (`from === to`) inserts; a span past
+	 * (`@orkestrel/workspace`) through `rangeOf`. An empty span (`from === to`) inserts; a span past
 	 * the end is clamped. An inverted / sub-1 range throws `RANGE`; a binary target throws
 	 * `MODALITY`; a missing target throws `MISSING`.
 	 */
@@ -330,7 +330,7 @@ export type WorkspaceOperation =
  *   audit log rather than colliding). Omitted ⇒ no persistence from this tool.
  *
  * Conversation persistence for a delegated sub-agent has TWO independent seams, composable
- * together: this `store` slot persists EACH delegation's conversation individually, and/or an
+ * together: this `store` slot persists EACH delegation's conversation individually, and an
  * `AgentRegistryInterface` built with `AgentRegistryOptions.store` (`@orkestrel/agent`) backs
  * EVERY agent it builds — including ones built through this tool — with a store-backed
  * `ConversationManagerInterface` of its own. Neither is required; either or both may be used.
@@ -400,7 +400,7 @@ export type ToolboxErrorCode =
  *
  * @remarks
  * `name` must match a tool registered on the {@link import('@orkestrel/tool').ToolManagerInterface}
- * the describe tool was built over — it is looked up via `tools.tool(name)`.
+ * the describe tool was built over — it is looked up through `tools.tool(name)`.
  */
 export interface DescribeToolArguments {
 	readonly name: string
@@ -435,7 +435,7 @@ export interface PromptToolOptions {
  *
  * @remarks
  * - `manager` — the terminal manager whose `pending(to)` / `answer(to, id, values)` the tool's
- *   handler calls — `pending` lists the forms currently addressed to `to`, `answer` resolves
+ *   handler calls — `pending` lists the forms addressed to `to`, `answer` resolves
  *   one by `id`. A failed `answer` (`TerminalAnswerError`) re-surfaces as a typed
  *   `ANSWER` {@link import('./errors.js').ToolboxError}.
  * - `to` — the terminal identity this tool lists / answers prompts FOR.
@@ -478,7 +478,7 @@ export type TableSpec = Readonly<
  * @remarks
  * A `DatabaseDefinition` is NEVER a live handle — it is the durable, serializable config a
  * {@link DefinitionStoreInterface} persists and a tool factory turns into a real
- * `@orkestrel/database` `DatabaseInterface` (via `createDatabase` + {@link import('./compilers.js').expandTables})
+ * `@orkestrel/database` `DatabaseInterface` (through `createDatabase` + {@link import('./compilers.js').expandTables})
  * on demand. `primary` maps table names to primary-key columns; `indexes` maps table names to
  * index column groups; `version` opts a capable driver into open-time schema reconciliation.
  */
@@ -551,7 +551,7 @@ export interface ClampedQuery {
  * store, driver registry, key generator, row cap, timeout, and readonly gate the tool composes.
  *
  * @remarks
- * - `databases` — live `DatabaseInterface` handles to seed the tool's cache with (e.g. a
+ * - `databases` — live `DatabaseInterface` handles to seed the tool's cache with (for example a
  *   caller-constructed database it manages alongside store-backed ones); keyed by the id a
  *   call's `id` field addresses.
  * - `store` — the {@link DefinitionStoreInterface} the `'create'` operation persists its
@@ -564,7 +564,7 @@ export interface ClampedQuery {
  * - `generator` — the optional `KeyFunction` (`@orkestrel/database`) every minted database is
  *   constructed with, used when a written row lacks its primary key. Omitted delegates to the
  *   database's default generator.
- * - `limit` — the `'records'` row cap — via {@link import('./helpers.js').clampQuery}
+ * - `limit` — the `'records'` row cap — through {@link import('./helpers.js').clampQuery}
  *   — enforce when a call's `query.limit` is omitted or exceeds it. Defaults to
  *   {@link import('./constants.js').DATABASE_TOOL_LIMIT}.
  * - `timeout` — a nonnegative safe-integer number of milliseconds. A fresh
@@ -661,7 +661,7 @@ export type EndpointHandler = (
  * typed `TOOL` {@link import('./errors.js').ToolboxError} at CONSTRUCTION when it is empty,
  * since an empty sample set cannot infer a schema. By DEFAULT ({@link EndpointToolOptions.validate}
  * `true`) `execute` receives the PARSED, NORMALIZED args record — a copy of the model-supplied
- * `args` with each scalar coerced to its inferred type (e.g. a number sent for a string slot
+ * `args` with each scalar coerced to its inferred type (for example a number sent for a string slot
  * arrives coerced to a string), checked against the same schema advertised as `parameters` — and
  * a call with a missing required key or a non-coercible value never reaches `execute` at all (see
  * {@link EndpointToolOptions.validate}). With
@@ -692,7 +692,7 @@ export interface EndpointDefinition {
  * `ContractInterface` used to `parse` every call's `args` before `execute` runs — a NORMALIZING
  * parse: a scalar value is COERCED to its inferred type where the house parsers coerce (a number
  * to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/`'false'`/`1`/`0`), so `execute`
- * receives the COERCED values (e.g. `7` sent for a string slot arrives at `execute` as `'7'`), not
+ * receives the COERCED values (for example `7` sent for a string slot arrives at `execute` as `'7'`), not
  * the raw call args. A call whose `args` fails to parse — a required key missing, or a value not
  * coercible to its slot's type — THROWS a typed `TOOL` {@link import('./errors.js').ToolboxError}
  * carrying the structured `explain` faults, and `execute` is never called. Beyond that coercion,

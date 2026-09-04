@@ -31,7 +31,7 @@ export const AGENT_TOOL_DEPTH = 8
  * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createAgentTool}
  * advertises in place of {@link AGENT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable via
+ * for the full teaching description; the full text stays retrievable through
  * {@link import('./factories.js').createDescribeTool}.
  */
 export const AGENT_TOOL_SUMMARY =
@@ -128,7 +128,7 @@ export const WORKFLOW_TOOL_NESTED_EXAMPLE: WorkflowDefinition = Object.freeze({
  * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createWorkflowTool}
  * advertises in place of {@link WORKFLOW_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable via
+ * for the full teaching description; the full text stays retrievable through
  * {@link import('./factories.js').createDescribeTool}.
  */
 export const WORKFLOW_TOOL_SUMMARY =
@@ -179,7 +179,7 @@ export const WORKSPACE_TOOL_EXAMPLE: WorkspaceOperation = Object.freeze({
  * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createWorkspaceTool}
  * advertises in place of {@link WORKSPACE_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable via
+ * for the full teaching description; the full text stays retrievable through
  * {@link import('./factories.js').createDescribeTool}.
  */
 export const WORKSPACE_TOOL_SUMMARY =
@@ -257,7 +257,7 @@ export const PROMPT_TOOL_NAME = 'ask'
  * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createPromptTool}
  * advertises in place of {@link PROMPT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable via
+ * for the full teaching description; the full text stays retrievable through
  * {@link import('./factories.js').createDescribeTool}.
  */
 export const PROMPT_TOOL_SUMMARY =
@@ -294,7 +294,7 @@ export const ANSWER_TOOL_NAME = 'answer'
  * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createAnswerTool}
  * advertises in place of {@link ANSWER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable via
+ * for the full teaching description; the full text stays retrievable through
  * {@link import('./factories.js').createDescribeTool}.
  */
 export const ANSWER_TOOL_SUMMARY =
@@ -302,10 +302,10 @@ export const ANSWER_TOOL_SUMMARY =
 
 /** Holds the pending/answer protocol {@link import('./factories.js').createAnswerTool} advertises. */
 export const ANSWER_TOOL_DESCRIPTION = [
-	'List the forms currently addressed to this terminal, or answer one of them by id. Every call is ONE operation, chosen by the "operation" field.',
+	'List the forms addressed to this terminal, or answer one of them by id. Every call is ONE operation, chosen by the "operation" field.',
 	'',
 	'Operations:',
-	'- pending { "operation": "pending" } — list every form currently addressed to this terminal (id, from, schema).',
+	'- pending { "operation": "pending" } — list every form addressed to this terminal (id, from, schema).',
 	'- answer  { "operation": "answer", "id": "<form id>", "values": { "<field name>": <field value> } } — answer every required field with the value its control accepts.',
 	'Example — list pending forms:',
 	JSON.stringify({ operation: 'pending' }),
@@ -449,7 +449,7 @@ export const INFER_TOOL_NAME = 'infer'
  * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createInferTool}
  * advertises in place of {@link INFER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
  * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable via
+ * for the full teaching description; the full text stays retrievable through
  * {@link import('./factories.js').createDescribeTool}.
  */
 export const INFER_TOOL_SUMMARY =
@@ -468,7 +468,7 @@ export const INFER_TOOL_DESCRIPTION = [
 	'               is wrapped as { parameters, checks } instead of the bare parameters record, one',
 	'               check per candidate (same index). Every check has the uniform shape',
 	'               { index, valid, coercible, faults? }. `valid` is a STRICT verdict (no coercion)',
-	'               — e.g. the number 7 is NOT valid against a string slot. `coercible` answers a',
+	'               — for example the number 7 is NOT valid against a string slot. `coercible` answers a',
 	'               separate question: would the SAME value be accepted by an endpoint tool call,',
 	"               whose enforcement NORMALIZES args (7 coerces to '7')? So 7 against a string slot",
 	'               yields { valid: false, coercible: true, faults: [] } — a strict mismatch that',
