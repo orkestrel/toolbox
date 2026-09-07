@@ -491,7 +491,7 @@ export interface DatabaseDefinition {
 	readonly version?: number
 }
 
-/** Represents one opaque persisted row — the shape a `TableInterface<DatabaseDefinitionRow>`-backed store reads/writes; `definition` is narrowed with {@link import('./validators.js').isDatabaseDefinition} on read. */
+/** Represents one opaque persisted row — the shape a definition-row-backed `TableInterface` store reads/writes; `definition` is narrowed with {@link import('./validators.js').isDatabaseDefinition} on read. */
 export interface DatabaseDefinitionRow {
 	readonly id: string
 	readonly definition: unknown

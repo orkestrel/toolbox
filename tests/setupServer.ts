@@ -1,5 +1,5 @@
 /**
- * Read every chunk buffered on an SSE response body.
+ * Reads every chunk buffered on an SSE response body.
  *
  * @param response - Streaming response to drain until it closes or becomes idle
  * @returns The available decoded text

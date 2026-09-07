@@ -21,7 +21,7 @@ import { createWorkflowRunner } from '@orkestrel/workflow'
 import { waitForDelay } from '@orkestrel/test'
 
 /**
- * Create an empty live memory database for core integration tests.
+ * Creates an empty live memory database for core integration tests.
  *
  * @returns A live database backed by the real memory driver
  */
@@ -33,7 +33,7 @@ export function createTestDatabase(): DatabaseInterface {
 }
 
 /**
- * Build the ONE full {@link DatabaseDefinition} fixture the definition-store twins both assert
+ * Builds the ONE full {@link DatabaseDefinition} fixture the definition-store twins both assert
  * against — mixed column forms, a `primary` map, single- and multi-column `indexes`, and a
  * non-integer `version`, so a round-trip proves every field survives rather than only the flat
  * ones (AGENTS' no-mocks rule — one shared data builder, not a per-file hand-roll).
@@ -123,7 +123,7 @@ export function releaseTestTaskControllers(): void {
 	releases.length = 0
 }
 
-/** A protocol-faithful workflow store that records checkpoints and rejects a controlled prefix. */
+/** Records checkpoints and rejects a controlled prefix, acting as a protocol-faithful workflow store. */
 export class RecordingWorkflowStore implements WorkflowStoreInterface {
 	readonly #snapshots: WorkflowSnapshot[] = []
 	readonly #failures: number
@@ -167,7 +167,7 @@ export class RecordingWorkflowStore implements WorkflowStoreInterface {
 // delta and RETURNS the result, honouring `signal` so an abort mid-stream throws a
 // `ProviderAbortError` carrying the accumulated partial (a genuine cancel-fold proof).
 
-/** One recorded `generate` / `stream` call on a {@link ScriptedProvider}. */
+/** Records one `generate` / `stream` call made on a {@link ScriptedProvider}. */
 export interface ScriptedCall {
 	readonly messages: readonly Message[]
 }
@@ -185,8 +185,8 @@ export interface ScriptedProviderOptions {
 }
 
 /**
- * A scripted {@link ProviderInterface} plus its `started` call count and recorded `calls` —
- * the minimal {@link ScriptedProvider} fixture exposes.
+ * Exposes a scripted {@link ProviderInterface} plus its `started` call count and recorded
+ * `calls`, the minimal shape a {@link ScriptedProvider} fixture exposes.
  */
 export interface ScriptedProviderInterface extends ProviderInterface {
 	/** How many `stream` calls have started in total. */
@@ -196,7 +196,7 @@ export interface ScriptedProviderInterface extends ProviderInterface {
 }
 
 /**
- * Create a trimmed scripted {@link ProviderInterface} for deterministic, Ollama-free agent
+ * Creates a trimmed scripted {@link ProviderInterface} for deterministic, Ollama-free agent
  * tests — each `generate` / `stream` call consumes the next `ProviderResult` (the last
  * repeats once the list is exhausted), streaming its whole content as ONE delta and
  * RETURNING the result. Honours `signal`: an already-aborted (or mid-stream aborted) signal
@@ -261,7 +261,7 @@ export class ScriptedProvider implements ScriptedProviderInterface {
 	}
 }
 
-/** A structural agent boundary whose typed result is deliberately malformed at runtime. */
+/** Implements a structural agent boundary whose typed result is deliberately malformed at runtime. */
 export class MalformedAgent implements AgentInterface {
 	readonly #agent = createAgent(new ScriptedProvider([{ content: 'unused' }]))
 	readonly id = 'malformed'
@@ -293,7 +293,7 @@ export class MalformedAgent implements AgentInterface {
 	}
 }
 
-/** A controllable timer fixture with observable arm and cancellation counts. */
+/** Represents a controllable timer fixture with observable arm and cancellation counts. */
 export interface TestTimerInterface {
 	readonly timer: TimerHandler
 	readonly armed: number
@@ -302,7 +302,7 @@ export interface TestTimerInterface {
 }
 
 /**
- * Create a controllable timer fixture for an injected timer seam.
+ * Creates a controllable timer fixture for an injected timer seam.
  *
  * @returns A timer and its observable arm/cancellation record
  */
