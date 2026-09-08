@@ -110,8 +110,8 @@ export const describeToolShape = objectShape({
 // === Workflow draft / flat-steps shapes
 
 /**
- * Describes the shape of a {@link import('./types.js').TaskDraft} — identical to a strict task shape
- * EXCEPT `id` and `name` are OPTIONAL.
+ * Describes the shape of a {@link import('./types.js').TaskDraft} — identical to a strict task
+ * shape except that `id` and `name` are optional.
  */
 export const taskDraftShape = objectShape({
 	id: optionalShape(stringShape({ min: 1, description: 'Task id; auto-filled when omitted.' })),
@@ -144,8 +144,8 @@ export const taskDraftShape = objectShape({
 })
 
 /**
- * Describes the shape of a PHASE in a draft workflow — identical to a strict phase shape EXCEPT `id` and
- * `name` are OPTIONAL, and its tasks are {@link taskDraftShape}s.
+ * Describes the shape of a phase in a draft workflow — identical to a strict phase shape except
+ * that `id` and `name` are optional and each task takes {@link taskDraftShape}.
  */
 export const phaseDraftShape = objectShape({
 	id: optionalShape(stringShape({ min: 1, description: 'Phase id; auto-filled when omitted.' })),
@@ -168,17 +168,17 @@ export const phaseDraftShape = objectShape({
 })
 
 /**
- * Describes the shape of a DRAFT workflow — identical to a strict workflow shape EXCEPT `id` and `name`
- * are OPTIONAL at all three levels (workflow / phase / task), so a small model can omit the six
- * identity strings and let the tool synthesize them positionally.
+ * Describes the shape of a draft workflow — identical to a strict workflow shape except that `id`
+ * and `name` are optional at the workflow, phase, and task levels, so a small model can omit every
+ * identity string and let the tool synthesize them positionally.
  *
  * @remarks
  * The lenient counterpart {@link import('./factories.js').createWorkflowDraftContract} compiles.
  * `behavior` stays optional like the strict form; omission is the deliberate JSON `null` no-op. A
  * provided `id` / `name` still has `minLength: 1` (so
- * an explicitly-empty `id: ''` is REJECTED, not auto-filled). After
+ * an explicitly-empty `id: ''` is rejected, not auto-filled). After
  * {@link import('./helpers.js').completeDraft} fills the missing ids/names, the result is
- * validated against the STRICT `createWorkflowContract` (`@orkestrel/workflow`) gate before
+ * validated against the strict `createWorkflowContract` (`@orkestrel/workflow`) gate before
  * running.
  */
 export const workflowDraftShape = objectShape({
@@ -199,10 +199,11 @@ export const workflowDraftShape = objectShape({
 })
 
 /**
- * Describes the shape of ONE flat step — `{ name }` — the building block of {@link workflowStepsShape}.
+ * Describes the shape of one flat step — `{ name }` — the building block of
+ * {@link workflowStepsShape}.
  *
  * @remarks
- * `name` is the REGISTERED behavior name the step runs (it becomes the task's `behavior`). The tool
+ * `name` is the registered behavior name the step runs (it becomes the task's `behavior`). The tool
  * expands each step into a one-task phase, in order ({@link import('./helpers.js').expandSteps}).
  */
 export const stepShape = objectShape({
@@ -213,16 +214,17 @@ export const stepShape = objectShape({
 })
 
 /**
- * Describes the FLAT authoring shape {@link import('./factories.js').createWorkflowTool} advertises as its
- * `parameters` — the simplest surface a small model can fill: `{ name?, steps: [{ name }] }`.
+ * Describes the flat authoring shape {@link import('./factories.js').createWorkflowTool} advertises
+ * as its `parameters` — the simplest surface a small model can fill:
+ * `{ name?, steps: [{ name }] }`.
  *
  * @remarks
  * A deliberately-reduced surface: a flat ordered list of steps, each a `{ name }`. The tool
- * EXPANDS it ({@link import('./helpers.js').expandSteps}) into a full
+ * expands it ({@link import('./helpers.js').expandSteps}) into a full
  * {@link import('./types.js').WorkflowDefinition} — one one-task phase per step, in order —
- * then validates against the STRICT `createWorkflowContract` (`@orkestrel/workflow`) gate. The
- * full nested form is STILL accepted by the tool (it branches on the args' shape) and is
- * documented as the advanced escape-hatch in the tool's description — but THIS is what
+ * then validates against the strict `createWorkflowContract` (`@orkestrel/workflow`) gate. The
+ * full nested form is still accepted by the tool (it branches on the args' shape) and is
+ * documented as the advanced escape-hatch in the tool's description — but this is what
  * `parameters` advertises.
  */
 export const workflowStepsShape = objectShape({
@@ -238,17 +240,17 @@ export const workflowStepsShape = objectShape({
  * Describes the shape of a {@link import('./types.js').WorkspaceOperation} — a descriptive tagged union
  * over the workspace edit, read, and navigation operations, discriminated by the `operation`
  * literal (never a bare `kind`). Each variant leads with its `operation`
- * discriminant then its FLAT fields, every field through `stringShape` / `optionalShape` /
+ * discriminant then its flat fields, every field through `stringShape` / `optionalShape` /
  * `integerShape({ min: 1 })` / `booleanShape`, each carrying a strong field-level `description`.
  *
  * @remarks
- * The union compiles to an `anyOf` JSON Schema + a `unionOf` guard + a first-match parser
+ * The union compiles to an `anyOf` JSON Schema, a `unionOf` guard, and a first-match parser
  * automatically ({@link import('./factories.js').createWorkspaceTool} types the result to the
- * hand-written {@link import('./types.js').WorkspaceOperation}). `limit` and the four `'splice'`
- * caret components are POSITIVE integers (`integerShape({ min: 1 })`); `regex` / `sensitive`
- * are `optionalShape(booleanShape(...))`. The two REGISTRY arms — `workspaces` (list the
+ * hand-written {@link import('./types.js').WorkspaceOperation}). `limit` and the `'splice'`
+ * caret components are positive integers (`integerShape({ min: 1 })`); `regex` / `sensitive`
+ * are `optionalShape(booleanShape(...))`. The registry arms — `workspaces` (list the
  * workspaces the model can move between) and `switch` (re-point the active one by `id`) — let a
- * model DISCOVER then CHOOSE which workspace the edit / read arms target.
+ * model discover then choose which workspace the edit / read arms target.
  */
 export const workspaceToolShape = unionShape(
 	objectShape({
@@ -408,7 +410,11 @@ export const tableSpecShape = recordShape(
 	{ description: 'Table name to its column layout.' },
 )
 
-/** Describes one key value for the database tool and the relation tool — a string or number; the array form (multiple keys, positional) resolves FIRST, so an array argument is read as many keys rather than one. */
+/**
+ * Describes one key value for the database tool and the relation tool — a string or number; the
+ * array form (multiple keys, positional) resolves first, so an array argument is read as many keys
+ * rather than one.
+ */
 export const keyShape = unionShape(
 	arrayShape(unionShape(stringShape(), numberShape()), {
 		description: 'Multiple row keys, positional — a miss at an index is undefined there.',
@@ -417,18 +423,24 @@ export const keyShape = unionShape(
 	numberShape({ description: 'One row key.' }),
 )
 
-/** Describes a loose row — a flat object of column name to JSON value; the array form (multiple rows) resolves FIRST, so an array argument is read as many rows rather than one. */
+/** Describes a loose row — a flat object of column name to JSON value. */
 export const rowShape = recordShape(jsonShape(), {
 	description: 'A row as a flat object of column name to value.',
 })
 
-/** Describes one or many loose rows — the array form resolves FIRST, so an array argument is read as many rows rather than one. */
+/**
+ * Describes one or many loose rows — the array form resolves first, so an array argument is read as
+ * many rows rather than one.
+ */
 export const rowsShape = unionShape(
 	arrayShape(rowShape, { description: 'Multiple rows.' }),
 	rowShape,
 )
 
-/** Describes one SERIALIZED WHERE condition — `values` is ALWAYS an array, even for a single-value operator. */
+/**
+ * Describes one serialized where condition — `values` is always an array, even for a single-value
+ * operator.
+ */
 export const conditionShape = objectShape({
 	column: stringShape({ description: 'The column this condition applies to.' }),
 	operator: literalShape(
@@ -461,13 +473,13 @@ export const conditionShape = objectShape({
 	),
 })
 
-/** Describes one sort term. */
+/** Describes one sort term — a `column` to sort by and the `direction` to sort it in. */
 export const orderShape = objectShape({
 	column: stringShape({ description: 'The column to sort by.' }),
 	direction: literalShape(['ascending', 'descending'], { description: 'The sort direction.' }),
 })
 
-/** Describes the SERIALIZED query form — conditions, order, and pagination. */
+/** Describes the serialized query form — conditions, order, and pagination. */
 export const queryShape = objectShape({
 	conditions: optionalShape(
 		arrayShape(conditionShape, { description: 'The WHERE conditions, folded left to right.' }),
@@ -481,9 +493,8 @@ export const queryShape = objectShape({
 
 /**
  * Describes the shape of {@link import('./factories.js').createDatabaseTool}'s call arguments —
- * discriminated by `operation` into the 11 database operations (`'create'` / `'tables'` /
- * `'get'` / `'records'` / `'count'` / `'aggregate'` / `'add'` / `'set'` / `'update'` /
- * `'remove'` / `'destroy'`).
+ * discriminated by `operation` into the database operations `'create'`, `'tables'`, `'get'`,
+ * `'records'`, `'count'`, `'aggregate'`, `'add'`, `'set'`, `'update'`, `'remove'`, and `'destroy'`.
  *
  * @remarks
  * Every arm carries `id` (the database id). `'create'` carries `tables` (the
@@ -491,7 +502,7 @@ export const queryShape = objectShape({
  * {@link import('./compilers.js').expandTables}); `'get'` / `'update'` / `'remove'` carry `key`
  * (one key or an array of keys, positional); `'add'` / `'set'` carry `row` (one row or an array of
  * rows); `'update'` also carries `changes` (a loose partial row); `'records'` / `'count'` /
- * `'aggregate'` carry an optional `query` (the SERIALIZED form — `values` is ALWAYS an array,
+ * `'aggregate'` carry an optional `query` (the serialized form — `values` is always an array,
  * even for a single-value operator, so a caller never chains method calls or guesses arity).
  */
 export const databaseToolShape = unionShape(
@@ -619,8 +630,8 @@ export const managerShape = optionalShape(
 
 /**
  * Describes the shape of {@link import('./factories.js').createRelationTool}'s call arguments —
- * discriminated by `operation` into the 5 relation operations (`'load'` / `'find'` / `'link'` /
- * `'unlink'` / `'links'`).
+ * discriminated by `operation` into the relation operations `'load'`, `'find'`, `'link'`,
+ * `'unlink'`, and `'links'`.
  *
  * @remarks
  * `'load'` fetches one or more rows (positional key/array) with `include` attached. `'find'`
@@ -691,8 +702,8 @@ export const relationToolShape = unionShape(
  * `samples` requires at least one element (`min: 1`) — an empty array parses to `undefined`,
  * surfaced by the handler as a typed `TOOL` {@link import('./errors.js').ToolboxError}. When
  * `candidates` is present (any array, including empty), the handler compiles a contract from the
- * freshly inferred schema and checks each candidate against it with a STRICT guard (`.is`, no
- * coercion) — the opposite of {@link import('./factories.js').createEndpointTool}'s NORMALIZING
+ * freshly inferred schema and checks each candidate against it with a strict guard (`.is`, no
+ * coercion) — the opposite of {@link import('./factories.js').createEndpointTool}'s normalizing
  * `.parse` enforcement.
  */
 export const inferToolShape = objectShape({

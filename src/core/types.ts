@@ -42,11 +42,12 @@ import type { RelationManagerInterface } from '@orkestrel/relation'
 // mirroring the definition family.
 
 /**
- * Represents a draft task — a `TaskDefinition` (`@orkestrel/workflow`) with OPTIONAL `id` / `name`.
+ * Represents a draft task — a `TaskDefinition` (`@orkestrel/workflow`) with optional `id` and
+ * `name`.
  *
  * @remarks
  * The tool synthesizes a missing `id` positionally and defaults a missing `name` to its `id`
- * ({@link import('./helpers.js').completeDraft}). A PROVIDED `id` / `name` is preserved verbatim
+ * ({@link import('./helpers.js').completeDraft}). A provided `id` / `name` is preserved verbatim
  * (and must be non-empty — the draft contract's `minLength: 1`).
  */
 export interface TaskDraft {
@@ -61,7 +62,10 @@ export interface TaskDraft {
 	readonly timeout?: number
 }
 
-/** Represents a draft phase — a `PhaseDefinition` (`@orkestrel/workflow`) with OPTIONAL `id` / `name` and {@link TaskDraft} tasks. */
+/**
+ * Represents a draft phase — a `PhaseDefinition` (`@orkestrel/workflow`) with optional `id` and
+ * `name` and {@link TaskDraft} tasks.
+ */
 export interface PhaseDraft {
 	readonly id?: string
 	readonly name?: string
@@ -69,13 +73,13 @@ export interface PhaseDraft {
 	readonly tasks: readonly TaskDraft[]
 	/** Caps the tasks in flight at once (a resource throttle); omitted ⇒ unbounded. */
 	readonly concurrency?: number
-	/** Holds the per-phase failure-policy OVERRIDE; omitted ⇒ inherits the workflow `bail`. */
+	/** Holds the per-phase failure-policy override; omitted ⇒ inherits the workflow `bail`. */
 	readonly bail?: boolean
 }
 
 /**
- * Represents a draft workflow — a `WorkflowDefinition` (`@orkestrel/workflow`) with OPTIONAL `id` / `name`
- * at all three levels (workflow / phase / task).
+ * Represents a draft workflow — a `WorkflowDefinition` (`@orkestrel/workflow`) with optional `id`
+ * and `name` at the workflow, phase, and task levels.
  *
  * @remarks
  * The lenient authoring form {@link import('./factories.js').createWorkflowDraftContract}
@@ -98,7 +102,7 @@ export interface WorkflowDraft {
  * Represents one flat step — `{ name }` — the building block of a {@link WorkflowSteps} blob.
  *
  * @remarks
- * `name` is the REGISTERED behavior name the step runs (it becomes the task's `behavior`, NOT a
+ * `name` is the registered behavior name the step runs (it becomes the task's `behavior`, not a
  * human label) — resolved against a workflow-level functions registry at construction.
  */
 export interface WorkflowStep {
@@ -107,13 +111,13 @@ export interface WorkflowStep {
 }
 
 /**
- * Represents the FLAT authoring blob {@link import('./factories.js').createWorkflowTool} advertises —
- * `{ name?, steps }` — the simplest surface a small model can fill.
+ * Represents the flat authoring blob {@link import('./factories.js').createWorkflowTool} advertises
+ * — `{ name?, steps }` — the simplest surface a small model can fill.
  *
  * @remarks
  * Each {@link WorkflowStep} becomes a one-task phase, in order
  * ({@link import('./helpers.js').expandSteps}); `name` is the optional workflow name and
- * deterministic persistence id (both default to `wf` when omitted).
+ * deterministic persistence id (each defaults to `wf` when omitted).
  */
 export interface WorkflowSteps {
 	readonly name?: string
@@ -132,7 +136,10 @@ export interface WorkflowToolResult {
 	readonly fault?: WorkflowFault
 }
 
-/** Represents one immutable workflow/agent call chain, beginning with a workflow tag. */
+/**
+ * Represents one immutable workflow/agent call chain — strictly alternating tags, each unique,
+ * beginning with a workflow tag.
+ */
 export type WorkflowLineage = readonly string[]
 
 /** Represents raw live agents keyed by the workflow function names that invoke them. */
@@ -145,9 +152,9 @@ export type AgentFunction = WorkflowFunction & {
 }
 
 /**
- * Represents the options for {@link import('./factories.js').createAgentFunction} — the OPT-IN adapter that
- * wraps a live `AgentInterface` (`@orkestrel/agent`) as an {@link AgentFunction} with immutable
- * lineage metadata and optional nested-workflow composition.
+ * Represents the options for {@link import('./factories.js').createAgentFunction} — the opt-in
+ * adapter that wraps a live `AgentInterface` (`@orkestrel/agent`) as an {@link AgentFunction} with
+ * immutable lineage metadata and optional nested-workflow composition.
  *
  * @remarks
  * All fields are optional. An empty lineage is resolved from the controller's root workflow when
@@ -189,18 +196,18 @@ export interface WorkflowToolOptions {
 }
 
 /**
- * Represents the options for {@link import('./factories.js').createWorkspaceTool} — EITHER a caller-built
- * {@link WorkspaceManagerInterface} to drive directly, OR a {@link WorkspaceStoreInterface} the
- * tool constructs a fresh manager over; neither given constructs a manager over
- * `@orkestrel/workspace`'s in-memory store.
+ * Represents the options for {@link import('./factories.js').createWorkspaceTool} — either a
+ * caller-built {@link WorkspaceManagerInterface} to drive directly, or a
+ * {@link WorkspaceStoreInterface} the tool constructs a fresh manager over; neither given
+ * constructs a manager over `@orkestrel/workspace`'s in-memory store.
  *
  * @remarks
- * - `manager` — drive THIS manager directly (its `active` workspace is what every edit / read
- *   operation targets). Takes priority over `store` when both are supplied.
+ * - `manager` — drive this manager directly (its `active` workspace is what every edit / read
+ *   operation targets). Takes priority over `store` when the caller supplies `manager` and `store`.
  * - `store` — construct a manager over this durable {@link WorkspaceStoreInterface} (through
  *   `@orkestrel/workspace`'s `createWorkspaceManager`) — used only when `manager` is omitted.
  *   The store only backs the manager's own `open` / `save` operations: the tool's edits are
- *   NOT auto-persisted — durability requires an explicit caller `save` on the manager
+ *   not auto-persisted — durability requires an explicit caller `save` on the manager
  *   (unlike the workflow tool's `store`, which is forwarded into native run-wide checkpoints).
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').WORKSPACE_TOOL_NAME} / {@link import('./constants.js').WORKSPACE_TOOL_DESCRIPTION}.
@@ -215,33 +222,33 @@ export interface WorkspaceToolOptions {
 // === Workspace operation union
 
 /**
- * Represents one operation an agent invokes through {@link import('./factories.js').createWorkspaceTool} — a
- * FLAT, descriptive tagged union over the workspace edit, read, and navigation actions,
- * discriminated by the `operation` literal (a discriminant is named for its axis — the action
- * being performed — NEVER `kind`).
+ * Represents one operation an agent invokes through
+ * {@link import('./factories.js').createWorkspaceTool} — a flat, descriptive tagged union over the
+ * workspace edit, read, and navigation actions, discriminated by the `operation` literal (a
+ * discriminant is named for its axis — the action being performed — never `kind`).
  *
  * @remarks
- * This is the SOURCE OF TRUTH the tool contract is typed to
+ * This is the source of truth the tool contract is typed to
  * ({@link import('./shapers.js').workspaceToolShape} compiles to a structurally-identical guard /
- * parser / JSON Schema). Every field is FLAT (no nested objects) — the small-model ergonomic
- * lever: a range edit is the four flat integers of the `'splice'` arm (`fromLine` /
+ * parser / JSON Schema). Every field is flat (no nested objects) — the small-model ergonomic
+ * lever: a range edit is the flat integers of the `'splice'` arm (`fromLine` /
  * `fromColumn` / `toLine` / `toColumn`), reassembled into a 1-based `Range`
  * (`@orkestrel/workspace`)
- * by `rangeOf`, never a nested `{ start, end }`. Each EDIT / READ arm maps onto exactly one
- * `WorkspaceInterface` call against the manager's ACTIVE workspace; the two REGISTRY arms
+ * by `rangeOf`, never a nested `{ start, end }`. Each edit / read arm maps onto exactly one
+ * `WorkspaceInterface` call against the manager's active workspace; the registry arms
  * (`switch` / `workspaces`) drive the {@link WorkspaceManagerInterface} pointer instead —
- * `workspaces` LISTS the workspaces the model can move between, and `switch` re-points which one
+ * `workspaces` lists the workspaces the model can move between, and `switch` re-points which one
  * the edit / read arms target.
  */
 export type WorkspaceOperation =
-	/** Reads a whole text file's text by `path` from the ACTIVE workspace (a binary / absent path — or no active workspace — yields no content). */
+	/** Reads a whole text file's text by `path` from the active workspace (a binary / absent path — or no active workspace — yields no content). */
 	| { readonly operation: 'read'; readonly path: string }
-	/** Lists every file in the ACTIVE workspace (path / state / size / lines / kind summaries); `[]` when no workspace is active. */
+	/** Lists every file in the active workspace (path / state / size / lines / kind summaries); `[]` when no workspace is active. */
 	| { readonly operation: 'list' }
-	/** Reports whether a file exists at `path` in the ACTIVE workspace (`false` when no workspace is active). */
+	/** Reports whether a file exists at `path` in the active workspace (`false` when no workspace is active). */
 	| { readonly operation: 'has'; readonly path: string }
 	/**
-	 * Scans every text file for `query`, returning each hit (path + 1-based line / column + the line).
+	 * Scans every text file for `query`, returning each hit (the path, the 1-based line and column, and the line).
 	 *
 	 * @remarks
 	 * `regex` treats `query` as a regular-expression source (default `false` — a literal substring);
@@ -273,10 +280,10 @@ export type WorkspaceOperation =
 	| { readonly operation: 'write'; readonly path: string; readonly content: string }
 	/**
 	 * Splices `content` into an existing text file, replacing the 1-based range
-	 * `(fromLine, fromColumn)` (INCLUSIVE) → `(toLine, toColumn)` (EXCLUSIVE).
+	 * `(fromLine, fromColumn)` (inclusive) → `(toLine, toColumn)` (exclusive).
 	 *
 	 * @remarks
-	 * The FLAT range edit — the four positive-integer caret components reassemble into a `Range`
+	 * The flat range edit — the four positive-integer caret components reassemble into a `Range`
 	 * (`@orkestrel/workspace`) through `rangeOf`. An empty span (`from === to`) inserts; a span past
 	 * the end is clamped. An inverted / sub-1 range throws `RANGE`; a binary target throws
 	 * `MODALITY`; a missing target throws `MISSING`.
@@ -300,7 +307,7 @@ export type WorkspaceOperation =
 	| { readonly operation: 'remove'; readonly path: string }
 	/** Lists the workspaces the model can move between — each `{ id, files, active }` — so it can choose an `id` to `switch` to. */
 	| { readonly operation: 'workspaces' }
-	/** Re-points the manager's ACTIVE workspace to the one with `id` (an unknown `id` is a lenient no-op). The edit / read arms target the active workspace from then on. */
+	/** Re-points the manager's active workspace to the one with `id` (an unknown `id` is a lenient no-op). The edit / read arms target the active workspace from then on. */
 	| { readonly operation: 'switch'; readonly id: string }
 
 /**
@@ -310,12 +317,12 @@ export type WorkspaceOperation =
  * @remarks
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').AGENT_TOOL_NAME} / {@link import('./constants.js').AGENT_TOOL_DESCRIPTION}.
- * - `provider` — the DEFAULT registry provider key used when a call omits `provider`; a call
- *   that supplies its own `provider` overrides this. One of `provider` (here or per-call) MUST
+ * - `provider` — the default registry provider key used when a call omits `provider`; a call
+ *   that supplies its own `provider` overrides this. One of `provider` (here or per-call) must
  *   resolve, or the handler throws a typed `TOOL` {@link import('./errors.js').ToolboxError}.
- * - `tools` — the DEFAULT registry tool-name list loaded into the delegated sub-agent; a
+ * - `tools` — the default registry tool-name list loaded into the delegated sub-agent; a
  *   per-call `tools` list overrides (never merges with) this default.
- * - `system` — the DEFAULT system prompt seeding the sub-agent's context; a per-call `system`
+ * - `system` — the default system prompt seeding the sub-agent's context; a per-call `system`
  *   overrides this.
  * - `depth` — this invocation's nesting depth (default `0`); a delegated sub-agent that itself
  *   calls this tool again runs at `depth + 1`, bounded by
@@ -323,17 +330,17 @@ export type WorkspaceOperation =
  * - `ancestry` — the sub-agent identifiers already in this delegation chain (default empty); a
  *   cycle (the resolved agent already present) is rejected with a typed `DEPTH`
  *   {@link import('./errors.js').ToolboxError}.
- * - `store` — this package's ADDITION: when supplied, the handler persists the delegated
+ * - `store` — this package's addition: when supplied, the handler persists the delegated
  *   sub-agent's active conversation snapshot (`store.set(agent.context.conversations.active.snapshot())`)
- *   once `agent.generate()` settles successfully, before returning — one snapshot per delegation
+ *   after `agent.generate()` settles successfully, before returning — one snapshot per delegation
  *   (each `registry.build` mints a fresh conversation id, so a shared store accumulates an
  *   audit log rather than colliding). Omitted ⇒ no persistence from this tool.
  *
- * Conversation persistence for a delegated sub-agent has TWO independent seams, composable
- * together: this `store` slot persists EACH delegation's conversation individually, and an
+ * Conversation persistence for a delegated sub-agent has independent seams, composable
+ * together: this `store` slot persists each delegation's conversation individually, and an
  * `AgentRegistryInterface` built with `AgentRegistryOptions.store` (`@orkestrel/agent`) backs
- * EVERY agent it builds — including ones built through this tool — with a store-backed
- * `ConversationManagerInterface` of its own. Neither is required; either or both may be used.
+ * every agent it builds — including ones built through this tool — with a store-backed
+ * `ConversationManagerInterface` of its own. Neither is required, and they compose.
  */
 export interface AgentToolOptions {
 	readonly name?: string
@@ -347,14 +354,14 @@ export interface AgentToolOptions {
 }
 
 /**
- * Represents the FLAT args {@link import('./factories.js').createAgentTool} accepts — a delegated `task`
- * plus the minimal optional `AgentJobInput` (`@orkestrel/agent`) fields a caller may override
- * per-call.
+ * Represents the flat args {@link import('./factories.js').createAgentTool} accepts — a delegated
+ * `task` plus the minimal optional `AgentJobInput` (`@orkestrel/agent`) fields a caller may
+ * override per-call.
  *
  * @remarks
  * `task` becomes the seed user message in the sub-agent's rehydrated conversation
  * (`AgentJobInput.messages`). `provider` / `tools` / `system` shadow the tool's own
- * {@link AgentToolOptions} defaults for this ONE call when supplied.
+ * {@link AgentToolOptions} defaults for this one call when supplied.
  */
 export interface AgentToolArguments {
 	readonly task: string
@@ -395,8 +402,8 @@ export type ToolboxErrorCode =
 	| 'RELATION'
 
 /**
- * Represents the FLAT args {@link import('./factories.js').createDescribeTool} accepts — the registered
- * tool `name` whose full `description` a model wants back.
+ * Represents the flat args {@link import('./factories.js').createDescribeTool} accepts — the
+ * registered tool `name` whose full `description` a model wants back.
  *
  * @remarks
  * `name` must match a tool registered on the {@link import('@orkestrel/tool').ToolManagerInterface}
@@ -413,10 +420,10 @@ export interface DescribeToolArguments {
  *
  * @remarks
  * - `manager` — the terminal manager whose `ask(from, to, form)` the tool's handler calls with a
- *   live `@orkestrel/form` form; BLOCKS the calling agent turn until the addressed terminal answers (or the ask
+ *   live `@orkestrel/form` form; blocks the calling agent turn until the addressed terminal answers (or the ask
  *   rejects — a cycle throws `TerminalError('DEADLOCK')`, re-surfaced as a typed `DEADLOCK`
  *   {@link import('./errors.js').ToolboxError}; an expired prompt re-surfaces as `EXPIRE`).
- * - `from` — the terminal identity this tool asks AS; the model supplies the `to` target and the
+ * - `from` — the terminal identity this tool asks as; the model supplies the `to` target and the
  *   complete form schema per call.
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').PROMPT_TOOL_NAME} / {@link import('./constants.js').PROMPT_TOOL_DESCRIPTION}.
@@ -438,7 +445,7 @@ export interface PromptToolOptions {
  *   handler calls — `pending` lists the forms addressed to `to`, `answer` resolves
  *   one by `id`. A failed `answer` (`TerminalAnswerError`) re-surfaces as a typed
  *   `ANSWER` {@link import('./errors.js').ToolboxError}.
- * - `to` — the terminal identity this tool lists / answers prompts FOR.
+ * - `to` — the terminal identity this tool lists / answers prompts for.
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').ANSWER_TOOL_NAME} / {@link import('./constants.js').ANSWER_TOOL_DESCRIPTION}.
  */
@@ -472,13 +479,13 @@ export type TableSpec = Readonly<
 >
 
 /**
- * Represents one database's CONFIG-ONLY definition — `id` + `driver` + {@link TableSpec}, with optional
- * `primary`, `indexes`, and `version` schema configuration.
+ * Represents one database's config-only definition — an `id`, a `driver`, and a {@link TableSpec},
+ * with optional `primary`, `indexes`, and `version` schema configuration.
  *
  * @remarks
- * A `DatabaseDefinition` is NEVER a live handle — it is the durable, serializable config a
+ * A `DatabaseDefinition` is never a live handle — it is the durable, serializable config a
  * {@link DefinitionStoreInterface} persists and a tool factory turns into a real
- * `@orkestrel/database` `DatabaseInterface` (through `createDatabase` + {@link import('./compilers.js').expandTables})
+ * `@orkestrel/database` `DatabaseInterface` (through `createDatabase` and {@link import('./compilers.js').expandTables})
  * on demand. `primary` maps table names to primary-key columns; `indexes` maps table names to
  * index column groups; `version` opts a capable driver into open-time schema reconciliation.
  */
@@ -498,25 +505,27 @@ export interface DatabaseDefinitionRow {
 }
 
 /**
- * Represents the point-access persistence seam for {@link DatabaseDefinition} configs —
- * the twin of `@orkestrel/terminal`'s `TerminalStoreInterface`, storing a database's CONFIG-ONLY
- * blueprint (never a live handle). Every primitive is async; `delete` of an absent id is a no-op.
+ * Represents the point-access persistence seam for {@link DatabaseDefinition} configs — the twin of
+ * `@orkestrel/terminal`'s `TerminalStoreInterface`, storing a database's config-only blueprint
+ * rather than a live handle. Every primitive is async; `delete` of an absent id is a no-op.
  */
 export interface DefinitionStoreInterface {
+	/** Resolves the persisted definition for `id`, or `undefined` when none is stored. */
 	get(id: string): Promise<DatabaseDefinition | undefined>
+	/** Inserts or replaces a definition under its own `id`, taking no separate id argument. */
 	set(definition: DatabaseDefinition): Promise<void>
+	/** Drops the definition for `id`, treating an absent id as a no-op that never throws. */
 	delete(id: string): Promise<void>
 }
 
 /**
- * Represents the SERIALIZED wire query a database-tool call carries — the parsed form of
- * {@link import('./shapers.js').queryShape}, which
- * {@link import('./helpers.js').normalizeQuery} normalizes into a live `@orkestrel/database`
- * {@link QueryInput}.
+ * Represents the serialized wire query a database-tool call carries — the parsed form of
+ * {@link import('./shapers.js').queryShape}, which {@link import('./helpers.js').normalizeQuery}
+ * normalizes into a live `@orkestrel/database` `QueryInput`.
  *
  * @remarks
- * Every condition is FLAT and its `values` is ALWAYS an array, even for a single-value operator.
- * `connector` is optional because the LAST condition joins nothing forward; `normalizeQuery` defaults an
+ * Every condition is flat and its `values` is always an array, even for a single-value operator.
+ * `connector` is optional because the last condition joins nothing forward; `normalizeQuery` defaults an
  * omitted one to `'and'`. `order` / `limit` / `offset` carry over to the live query unchanged.
  */
 export interface DatabaseQueryInput {
@@ -534,11 +543,12 @@ export interface DatabaseQueryInput {
 }
 
 /**
- * Represents the PROBE query and effective row limit {@link import('./helpers.js').clampQuery} returns.
+ * Represents the probe query and effective row limit {@link import('./helpers.js').clampQuery}
+ * returns.
  *
  * @remarks
  * `limit` is the effective ceiling — `min(query?.limit ?? cap, cap)`, floored at `0`. `query`
- * requests one row MORE than that, so a caller detects truncation from the returned row count
+ * requests one row more than that, so a caller detects truncation from the returned row count
  * without a separate `count` round trip.
  */
 export interface ClampedQuery {
@@ -555,7 +565,7 @@ export interface ClampedQuery {
  *   caller-constructed database it manages alongside store-backed ones); keyed by the id a
  *   call's `id` field addresses.
  * - `store` — the {@link DefinitionStoreInterface} the `'create'` operation persists its
- *   {@link DatabaseDefinition} CONFIG through, and `'destroy'` deletes from; also the source
+ *   {@link DatabaseDefinition} config through, and `'destroy'` deletes from; also the source
  *   `'get'`/every other operation resolves an id from when it isn't already cached. Omitted means
  *   no persistence — a database created without a store lives only for the tool's lifetime.
  * - `drivers` — registry of driver-name to `() => DriverInterface` factories a `'create'` call's
@@ -591,13 +601,15 @@ export interface DatabaseToolOptions {
 }
 
 /**
- * Represents the options for {@link import('./factories.js').createRelationTool}.
+ * Represents the options for {@link import('./factories.js').createRelationTool} — the required
+ * live `RelationManagerInterface` registry a call addresses, the row cap, and the `include` depth
+ * cap.
  *
  * @remarks
  * - `managers` — the live `RelationManagerInterface` (`@orkestrel/relation`) registry a call's
- *   optional `manager` field addresses by name; REQUIRED (unlike the database tool's lazily
+ *   optional `manager` field addresses by name; required (unlike the database tool's lazily
  *   resolved handles, a relation manager's relations are declared up front and cannot be minted
- *   on demand from a tool call). A call that omits `manager` resolves to the SOLE registered
+ *   on demand from a tool call). A call that omits `manager` resolves to the sole registered
  *   manager when exactly one is registered, else throws a typed `TOOL`
  *   {@link import('./errors.js').ToolboxError} naming the registered manager keys.
  * - `limit` — the row cap `'find'` / `'links'` enforce when a call's `limit` is omitted or
@@ -630,9 +642,9 @@ export interface RelationToolOptions {
 // (`EndpointToolOptions.validate`, default `true`) — see the Contract invariant in `tool.md`.
 
 /**
- * Represents the options for {@link import('./factories.js').createInferTool} — advertised name/description
- * overrides only; `format` / `enum` are RUNTIME call arguments (see
- * {@link import('./shapers.js').inferToolShape}), not construction-time options, since a model
+ * Represents the options for {@link import('./factories.js').createInferTool} — advertised name and
+ * description overrides only; `format` and `enum` are runtime call arguments (see
+ * {@link import('./shapers.js').inferToolShape}), not construction-time options, because a model
  * chooses them per call.
  */
 export interface InferToolOptions {
@@ -641,9 +653,9 @@ export interface InferToolOptions {
 }
 
 /**
- * Represents the handler {@link import('./types.js').EndpointDefinition.execute} implements — mirrors
- * `@orkestrel/tool`'s `ToolOptions.execute` signature EXACTLY (same `Readonly<Record<string,
- * unknown>>` argument, same `Promise<unknown> | unknown` return) so
+ * Represents the handler {@link EndpointDefinition.execute} implements — it mirrors
+ * `@orkestrel/tool`'s `ToolOptions.execute` signature exactly (the same
+ * `Readonly<Record<string, unknown>>` argument, the same `Promise<unknown> | unknown` return), so
  * `execute: (args) => definition.execute(args)` typechecks with zero assertions in
  * {@link import('./factories.js').createEndpointTool}.
  */
@@ -657,17 +669,17 @@ export type EndpointHandler = (
  * `parameters` are inferred from, and the local handler that runs a call.
  *
  * @remarks
- * `samples` MUST be non-empty — {@link import('./factories.js').createEndpointTool} throws a
- * typed `TOOL` {@link import('./errors.js').ToolboxError} at CONSTRUCTION when it is empty,
- * since an empty sample set cannot infer a schema. By DEFAULT ({@link EndpointToolOptions.validate}
- * `true`) `execute` receives the PARSED, NORMALIZED args record — a copy of the model-supplied
+ * `samples` must be non-empty — {@link import('./factories.js').createEndpointTool} throws a
+ * typed `TOOL` {@link import('./errors.js').ToolboxError} at construction when it is empty,
+ * because an empty sample set cannot infer a schema. By default ({@link EndpointToolOptions.validate}
+ * `true`) `execute` receives the parsed, normalized args record — a copy of the model-supplied
  * `args` with each scalar coerced to its inferred type (for example a number sent for a string slot
  * arrives coerced to a string), checked against the same schema advertised as `parameters` — and
  * a call with a missing required key or a non-coercible value never reaches `execute` at all (see
  * {@link EndpointToolOptions.validate}). With
- * `validate: false`, `execute` receives the model-supplied `args` VERBATIM (raw passthrough, never
+ * `validate: false`, `execute` receives the model-supplied `args` verbatim (raw passthrough, never
  * checked against the inferred schema). Either way `execute`'s return flows back as the tool
- * call's result; a throw PROPAGATES uncaught, isolated by the `ToolManagerInterface`
+ * call's result; a throw propagates uncaught, isolated by the `ToolManagerInterface`
  * (`@orkestrel/tool`) into the canonical error envelope. When `samples` are non-object values,
  * the advertised schema wraps them under a single required `value` property, so `execute` receives
  * an `args` record of the shape `{ value: ... }` — never the bare value.
@@ -680,28 +692,28 @@ export interface EndpointDefinition {
 }
 
 /**
- * Represents the construction-time tuning for {@link import('./factories.js').createEndpointTool} — the
- * inferred `parameters` schema's `format` / `enum` constraints, and whether that same schema is
- * ENFORCED at `execute` time.
+ * Represents the construction-time tuning for {@link import('./factories.js').createEndpointTool} —
+ * the inferred `parameters` schema's `format` and `enum` constraints, and whether that same schema
+ * is enforced at `execute` time.
  *
  * @remarks
  * `format` / `enum` default to `false`, matching `@orkestrel/contract`'s own
  * `ValueToSchemaOptions` defaults. `validate` defaults to `true`: the schema
- * `createEndpointTool` advertises as `parameters` (`samplesToSchema` + `schemaToObject`) is
- * compiled ONCE at construction (through `@orkestrel/contract`'s `schemaToShape`) into a
- * `ContractInterface` used to `parse` every call's `args` before `execute` runs — a NORMALIZING
- * parse: a scalar value is COERCED to its inferred type where the house parsers coerce (a number
+ * `createEndpointTool` advertises as `parameters` (`samplesToSchema` and `schemaToObject`) is
+ * compiled once at construction (through `@orkestrel/contract`'s `schemaToShape`) into a
+ * `ContractInterface` used to `parse` every call's `args` before `execute` runs — a normalizing
+ * parse: a scalar value is coerced to its inferred type where the house parsers coerce (a number
  * to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/`'false'`/`1`/`0`), so `execute`
- * receives the COERCED values (for example `7` sent for a string slot arrives at `execute` as `'7'`), not
+ * receives the coerced values (for example `7` sent for a string slot arrives at `execute` as `'7'`), not
  * the raw call args. A call whose `args` fails to parse — a required key missing, or a value not
- * coercible to its slot's type — THROWS a typed `TOOL` {@link import('./errors.js').ToolboxError}
+ * coercible to its slot's type — throws a typed `TOOL` {@link import('./errors.js').ToolboxError}
  * carrying the structured `explain` faults, and `execute` is never called. Beyond that coercion,
- * enforcement is STRUCTURAL — required keys, `enum` membership, and numeric bounds — `format`
- * annotations (`email`, `date-time`, `uuid`, `uri`, ...) are NEVER asserted, mirroring
+ * enforcement is structural — required keys, `enum` membership, and numeric bounds — `format`
+ * annotations (`email`, `date-time`, `uuid`, `uri`, ...) are never asserted, mirroring
  * `@orkestrel/contract`'s own widening-only law for `schemaToShape`: a `format: true`-tuned
- * endpoint still ACCEPTS a non-conforming string in a format-tagged slot. A key NOT present in
- * the inferred (closed, `additionalProperties: false`) schema is NEVER a rejection either — it is
- * SILENTLY DROPPED before `execute` runs (the same leniency `@orkestrel/contract`'s own `parse`
+ * endpoint still accepts a non-conforming string in a format-tagged slot. A key not present in
+ * the inferred (closed, `additionalProperties: false`) schema is never a rejection either — it is
+ * silently dropped before `execute` runs (the same leniency `@orkestrel/contract`'s own `parse`
  * grants a closed object generally), so `execute` may see fewer keys than the caller sent. Set
  * `validate: false` when the endpoint's own handler validates its arguments, or when `samples`
  * under-describe the real contract and the normalizing coercion would corrupt a call: the tool's

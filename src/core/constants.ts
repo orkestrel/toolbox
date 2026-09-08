@@ -8,19 +8,19 @@ import type { WorkflowSteps, WorkspaceOperation } from './types.js'
 // describes the editing surface Toolbox composes over `@orkestrel/workspace`.
 
 /**
- * Holds the name {@link import('./factories.js').createAgentTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
+ * Holds the name {@link import('./factories.js').createAgentTool} advertises by default, `'agent'`
+ * — the key a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  */
 export const AGENT_TOOL_NAME = 'agent'
 
 /**
  * Holds the maximum nesting depth a delegation chain (agent tool → sub-agent → agent tool → …) may
- * reach — the bound {@link import('./factories.js').createAgentTool}'s depth/cycle guard
+ * reach, `8` — the bound {@link import('./factories.js').createAgentTool}'s depth/cycle guard
  * enforces.
  *
  * @remarks
- * Deliberately a SEPARATE constant from {@link MAX_WORKFLOW_CHAIN} (rather than the two guards
- * sharing one reference): the two guards bound DIFFERENT chains (workflow nesting vs. agent
+ * Deliberately a separate constant from {@link MAX_WORKFLOW_CHAIN} (rather than the guards
+ * sharing one reference): they bound different chains (workflow nesting against agent
  * delegation) that happen to share a value today, and keeping this bound decoupled means a
  * future change to one never silently shifts the other. Same numeric value by convention, not
  * by shared reference.
@@ -28,11 +28,15 @@ export const AGENT_TOOL_NAME = 'agent'
 export const AGENT_TOOL_DEPTH = 8
 
 /**
- * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createAgentTool}
- * advertises in place of {@link AGENT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable through
- * {@link import('./factories.js').createDescribeTool}.
+ * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
+ * {@link import('./factories.js').createAgentTool} advertises in place of
+ * {@link AGENT_TOOL_DESCRIPTION} — one sentence offering sub-agent delegation and pointing at
+ * `describe` for the optional overrides.
+ *
+ * @remarks
+ * A `ToolManagerInterface.definitions()` call (`@orkestrel/tool`) advertises
+ * `summary ?? description`, so this one-sentence text stands in for the full teaching description;
+ * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const AGENT_TOOL_SUMMARY =
 	"Delegate a task to a sub-agent and return its result; each call runs one sub-agent turn to completion. Call describe('agent') for the optional provider/tools/system overrides."
@@ -57,7 +61,7 @@ export const AGENT_TOOL_DESCRIPTION = [
 ].join('\n')
 
 /**
- * Holds the maximum nesting depth a workflow → agent → workflow chain may reach — the bound
+ * Holds the maximum nesting depth a workflow → agent → workflow chain may reach, `8` — the bound
  * {@link import('./factories.js').createAgentFunction} and
  * {@link import('./factories.js').createWorkflowTool}'s depth/cycle guards enforce.
  *
@@ -69,29 +73,29 @@ export const AGENT_TOOL_DESCRIPTION = [
 export const MAX_WORKFLOW_CHAIN = 8
 
 /**
- * Holds the name {@link import('./factories.js').createWorkflowTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under, and the name
- * {@link import('./factories.js').createAgentFunction} binds the depth/cycle-aware workflow tool
- * under onto a wrapped agent's `context.tools`.
+ * Holds the name {@link import('./factories.js').createWorkflowTool} advertises by default,
+ * `'workflow'` — the key a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers
+ * under, and the name {@link import('./factories.js').createAgentFunction} binds the
+ * depth/cycle-aware workflow tool under onto a wrapped agent's `context.tools`.
  *
  * @remarks
  * The propagation seam's well-known key: when
  * `createAgentFunction`'s `runner` option is supplied, it adds a `createWorkflowTool`-built tool
- * under this name to the agent's `context.tools`, so it can author + run a NESTED workflow
+ * under this name to the agent's `context.tools`, so it can author and run a nested workflow
  * (bounded by {@link MAX_WORKFLOW_CHAIN}).
  */
 export const WORKFLOW_TOOL_NAME = 'workflow'
 
 /**
- * Holds a complete FLAT authoring example — the PRIMARY way a small model authors a workflow through
- * {@link import('./factories.js').createWorkflowTool}: `{ name, steps: [{ name }] }`.
+ * Holds a complete flat authoring example — the primary way a small model authors a workflow
+ * through {@link import('./factories.js').createWorkflowTool}: `{ name, steps: [{ name }] }`.
  *
  * @remarks
  * Each step becomes a one-task phase, in
- * order; a step's `name` is a REGISTERED behavior name (not a label) — the registry key its
+ * order; a step's `name` is a registered behavior name (not a label) — the registry key its
  * task's `behavior` resolves against. The tool expands this
  * ({@link import('./helpers.js').expandSteps}) into a valid `WorkflowDefinition`
- * (`@orkestrel/workflow`). It is embedded VERBATIM in {@link WORKFLOW_TOOL_DESCRIPTION}.
+ * (`@orkestrel/workflow`). It is embedded verbatim in {@link WORKFLOW_TOOL_DESCRIPTION}.
  */
 export const WORKFLOW_TOOL_FLAT_EXAMPLE: WorkflowSteps = Object.freeze({
 	name: 'release',
@@ -99,12 +103,12 @@ export const WORKFLOW_TOOL_FLAT_EXAMPLE: WorkflowSteps = Object.freeze({
 })
 
 /**
- * Holds a minimal NESTED authoring example — the ADVANCED escape-hatch form a model may use instead of
- * the flat shape: a full `WorkflowDefinition` (`@orkestrel/workflow`).
+ * Holds a minimal nested authoring example — the advanced escape-hatch form a model can use instead
+ * of the flat shape: a full `WorkflowDefinition` (`@orkestrel/workflow`).
  *
  * @remarks
- * The full four-level form, documented in
- * {@link WORKFLOW_TOOL_DESCRIPTION} as the advanced alternative. It is embedded VERBATIM.
+ * The full nested form, documented in
+ * {@link WORKFLOW_TOOL_DESCRIPTION} as the advanced alternative. It is embedded verbatim.
  */
 export const WORKFLOW_TOOL_NESTED_EXAMPLE: WorkflowDefinition = Object.freeze({
 	id: 'release',
@@ -125,11 +129,15 @@ export const WORKFLOW_TOOL_NESTED_EXAMPLE: WorkflowDefinition = Object.freeze({
 })
 
 /**
- * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createWorkflowTool}
- * advertises in place of {@link WORKFLOW_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable through
- * {@link import('./factories.js').createDescribeTool}.
+ * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
+ * {@link import('./factories.js').createWorkflowTool} advertises in place of
+ * {@link WORKFLOW_TOOL_DESCRIPTION} — one sentence offering multi-phase authoring and pointing at
+ * `describe` for the authoring schema and its examples.
+ *
+ * @remarks
+ * A `ToolManagerInterface.definitions()` call (`@orkestrel/tool`) advertises
+ * `summary ?? description`, so this one-sentence text stands in for the full teaching description;
+ * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const WORKFLOW_TOOL_SUMMARY =
 	"Author and run a multi-phase workflow in one call — phases run in sequence, tasks within a phase run concurrently. Call describe('workflow') for the full authoring schema and examples."
@@ -155,14 +163,15 @@ export const WORKFLOW_TOOL_DESCRIPTION = [
 ].join('\n')
 
 /**
- * Holds the name {@link import('./factories.js').createWorkspaceTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
+ * Holds the name {@link import('./factories.js').createWorkspaceTool} advertises by default,
+ * `'workspace'` — the key a model calls and the `ToolManagerInterface` (`@orkestrel/tool`)
+ * registers under.
  */
 export const WORKSPACE_TOOL_NAME = 'workspace'
 
 /**
- * Holds a valid {@link import('./types.js').WorkspaceOperation} object — the canonical example embedded
- * VERBATIM in {@link WORKSPACE_TOOL_DESCRIPTION}.
+ * Holds a valid {@link import('./types.js').WorkspaceOperation} object — the canonical example
+ * embedded verbatim in {@link WORKSPACE_TOOL_DESCRIPTION}.
  *
  * @remarks
  * A `'write'` op (the most common authoring
@@ -176,11 +185,15 @@ export const WORKSPACE_TOOL_EXAMPLE: WorkspaceOperation = Object.freeze({
 })
 
 /**
- * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createWorkspaceTool}
- * advertises in place of {@link WORKSPACE_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable through
- * {@link import('./factories.js').createDescribeTool}.
+ * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
+ * {@link import('./factories.js').createWorkspaceTool} advertises in place of
+ * {@link WORKSPACE_TOOL_DESCRIPTION} — one sentence offering the `operation`-keyed file editing and
+ * pointing at `describe` for the operation list and its fields.
+ *
+ * @remarks
+ * A `ToolManagerInterface.definitions()` call (`@orkestrel/tool`) advertises
+ * `summary ?? description`, so this one-sentence text stands in for the full teaching description;
+ * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const WORKSPACE_TOOL_SUMMARY =
 	"Read and edit files in a workspace — one operation per call (read, write, list, search, replace, splice, move, remove, plus workspace switching), chosen by the 'operation' field. Call describe('workspace') for the full operation list and fields."
@@ -219,8 +232,9 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
 ].join('\n')
 
 /**
- * Holds the name {@link import('./factories.js').createDescribeTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
+ * Holds the name {@link import('./factories.js').createDescribeTool} advertises by default,
+ * `'describe'` — the key a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers
+ * under.
  *
  * @remarks
  * Pairs with the lean {@link AGENT_TOOL_SUMMARY} / {@link WORKFLOW_TOOL_SUMMARY} /
@@ -238,7 +252,8 @@ export const DESCRIBE_TOOL_NAME = 'describe'
 export const DESCRIBE_TOOL_SUMMARY = 'Return the full description of a named registered tool.'
 
 /**
- * Holds the DESCRIPTION {@link import('./factories.js').createDescribeTool} advertises.
+ * Holds the description {@link import('./factories.js').createDescribeTool} advertises — the
+ * registered tool `name` it requires, and the full description of that tool it returns.
  *
  * @remarks
  * Deliberately short — unlike the workflow / workspace / agent tools, this one has no authoring
@@ -248,22 +263,30 @@ export const DESCRIBE_TOOL_DESCRIPTION =
 	'Return the full description of a registered tool by its name. Required: name - the registered tool name (see another tool listing for available names).'
 
 /**
- * Holds the name {@link import('./factories.js').createPromptTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
+ * Holds the name {@link import('./factories.js').createPromptTool} advertises by default, `'ask'` —
+ * the key a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  */
 export const PROMPT_TOOL_NAME = 'ask'
 
 /**
- * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createPromptTool}
- * advertises in place of {@link PROMPT_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable through
- * {@link import('./factories.js').createDescribeTool}.
+ * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
+ * {@link import('./factories.js').createPromptTool} advertises in place of
+ * {@link PROMPT_TOOL_DESCRIPTION} — one sentence offering the blocking multi-field ask and pointing
+ * at `describe` for the schema.
+ *
+ * @remarks
+ * A `ToolManagerInterface.definitions()` call (`@orkestrel/tool`) advertises
+ * `summary ?? description`, so this one-sentence text stands in for the full teaching description;
+ * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const PROMPT_TOOL_SUMMARY =
 	"Ask another terminal a multi-field form and BLOCK until it answers; the call resolves with the values record. Call describe('ask') for the schema."
 
-/** Holds the full form protocol {@link import('./factories.js').createPromptTool} advertises. */
+/**
+ * Holds the form protocol {@link import('./factories.js').createPromptTool} advertises — the
+ * required `to` and `schema`, how a field declares its control and its rules, and a worked
+ * example.
+ */
 export const PROMPT_TOOL_DESCRIPTION = [
 	'Ask another terminal a multi-field form and block until it answers. This call does not return until the addressed terminal answers, or the form expires.',
 	'',
@@ -285,22 +308,30 @@ export const PROMPT_TOOL_DESCRIPTION = [
 ].join('\n')
 
 /**
- * Holds the name {@link import('./factories.js').createAnswerTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
+ * Holds the name {@link import('./factories.js').createAnswerTool} advertises by default,
+ * `'answer'` — the key a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers
+ * under.
  */
 export const ANSWER_TOOL_NAME = 'answer'
 
 /**
- * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createAnswerTool}
- * advertises in place of {@link ANSWER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable through
- * {@link import('./factories.js').createDescribeTool}.
+ * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
+ * {@link import('./factories.js').createAnswerTool} advertises in place of
+ * {@link ANSWER_TOOL_DESCRIPTION} — one sentence offering the pending listing and the answer call,
+ * and pointing at `describe` for the fields each takes.
+ *
+ * @remarks
+ * A `ToolManagerInterface.definitions()` call (`@orkestrel/tool`) advertises
+ * `summary ?? description`, so this one-sentence text stands in for the full teaching description;
+ * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const ANSWER_TOOL_SUMMARY =
 	"List forms addressed to this terminal, or answer one by id with a values record. Call describe('answer') for the required fields."
 
-/** Holds the pending/answer protocol {@link import('./factories.js').createAnswerTool} advertises. */
+/**
+ * Holds the protocol {@link import('./factories.js').createAnswerTool} advertises — the `pending`
+ * and `answer` operations and the `values` record an answer supplies, each with a worked example.
+ */
 export const ANSWER_TOOL_DESCRIPTION = [
 	'List the forms addressed to this terminal, or answer one of them by id. Every call is ONE operation, chosen by the "operation" field.',
 	'',
@@ -314,27 +345,34 @@ export const ANSWER_TOOL_DESCRIPTION = [
 ].join('\n')
 
 /**
- * Holds the name {@link import('./factories.js').createDatabaseTool} advertises by default — the key
- * a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
+ * Holds the name {@link import('./factories.js').createDatabaseTool} advertises by default,
+ * `'database'` — the key a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers
+ * under.
  */
 export const DATABASE_TOOL_NAME = 'database'
 
 /**
  * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
  * {@link import('./factories.js').createDatabaseTool} advertises in place of
- * {@link DATABASE_TOOL_DESCRIPTION}.
+ * {@link DATABASE_TOOL_DESCRIPTION} — one sentence offering the `operation`-keyed database call and
+ * pointing at `describe` for the operation list, the query form, and the column DSL.
+ *
+ * @remarks
+ * A `ToolManagerInterface.definitions()` call (`@orkestrel/tool`) advertises
+ * `summary ?? description`, so this one-sentence text stands in for the full teaching description;
+ * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const DATABASE_TOOL_SUMMARY =
 	"Create and query a database — one operation per call (create, tables, get, records, count, aggregate, add, set, update, remove, destroy), chosen by the 'operation' field. Call describe('database') for the full operation list, the query form, and the column DSL."
 
 /**
  * Holds the description {@link import('./factories.js').createDatabaseTool} advertises — a
- * multi-line guide that teaches a small model the operation list, the SERIALIZED query form, and
+ * multi-line guide that teaches a small model the operation list, the serialized query form, and
  * the {@link import('./types.js').TableSpec} column DSL.
  *
  * @remarks
- * The query form is deliberately SERIALIZED (never fluent) — every condition is a flat object
- * `{ column, operator, values, connector? }` where `values` is ALWAYS an array, even for a
+ * The query form is deliberately serialized (never fluent) — every condition is a flat object
+ * `{ column, operator, values, connector? }` where `values` is always an array, even for a
  * single-value operator (`{ column: 'age', operator: 'from', values: [18] }`), so a small model
  * never has to chain method calls or guess whether a value is scalar or a list.
  */
@@ -384,7 +422,10 @@ export const DATABASE_TOOL_DESCRIPTION = [
 	}),
 ].join('\n')
 
-/** Holds the default cap on rows a `records` call returns when the caller omits `query.limit` — the database tool's default row ceiling. */
+/**
+ * Holds the default cap on rows a `records` call returns when the caller omits `query.limit`,
+ * `1000` — the database tool's default row ceiling.
+ */
 export const DATABASE_TOOL_LIMIT = 1000
 
 /** Lists the runtime-frozen database-tool mutation names disabled by `DatabaseToolOptions.readonly`. */
@@ -398,24 +439,33 @@ export const DATABASE_TOOL_MUTATIONS: readonly string[] = Object.freeze([
 ])
 
 /**
- * Holds the name `createRelationTool` advertises by default — the key a model calls and the
- * `ToolManagerInterface` (`@orkestrel/tool`) registers under.
+ * Holds the name {@link import('./factories.js').createRelationTool} advertises by default,
+ * `'relation'` — the key a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers
+ * under.
  */
 export const RELATION_TOOL_NAME = 'relation'
 
 /**
- * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} the relation tool advertises
- * in place of {@link RELATION_TOOL_DESCRIPTION}.
+ * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
+ * {@link import('./factories.js').createRelationTool} advertises in place of
+ * {@link RELATION_TOOL_DESCRIPTION} — one sentence offering the `operation`-keyed relationship
+ * traversal and pointing at `describe` for the include-path syntax.
+ *
+ * @remarks
+ * A `ToolManagerInterface.definitions()` call (`@orkestrel/tool`) advertises
+ * `summary ?? description`, so this one-sentence text stands in for the full teaching description;
+ * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const RELATION_TOOL_SUMMARY =
 	"Traverse and edit relationships between database rows — one operation per call (load, find, link, unlink, links), chosen by the 'operation' field. Call describe('relation') for the include-path syntax."
 
 /**
- * Holds the DESCRIPTION the relation tool advertises — a multi-line guide that teaches a small model
- * the operation list and the flat dot-path `include` syntax.
+ * Holds the description {@link import('./factories.js').createRelationTool} advertises — a
+ * multi-line guide that teaches a small model the operation list and the flat dot-path `include`
+ * syntax.
  *
  * @remarks
- * An include path is a FLAT dot-separated string (`'contacts.account'`), never a nested object —
+ * An include path is a flat dot-separated string (`'contacts.account'`), never a nested object —
  * the same small-model ergonomic lever the other tools in this package use for flat args.
  */
 export const RELATION_TOOL_DESCRIPTION = [
@@ -433,29 +483,43 @@ export const RELATION_TOOL_DESCRIPTION = [
 	JSON.stringify({ operation: 'load', model: 'orders', key: '1', include: ['contacts.account'] }),
 ].join('\n')
 
-/** Holds the default cap on rows a `find` / `links` call returns when the caller omits `limit` — the relation tool's default row ceiling. */
+/**
+ * Holds the default cap on rows a `find` or `links` call returns when the caller omits `limit`,
+ * `1000` — the relation tool's default row ceiling.
+ */
 export const RELATION_TOOL_LIMIT = 1000
 
-/** Holds the default cap on how many `include` path segments deep a `load` / `find` call may traverse — the relation tool's default include-depth ceiling. */
+/**
+ * Holds the default cap on how many `include` path segments deep a `load` or `find` call may
+ * traverse, `3` — the relation tool's default include-depth ceiling.
+ */
 export const RELATION_TOOL_DEPTH = 3
 
 /**
- * Holds the name {@link import('./factories.js').createInferTool} advertises by default — the key a
- * model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
+ * Holds the name {@link import('./factories.js').createInferTool} advertises by default, `'infer'`
+ * — the key a model calls and the `ToolManagerInterface` (`@orkestrel/tool`) registers under.
  */
 export const INFER_TOOL_NAME = 'infer'
 
 /**
- * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary} {@link import('./factories.js').createInferTool}
- * advertises in place of {@link INFER_TOOL_DESCRIPTION} — a `ToolManagerInterface.definitions()`
- * (`@orkestrel/tool`) advertises `summary ?? description`, so this one-sentence text stands in
- * for the full teaching description; the full text stays retrievable through
- * {@link import('./factories.js').createDescribeTool}.
+ * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
+ * {@link import('./factories.js').createInferTool} advertises in place of
+ * {@link INFER_TOOL_DESCRIPTION} — one sentence offering schema inference from example values and
+ * pointing at `describe` for the fields it takes.
+ *
+ * @remarks
+ * A `ToolManagerInterface.definitions()` call (`@orkestrel/tool`) advertises
+ * `summary ?? description`, so this one-sentence text stands in for the full teaching description;
+ * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const INFER_TOOL_SUMMARY =
 	"Infer a JSON Schema (as advertised tool parameters) from one or more example values. Call describe('infer') for the required fields."
 
-/** Holds the schema-inference protocol {@link import('./factories.js').createInferTool} advertises. */
+/**
+ * Holds the schema-inference protocol {@link import('./factories.js').createInferTool} advertises —
+ * the required `samples`, the optional `format`, `enum`, and `candidates` arguments, and a worked
+ * example of the bare return and of the `candidates`-wrapped return.
+ */
 export const INFER_TOOL_DESCRIPTION = [
 	'Infer a JSON Schema from example values, returned in the same shape a tool advertises its parameters.',
 	'',

@@ -8,25 +8,25 @@ import { isDatabaseDefinition } from '../validators.js'
 
 /**
  * Represents a {@link DefinitionStoreInterface} backed by one table of the `@orkestrel/database` layer — a
- * database's durable CONFIG state IS a row, so persistence reduces to keyed point-access
+ * database's durable config state is a row, so persistence reduces to keyed point-access
  * (`get` / `set` / `delete`) over a {@link TableInterface}, the driver-pluggable twin of the
  * plain-`Map` {@link import('./MemoryDefinitionStore.js').MemoryDefinitionStore}.
  *
  * @remarks
  * The store is driver-agnostic: it holds a single {@link TableInterface} whose backend (memory,
  * JSON, SQLite, IndexedDB) is chosen by whoever builds it (the factories), so a JSON / SQLite /
- * IndexedDB backend swaps in WITHOUT touching a consumer — the same seam as
+ * IndexedDB backend swaps in without touching a consumer — the same seam as
  * {@link import('./MemoryDefinitionStore.js').MemoryDefinitionStore}. The driver defaults to
  * memory ({@link import('../factories.js').createDatabaseDefinitionStore} passes
- * `createMemoryDriver()`), so it ALSO works in memory out of the box; you opt into the durable
+ * `createMemoryDriver()`), so it also works in memory out of the box; you opt into the durable
  * plumbing by passing a JSON / SQLite / IndexedDB driver.
  *
- * The {@link DatabaseDefinition} is stored as ONE OPAQUE JSON COLUMN — the table is a row of
- * `{ id; definition }` ({@link DatabaseDefinitionRow}). The definition is already a COMPLETE,
- * self-contained, pure-JSON CONFIG payload (never a live handle), so storing it whole is lossless
- * AND keeps the row type flat (`definition` reads back as `unknown`).
+ * The {@link DatabaseDefinition} is stored as one opaque JSON column — the table is a row of
+ * `{ id; definition }` ({@link DatabaseDefinitionRow}). The definition is already a complete,
+ * self-contained, pure-JSON config payload (never a live handle), so storing it whole is lossless
+ * and keeps the row type flat (`definition` reads back as `unknown`).
  *
- * - **`set(definition)` upserts under the definition's OWN `id`** (no separate id param) — it
+ * - **`set(definition)` upserts under the definition's own `id`** (no separate id param) — it
  *   writes the row `{ id: definition.id, definition }`.
  * - **`get(id)` resolves the stored definition for an id**, narrowing the opaque JSON column back
  *   to a {@link DatabaseDefinition} ({@link import('../validators.js').isDatabaseDefinition} — the
@@ -34,7 +34,7 @@ import { isDatabaseDefinition } from '../validators.js'
  *   or the stored blob is malformed.
  * - **`delete(id)` drops a definition by id**; an absent id is a no-op (no throw).
  *
- * The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the method
+ * The public surface is exactly `get` / `set` / `delete` — no extra members (the method
  * bijection with {@link DefinitionStoreInterface}).
  *
  * @example
@@ -78,10 +78,10 @@ export class DatabaseDefinitionStore implements DefinitionStoreInterface {
 	}
 
 	/**
-	 * Inserts or replaces a definition under its OWN `id` — the written row is `{ id, definition }`.
+	 * Inserts or replaces a definition under its own `id` — the written row is `{ id, definition }`.
 	 *
 	 * @param definition - The config to persist; its own `id` is the row key (no separate id param)
-	 * @returns A promise settling once the row is written
+	 * @returns A promise settling after the row is written
 	 */
 	async set(definition: DatabaseDefinition): Promise<void> {
 		await this.#table.set({ id: definition.id, definition })
@@ -91,7 +91,7 @@ export class DatabaseDefinitionStore implements DefinitionStoreInterface {
 	 * Drops the definition stored under `id`.
 	 *
 	 * @param id - The database id to drop; an absent id is a no-op, never a throw
-	 * @returns A promise settling once no row is stored under `id`
+	 * @returns A promise settling after no row is stored under `id`
 	 */
 	async delete(id: string): Promise<void> {
 		await this.#table.remove(id)

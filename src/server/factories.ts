@@ -6,6 +6,10 @@ import { TerminalBridge } from './terminals/TerminalBridge.js'
  * Builds the GET SSE stream and POST answer routes that bridge a terminal manager onto the wire.
  *
  * @remarks
+ * The pair stays byte-compatible with `@orkestrel/terminal`'s own `PromptClient`: the same GET url
+ * streams, the same POST url answers, the same `{ id, values }` request body, the same JSON answer
+ * `Result` response body, and the same `x-orkestrel-token` header.
+ *
  * Both routes share the configured `:name` path and optional token gate. The GET route replays
  * pending prompts, forwards live pending/expire events, and owns abort/keepalive teardown. The
  * POST route bounds the request body before parsing and maps answer outcomes to HTTP statuses.

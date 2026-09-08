@@ -29,8 +29,8 @@ import { isWorkflowLineage } from './validators.js'
  * Returns the ancestry identifier of a workflow in a run chain — `workflow:<id>`.
  *
  * @remarks
- * Namespacing keeps a workflow id and a {@link tagAgent} agent name in ONE set without
- * collision, so re-entering a workflow OR an agent already in the chain is a single `includes`
+ * Namespacing keeps a workflow id and a {@link tagAgent} agent name in one set without
+ * collision, so re-entering a workflow or an agent already in the chain is a single `includes`
  * check.
  *
  * @param id - The workflow definition's `id`
@@ -93,12 +93,12 @@ export function deriveWorkflowDepth(lineage: WorkflowLineage): number {
 }
 
 /**
- * Builds the plain success summary {@link import('./factories.js').createWorkflowTool} returns on
- * a completed run — the universal tool-handler contract: return a plain value on success,
- * appearing identically over BOTH the agent loop and MCP.
+ * Builds the plain success summary {@link import('./factories.js').createWorkflowTool} returns on a
+ * completed run — the universal tool-handler contract: return a plain value on success, appearing
+ * identically over both the agent loop and MCP.
  *
  * @remarks
- * The summary is LEAN: the workflow's terminal `status`, settled-task count, and exact optional
+ * The summary is lean: the workflow's terminal `status`, settled-task count, and exact optional
  * native persistence outcome. It carries no synthetic `id` / `name`: a tool handler has no call
  * id; the `ToolManagerInterface` (`@orkestrel/tool`) supplies the canonical envelope's identity.
  *
@@ -124,21 +124,21 @@ export function summarizeWorkflow(result: WorkflowResult): WorkflowToolResult {
 // `createWorkflowContract().is` gate before running (soundness).
 
 /**
- * Completes a {@link WorkflowDraft} into a strict {@link WorkflowDefinition} — synthesizes any
- * MISSING `id` deterministically + positionally, and defaults any MISSING `name` to its
- * (now-resolved) `id`.
+ * Completes a {@link WorkflowDraft} into a strict {@link WorkflowDefinition} — synthesizes a
+ * missing `id` deterministically and positionally, and defaults a missing `name` to its resolved
+ * `id`.
  *
  * @remarks
  * The positional id scheme is stable and human-legible: the workflow is `wf`, phase `i` is
  * `phase-<i>`, and task `j` of that phase is `<phaseId>-task-<j>` (so a provided phase id flows
- * into its tasks' synthesized ids). A PROVIDED `id` / `name` at any level is kept VERBATIM —
+ * into its tasks' synthesized ids). A provided `id` / `name` at any level is kept verbatim —
  * synthesis touches only the omitted ones. A missing `name` defaults to the resolved `id` (never
- * the other way round), so the result always has both. `behavior`, `description`, the per-phase
+ * the other way round), so the result always carries an `id` and a `name`. `behavior`, `description`, the per-phase
  * `concurrency` / `bail`, the per-task `retries` / `timeout`, and the workflow `bail` carry over
  * unchanged. The result is a complete {@link WorkflowDefinition}; the caller still validates it
- * against the STRICT contract.
+ * against the strict contract.
  *
- * @param draft - The draft workflow (id/name optional at all three levels)
+ * @param draft - The draft workflow (`id` and `name` optional at the workflow, phase, and task levels)
  * @returns A complete {@link WorkflowDefinition} with every id/name filled
  */
 export function completeDraft(draft: WorkflowDraft): WorkflowDefinition {
@@ -203,18 +203,18 @@ export function completeTaskDraft(
 
 /**
  * Expands a flat {@link WorkflowSteps} blob into a strict {@link WorkflowDefinition} — each step
- * becomes a one-task phase, IN ORDER.
+ * becomes a one-task phase, in order.
  *
  * @remarks
- * The expansion of the tool's ADVERTISED surface: the deliberately-reduced flat form. Each
+ * The expansion of the tool's advertised surface: the deliberately-reduced flat form. Each
  * {@link import('./types.js').WorkflowStep} maps to a phase holding exactly one task: the step's
  * `name` becomes the task's `behavior` (the behavior-registry key). Ids/names are auto-filled
  * positionally — it builds an ids-omitted {@link WorkflowDraft} and delegates to
- * {@link completeDraft}, so the two lenient surfaces share ONE synthesis path (step `i` → phase
+ * {@link completeDraft}, so the lenient surfaces share one synthesis path (step `i` → phase
  * `phase-<i>`, its task `phase-<i>-task-0`). The optional `name` becomes both the workflow's
  * deterministic id and its name, so named flat workflows retain distinct persistence keys;
  * omission keeps the shared draft fallback `wf`. The result is a complete definition the caller
- * validates against the STRICT contract before running.
+ * validates against the strict contract before running.
  *
  * @param flat - The flat steps blob (`{ name?, steps: [{ name }] }`)
  * @returns A complete {@link WorkflowDefinition} (one one-task phase per step)
@@ -280,15 +280,15 @@ export function inferRelationCode(error: unknown): RelationErrorCode | undefined
 }
 
 /**
- * Expands the relation tool's FLAT dot-path `include` list into a live `@orkestrel/relation`
+ * Expands the relation tool's flat dot-path `include` list into a live `@orkestrel/relation`
  * {@link Include} tree — the pure leaf {@link import('./factories.js').createRelationTool} calls
  * before a `'load'` / `'find'` call.
  *
  * @remarks
  * Each path splits on `'.'` into a chain of relation names, deep-merged into one nested
- * `Include` object with a leaf `true`. A longer path SUBSUMES a shorter sibling's bare `true` —
+ * `Include` object with a leaf `true`. A longer path subsumes a shorter sibling's bare `true` —
  * `'contacts'` followed by `'contacts.account'` yields `{ contacts: { account: true } }`, never
- * overwriting the deeper chain. An EMPTY segment (`''`, from a leading/trailing/doubled `.`) or a
+ * overwriting the deeper chain. An empty segment (`''`, from a leading/trailing/doubled `.`) or a
  * path whose segment count exceeds `depth` throws a typed `TOOL` {@link ToolboxError}.
  *
  * @param paths - The flat dot-path `include` list (or `undefined` — yields `{}`)
@@ -351,7 +351,7 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
  *
  * @remarks
  * An explicit `name` must match a key of `managers` (a miss throws a typed `TOOL`
- * {@link ToolboxError} naming the registered managers). An OMITTED `name` resolves to the sole
+ * {@link ToolboxError} naming the registered managers). An omitted `name` resolves to the sole
  * registered manager when exactly one is registered, else throws the same typed error.
  *
  * @param managers - The tool's registered `RelationManagerInterface` map
@@ -409,11 +409,11 @@ export function resolveRelationModel(
 
 /**
  * Returns the canonical live `@orkestrel/database` {@link QueryInput} for the database tool's
- * parsed SERIALIZED query — each condition's OMITTED `connector` defaults to `'and'`.
+ * parsed serialized query — each condition's omitted `connector` defaults to `'and'`.
  *
  * @remarks
  * The wire form ({@link import('./shapers.js').databaseToolShape}) lets a caller drop `connector`
- * on the last condition (it has nothing to join FORWARD to); the compiled `Condition` a live
+ * on the last condition (it has nothing to join forward to); the compiled `Condition` a live
  * `@orkestrel/database` table call accepts always carries one, so this fills the gap. `order` /
  * `limit` / `offset` pass through unchanged. Pure and total.
  *
@@ -461,14 +461,14 @@ export function resolveLimit(requested: number | undefined, cap: number): number
 }
 
 /**
- * Clamps a `'records'` call's query to a row cap, and builds the PROBE query the caller reads
- * with — the pure leaf {@link import('./factories.js').createDatabaseTool}'s `'records'` operation
- * uses to detect truncation without a separate `count` round trip.
+ * Clamps a `'records'` call's query to a row cap, and builds the probe query the caller reads with
+ * — the pure leaf {@link import('./factories.js').createDatabaseTool}'s `'records'` operation uses
+ * to detect truncation without a separate `count` round trip.
  *
  * @remarks
  * {@link resolveLimit} picks the effective limit, so a caller can never exceed the configured cap
  * by supplying a larger `query.limit`, and can never drive it below `0`. The returned probe query
- * requests ONE MORE row than the effective limit (`limit: effective + 1`) — if storage returns
+ * requests one more row than the effective limit (`limit: effective + 1`) — if storage returns
  * that many, the caller knows the true result was truncated (`rows.length > effective`) and slices
  * back down to `effective` before returning.
  *
@@ -484,7 +484,7 @@ export function resolveLimit(requested: number | undefined, cap: number): number
  *
  * @param query - The live query to clamp (or `undefined`)
  * @param cap - The row-count ceiling
- * @returns The PROBE query (`limit` bumped by one) and the effective `limit`
+ * @returns The probe query (`limit` bumped by one) and the effective `limit`
  */
 export function clampQuery(query: QueryInput | undefined, cap: number): ClampedQuery {
 	const limit = resolveLimit(query?.limit, cap)

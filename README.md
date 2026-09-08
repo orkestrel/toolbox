@@ -1,9 +1,6 @@
 # @orkestrel/toolbox
 
-Concrete, LLM-callable tools for the `@orkestrel` line. Toolbox supplies workflow
-authoring, workspace editing, sub-agent delegation, terminal prompts, database and
-relation operations, and schema inference over the
-[`@orkestrel/tool`](https://github.com/orkestrel/tool) runtime.
+> Concrete, LLM-callable tools for the `@orkestrel` line — workflow authoring, workspace editing, sub-agent delegation, terminal-mediated prompting, database and relation access, schema inference, and endpoint wrapping — over the `@orkestrel/tool` runtime, with pluggable stores.
 
 The runtime envelope and registry (`ToolInterface`, `ToolCall`, `ToolResult`,
 `createTool`, and `createToolManager`) live in `@orkestrel/tool`. This package supplies

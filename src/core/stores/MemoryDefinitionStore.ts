@@ -2,7 +2,7 @@ import type { DatabaseDefinition, DefinitionStoreInterface } from '../types.js'
 
 /**
  * Represents the in-memory {@link DefinitionStoreInterface} — a process-lifetime `Map` of
- * {@link DatabaseDefinition}s keyed by database id, the DEFAULT store
+ * {@link DatabaseDefinition}s keyed by database id, the default store
  * {@link import('../factories.js').createMemoryDefinitionStore} builds. It implements the same
  * {@link DefinitionStoreInterface} contract as
  * {@link import('./DatabaseDefinitionStore.js').DatabaseDefinitionStore}: this store copies on
@@ -11,19 +11,19 @@ import type { DatabaseDefinition, DefinitionStoreInterface } from '../types.js'
  *
  * @remarks
  * A plain `Map<string, DatabaseDefinition>` (the definition is already pure,
- * self-contained CONFIG-only JSON, so no encoding is needed for the memory tier). Values are
- * structured-cloned on both write and read, keeping caller mutation outside the store. There is NO
- * idle-TTL and NO eviction: a persisted definition lives until an explicit `delete`. A durable
- * backend (JSON / SQLite / IndexedDB) swaps in through the SAME interface without touching a
+ * self-contained config-only JSON, so no encoding is needed for the memory tier). Values are
+ * structured-cloned on both write and read, keeping caller mutation outside the store. There is no
+ * idle-TTL and no eviction: a persisted definition lives until an explicit `delete`. A durable
+ * backend (JSON / SQLite / IndexedDB) swaps in through the same interface without touching a
  * consumer — its driver-pluggable twin is
  * {@link import('./DatabaseDefinitionStore.js').DatabaseDefinitionStore} (the definition as one
  * opaque JSON column).
  *
  * - **`get` resolves the persisted definition for an id**, or `undefined` if none is stored.
- * - **`set` inserts / replaces under the definition's OWN `id`** (no separate id param).
+ * - **`set` inserts / replaces under the definition's own `id`** (no separate id param).
  * - **`delete` drops a definition by id**; an absent id is a no-op (no throw).
  *
- * The public surface is EXACTLY `get` / `set` / `delete` — no extra members (the method
+ * The public surface is exactly `get` / `set` / `delete` — no extra members (the method
  * bijection with {@link DefinitionStoreInterface}).
  *
  * @example
@@ -51,10 +51,10 @@ export class MemoryDefinitionStore implements DefinitionStoreInterface {
 	}
 
 	/**
-	 * Inserts or replaces a definition under its OWN `id`, copied into the backing `Map`.
+	 * Inserts or replaces a definition under its own `id`, copied into the backing `Map`.
 	 *
 	 * @param definition - The config to persist; its own `id` is the key (no separate id param)
-	 * @returns A promise settling once the definition is stored
+	 * @returns A promise settling after the definition is stored
 	 */
 	set(definition: DatabaseDefinition): Promise<void> {
 		this.#definitions.set(definition.id, structuredClone(definition))
@@ -65,7 +65,7 @@ export class MemoryDefinitionStore implements DefinitionStoreInterface {
 	 * Drops the definition stored under `id`.
 	 *
 	 * @param id - The database id to drop; an absent id is a no-op, never a throw
-	 * @returns A promise settling once no definition is stored under `id`
+	 * @returns A promise settling after no definition is stored under `id`
 	 */
 	delete(id: string): Promise<void> {
 		this.#definitions.delete(id)

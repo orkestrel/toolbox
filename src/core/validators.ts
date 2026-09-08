@@ -80,7 +80,7 @@ export function isColumnPrimitive(value: unknown): value is ColumnPrimitive {
 }
 
 /**
- * Narrows an unknown value to a {@link DatabaseDefinition} — a non-empty `id` + `driver`, a
+ * Narrows an unknown value to a {@link DatabaseDefinition} — a non-empty `id` and `driver`, a
  * `tables` record whose every value is `{ columns: record of valid ColumnSpec }`, plus optional
  * `primary`, `indexes`, and finite `version` schema configuration. The boundary guard a
  * {@link import('./types.js').DefinitionStoreInterface} applies to an untrusted persisted blob

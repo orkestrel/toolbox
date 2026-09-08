@@ -130,8 +130,8 @@ import {
 // sub-agent delegation over an `AgentRegistryInterface`.
 
 /**
- * Wraps a registered tool as a {@link WorkflowFunction} (`@orkestrel/workflow`) — the OPT-IN
- * adapter that lets a `function`-form task run a `@orkestrel/tool` tool BY NAME.
+ * Wraps a registered tool as a {@link WorkflowFunction} (`@orkestrel/workflow`) — the opt-in
+ * adapter that lets a `function`-form task run a `@orkestrel/tool` tool by name.
  *
  * @remarks
  * Composes into a caller's `WorkflowOptions.functions` registry like any other behavior
@@ -361,7 +361,9 @@ export function createWorkflowFunctions(
 }
 
 /**
- * Compiles the lenient workflow draft contract used by {@link createWorkflowTool}.
+ * Compiles the lenient workflow draft contract {@link createWorkflowTool} parses an authored tree
+ * with — a `ContractInterface` over a {@link WorkflowDraft}, whose `id` and `name` are optional at
+ * the workflow, phase, and task levels.
  *
  * @returns The compiled {@link import('./types.js').WorkflowDraft} contract
  */
@@ -370,34 +372,33 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
 }
 
 /**
- * Wraps a {@link WorkflowDefinition} as an LLM-callable tool — it ADVERTISES the SIMPLE flat
- * authoring shape (`{ name?, steps: [{ name }] }`) as its `parameters` so even a small model can
- * author a complete tree, and its handler EXPANDS / COMPLETES the authored blob, validates it
- * against the STRICT contract, and runs it through `runner`, forwarding the caller's optional
- * named functions and native checkpoint store.
+ * Wraps a {@link WorkflowDefinition} as an LLM-callable tool — it advertises the flat authoring
+ * shape (`{ name?, steps: [{ name }] }`) as its `parameters`, and its handler completes the
+ * authored blob, validates it against the strict contract, and runs it through `runner`, forwarding
+ * the caller's optional named functions and native checkpoint store.
  *
  * @remarks
  * A plain `ToolManagerInterface`-compatible tool (`@orkestrel/tool`), reproducing
  * Toolbox's flat / draft / full authoring contract, strict soundness gate, and lineage guard.
- * It is ALSO the propagation carrier
+ * It is also the propagation carrier
  * {@link createAgentFunction} binds onto a wrapped agent's `context.tools`: because a tool
  * handler receives only the model-supplied `args`, the immutable lineage is closed over at bind
  * time. The authored target is appended and its zero-based depth derived from workflow tags.
  *
- * **Widened authoring surface (additive — the canonical contract + runner stay STRICT and
- * unchanged).** A 2B model reliably CALLS the tool but cannot reliably emit the full four-level
- * nested {@link WorkflowDefinition} (six required `id`/`name` strings, an all-or-nothing tree).
- * So the tool ACCEPTS three authoring forms and converges them on the SAME strict
+ * **Widened authoring surface (additive — the canonical contract and runner stay strict and
+ * unchanged).** A 2B model reliably calls the tool but cannot reliably emit the full nested
+ * {@link WorkflowDefinition}, whose every `id` and `name` is required across an all-or-nothing
+ * tree. So the tool accepts the authoring forms that follow and converges them on the same strict
  * `createWorkflowContract` gate before running (soundness preserved):
- * - the FLAT shape `{ name?, steps: [{ name }] }` — the ADVERTISED `parameters` (the simplest
+ * - the flat shape `{ name?, steps: [{ name }] }` — the advertised `parameters` (the simplest
  *   form, {@link import('./helpers.js').expandSteps}'d into one one-task phase per step);
- * - a nested DRAFT with any `id`/`name` OMITTED — {@link createWorkflowDraftContract}-parsed then
+ * - a nested draft with any `id`/`name` omitted — {@link createWorkflowDraftContract}-parsed then
  *   {@link import('./helpers.js').completeDraft}'d (missing ids synthesized positionally);
  * - the full nested {@link WorkflowDefinition} — the advanced escape-hatch, accepted as the draft
  *   super-set.
  *
  * The universal tool-handler contract: returns the plain run summary
- * (`{ status, count, durable?, fault? }`) on success, THROWS a typed `ToolboxError` on Toolbox
+ * (`{ status, count, durable?, fault? }`) on success, throws a typed `ToolboxError` on Toolbox
  * boundary failures — malformed authored args (`TOOL`), or an over-deep / cyclic nested run
  * (`DEPTH`) — and preserves genuine runner `WorkflowError`s. The `ToolManagerInterface` isolates every throw into the canonical tool result's
  * top-level `error`, so nothing escapes the run. `options.lineage` is the propagation carrier
@@ -410,6 +411,34 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
  * @param options - Lineage-aware functions, agents, and optional native store
  * @returns A `ToolInterface` (named {@link import('./constants.js').WORKFLOW_TOOL_NAME}) whose
  *   `parameters` advertise the flat authoring schema
+ *
+ * @example Authoring and running a workflow through the tool with a real ToolManager
+ * ```ts
+ * import { createWorkflowTool } from '@orkestrel/toolbox'
+ * import { createToolManager } from '@orkestrel/tool'
+ * import { createWorkflowRunner } from '@orkestrel/workflow'
+ * import type { WorkflowDefinition } from '@orkestrel/workflow'
+ *
+ * const definition: WorkflowDefinition = { id: 'release', name: 'Release', phases: [] }
+ * const runner = createWorkflowRunner()
+ * const functions = {
+ * 	compile: () => 'compiled',
+ * 	publish: () => 'published',
+ * }
+ * const tool = createWorkflowTool(definition, runner, { functions })
+ *
+ * const tools = createToolManager()
+ * tools.add(tool)
+ *
+ * // A small model authors the simple flat shape — no ids/names required.
+ * const result = await tools.execute({
+ * 	id: 'call-1',
+ * 	name: 'workflow',
+ * 	arguments: { name: 'release', steps: [{ name: 'compile' }, { name: 'publish' }] },
+ * })
+ * if (!result.success) throw new Error(result.error)
+ * result.value // { status: 'completed', count: 2 } — the single-level envelope; no nested { id, name, value }
+ * ```
  *
  * @example
  * ```ts
@@ -510,42 +539,35 @@ export function createWorkflowTool(
 }
 
 /**
- * Builds an LLM-callable workspace-editing tool — it ADVERTISES the `operation`-discriminated
- * union ({@link import('./shapers.js').workspaceToolShape}) as its `parameters`, and its
- * handler PARSES the model-supplied args against that contract and DISPATCHES the matched
- * operation against the manager's ACTIVE workspace (the registry ops drive the manager itself),
- * returning the plain result. A malformed operation throws this package's `ToolboxError`; a
- * genuine workspace-domain failure propagates `@orkestrel/workspace`'s typed `WorkspaceError`.
- * EITHER drives a caller-supplied {@link WorkspaceToolOptions.manager} directly, OR
- * constructs a fresh `WorkspaceManagerInterface` (`@orkestrel/workspace`) over
- * {@link import('./types.js').WorkspaceToolOptions.store} (through `@orkestrel/workspace`'s
- * `createWorkspaceManager`); neither given constructs a manager backed by
- * `@orkestrel/workspace`'s in-memory store default.
+ * Builds an LLM-callable workspace-editing tool — it advertises the `operation`-discriminated union
+ * ({@link import('./shapers.js').workspaceToolShape}) as its `parameters`, and its handler parses
+ * the model-supplied args against that contract and dispatches the matched operation against the
+ * manager's active workspace, returning the plain result.
  *
  * @remarks
- * MANAGER-DRIVEN: every edit / read op (read / list / has / search / replace / write / splice /
+ * Manager-driven: every edit / read op (read / list / has / search / replace / write / splice /
  * prepend / append / move / remove) targets `manager.active`, so the model edits whichever
  * workspace is active and a host can re-point it (`WorkspaceManagerInterface.switch`) between
- * turns. Two REGISTRY ops make the model self-sufficient: `workspaces` LISTS the registered
+ * turns. The registry ops make the model self-sufficient: `workspaces` lists the registered
  * workspaces (each `{ id, files, active }`) so it can discover an id, and `switch` re-points the
  * active workspace by id (lenient — an unknown id is a no-op reporting `switched: false`, never a
  * throw).
  *
- * NO-ACTIVE RULE (the ergonomic seam): a WRITING op (write / splice / prepend / append / move /
- * remove / replace) run when `manager.active` is `undefined` AUTO-CREATES + activates a default
- * workspace (`manager.add()`) so the model can start writing; a pure-READ op (read / list /
- * has / search) against no active workspace returns the EMPTY result (`undefined` / `[]` /
+ * No-active rule (the ergonomic seam): a writing op (write / splice / prepend / append / move /
+ * remove / replace) run when `manager.active` is `undefined` auto-creates and activates a default
+ * workspace (`manager.add()`) so the model can start writing; a pure-read op (read / list /
+ * has / search) against no active workspace returns the empty result (`undefined` / `[]` /
  * `false`), never creating one and never throwing.
  *
  * The handler conforms to the universal tool-handler contract: it `contract.parse`s
- * the args, THROWS a `TOOL` `ToolboxError` when no operation arm matched (a malformed / unknown
- * operation), else `switch`es on `op.operation` and RETURNS the plain result — letting a
+ * the args, throws a `TOOL` `ToolboxError` when no operation arm matched (a malformed / unknown
+ * operation), else `switch`es on `op.operation` and returns the plain result — letting a
  * `WorkspaceError` raised by the live workspace (`MISSING` / `MODALITY` / `PATTERN` / `RANGE`)
- * PROPAGATE uncaught. The range edit is the FLAT `'splice'` op: its four flat caret integers are
+ * propagate uncaught. The range edit is the flat `'splice'` op: its flat caret integers are
  * reassembled into a `Range` (`@orkestrel/workspace`) by `rangeOf` and fed to the workspace's
  * ranged `write`.
  *
- * @param options - `manager` (drive directly) OR `store` (build a manager over it); neither ⇒
+ * @param options - `manager` (drive directly) or `store` (build a manager over it); neither ⇒
  *   an in-memory-backed manager (see {@link import('./types.js').WorkspaceToolOptions})
  * @returns A `ToolInterface` (named {@link import('./constants.js').WORKSPACE_TOOL_NAME} by default)
  *
@@ -662,8 +684,8 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 }
 
 /**
- * Builds an LLM-callable sub-agent delegation tool — resolves a live, seeded `AgentInterface`
- * from `registry` and runs it to completion for ONE delegated `task`.
+ * Builds an LLM-callable sub-agent delegation tool — it resolves a live, seeded `AgentInterface`
+ * from `registry` and runs it to completion for one delegated `task`.
  *
  * @remarks
  * The universal tool-handler contract: validates the call args against
@@ -671,10 +693,10 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
  * sub-agent's conversation as a single `user` message; `provider` / `tools` / `system` fall
  * back to the tool's own {@link import('./types.js').AgentToolOptions} defaults), rehydrates the sub-agent through
  * `registry.build`, runs it with `agent.generate()`, and returns the settled
- * `AgentResult.content` string (the sub-agent's final text). A missing / unresolvable `provider`, or a malformed call, THROWS a typed `TOOL`
+ * `AgentResult.content` string (the sub-agent's final text). A missing / unresolvable `provider`, or a malformed call, throws a typed `TOOL`
  * {@link import('./errors.js').ToolboxError}; a delegation that would exceed
  * {@link import('./constants.js').AGENT_TOOL_DEPTH}, or re-enter an already-delegated agent (a
- * cycle), THROWS a typed `DEPTH` {@link import('./errors.js').ToolboxError} — both isolated
+ * cycle), throws a typed `DEPTH` {@link import('./errors.js').ToolboxError}, each isolated
  * by the `ToolManagerInterface` into the canonical tool result's top-level `error`.
  *
  * `AgentInterface` (`@orkestrel/agent`) exposes no teardown method — a bound sub-agent's
@@ -757,9 +779,8 @@ export function createAgentTool(
 }
 
 /**
- * Builds an LLM-callable tool that returns the FULL `description` of another registered tool by
- * name — the counterpart to the lean `summary` the other tools in this package advertise
- * (`AGENT_TOOL_SUMMARY` / `WORKFLOW_TOOL_SUMMARY` / `WORKSPACE_TOOL_SUMMARY`).
+ * Builds an LLM-callable tool that returns the full `description` of another registered tool by
+ * name — the counterpart to the lean `summary` the other tools in this package advertise.
  *
  * @remarks
  * `ToolManagerInterface.definitions()` (`@orkestrel/tool`) advertises `tool.summary ??
@@ -770,8 +791,8 @@ export function createAgentTool(
  * tool has no `description` of its own, then a placeholder when it has neither).
  *
  * The universal tool-handler contract: validates the call args against
- * {@link import('./shapers.js').describeToolShape}, RETURNS the plain description string on
- * success, THROWS a typed `TOOL` {@link import('./errors.js').ToolboxError} on a malformed call
+ * {@link import('./shapers.js').describeToolShape}, returns the plain description string on
+ * success, throws a typed `TOOL` {@link import('./errors.js').ToolboxError} on a malformed call
  * or an unknown tool name.
  *
  * @param tools - The `ToolManagerInterface` (`@orkestrel/tool`) whose registered tools this
@@ -813,20 +834,23 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
 }
 
 /**
- * Builds an LLM-callable form tool — the ASK side of the terminal seam. Asks
- * a multi-field form and BLOCKS until it answers, returning the resolved values record.
+ * Builds an LLM-callable form tool — the ask side of the terminal seam. It asks a multi-field form
+ * and blocks until the addressed terminal answers, returning the resolved values record.
  *
  * @remarks
  * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').promptToolShape}, parses the call's schema through
  * `@orkestrel/form`, constructs the live form, and passes it to `TerminalManagerInterface.ask`.
- * `from` is FIXED at construction
+ * `from` is fixed at construction
  * ({@link import('./types.js').PromptToolOptions.from}) — never read from the model-supplied
- * args — so a model cannot spoof which terminal is asking. A form CYCLE rejects with
+ * args — so a model cannot spoof which terminal is asking. A form cycle rejects with
  * `TerminalError('DEADLOCK')`, re-surfaced as a typed `DEADLOCK`
  * {@link import('./errors.js').ToolboxError}; an expired form re-surfaces as `EXPIRE`; an
  * unknown `to` (or any other `TerminalError`) re-surfaces as `TOOL`, naming the unknown terminal
- * and how many brokers the manager holds (`manager.count`).
+ * and how many brokers the manager holds (`manager.count`). A schema `parseForm` refuses — an
+ * unknown control, a duplicate field name, a `'select'` or `'checkbox'` field without usable
+ * `choices` — throws a typed `TOOL` error up front, so a malformed schema never parks as a form
+ * nobody can answer.
  *
  * @param options - The live manager, the fixed `from` identity, and advertised overrides (see
  *   {@link import('./types.js').PromptToolOptions})
@@ -910,9 +934,8 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 }
 
 /**
- * Builds an LLM-callable answer tool — the ANSWER side of the terminal seam. Lists the forms
- * addressed to {@link import('./types.js').AnswerToolOptions.to}, or answers one of
- * them by id.
+ * Builds an LLM-callable answer tool — the answer side of the terminal seam. It lists the forms
+ * addressed to {@link import('./types.js').AnswerToolOptions.to}, or answers one of them by id.
  *
  * @remarks
  * The universal tool-handler contract: validates the call args against
@@ -922,10 +945,10 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
  * and applies it through
  * `TerminalManagerInterface.answer` — a rejected / unknown / unresolvable outcome
  * (`TerminalAnswerResult.error`) re-surfaces as a typed `ANSWER` `ToolboxError`; success returns
- * `{ answered: id }`. `to` is FIXED at construction
+ * `{ answered: id }`. `to` is fixed at construction
  * ({@link import('./types.js').AnswerToolOptions.to}) — never read from the model-supplied args —
  * so a model cannot spoof which terminal it is answering for. Concurrent answerers racing on one
- * endpoint are FIRST-WRITE-WINS — a late answer to an already-settled form returns a typed
+ * endpoint are first-write-wins — a late answer to an already-settled form returns a typed
  * `ANSWER` `ToolboxError` (surfaced as a 422 over HTTP).
  *
  * @param options - The live manager, the fixed `to` identity, and advertised overrides (see
@@ -996,8 +1019,8 @@ export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 
 /**
  * Creates the in-memory {@link DefinitionStoreInterface} — a process-lifetime `Map` of database
- * definitions, the DEFAULT store the database and relation tools persist their
- * `DatabaseDefinition` configs through.
+ * definitions, the default store the database and relation tools persist their `DatabaseDefinition`
+ * configs through.
  *
  * @returns A {@link DefinitionStoreInterface}
  *
@@ -1048,7 +1071,7 @@ export function createDatabaseDefinitionStore(
  * @remarks
  * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').databaseToolShape}, dispatches to the matching operation, and
- * RETURNS a plain result on success. A database is resolved lazily and cached for the tool's
+ * returns a plain result on success. A database is resolved lazily and cached for the tool's
  * lifetime — `'create'` mints one from `tables` ({@link import('./compilers.js').expandTables}) and
  * a registered `driver` key ({@link import('./types.js').DatabaseToolOptions.drivers}, default
  * `{ memory: () => createMemoryDriver() }`); any other operation addressing an uncached id falls
@@ -1073,7 +1096,7 @@ export function createDatabaseDefinitionStore(
  * ({@link import('./helpers.js').inferDatabaseCode}); an `ToolboxError` thrown by this tool's own
  * guards passes through unwrapped.
  *
- * A lazily re-minted database over the DEFAULT in-memory driver yields an EMPTY database — only
+ * A lazily re-minted database over the default in-memory driver yields an empty database — only
  * the {@link import('./types.js').DatabaseDefinition} schema persists in `store`, never rows;
  * durable rows need a persistent driver factory registered in
  * {@link import('./types.js').DatabaseToolOptions.drivers}. `'destroy'` closes whatever handle is
@@ -1081,7 +1104,7 @@ export function createDatabaseDefinitionStore(
  * {@link import('./types.js').DatabaseToolOptions.databases} handle — the embedder relinquishes
  * that handle's lifecycle to this tool for any id it wires in. This tool assumes the
  * single-writer, non-reentrant model `@orkestrel/database` itself assumes — concurrent calls
- * against one id are NOT serialized by this tool. `'get'` is uncapped by
+ * against one id are not serialized by this tool. `'get'` is uncapped by
  * {@link import('./types.js').DatabaseToolOptions.limit} (bounded only by the caller's `key` array
  * size), unlike `'records'` / `'find'` / `'links'`.
  *
@@ -1299,14 +1322,14 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').relationToolShape}, resolves the addressed
  * {@link import('@orkestrel/relation').RelationManagerInterface} — an explicit `manager` field
- * must match a key of {@link import('./types.js').RelationToolOptions.managers}, an OMITTED one
- * resolves to the SOLE registered manager, either miss throwing a typed `TOOL`
+ * must match a key of {@link import('./types.js').RelationToolOptions.managers}, an omitted one
+ * resolves to the sole registered manager, either miss throwing a typed `TOOL`
  * {@link import('./errors.js').ToolboxError}
  * ({@link import('./helpers.js').resolveRelationManager}) — then resolves `model` against it
  * ({@link import('./helpers.js').resolveRelationModel}, same typed-`TOOL`-on-miss shape), and
- * dispatches to the matched operation, RETURNING a plain result on success.
+ * dispatches to the matched operation, returning a plain result on success.
  *
- * `'load'` / `'find'` expand the call's FLAT dot-path `include` list into a live
+ * `'load'` / `'find'` expand the call's flat dot-path `include` list into a live
  * `@orkestrel/relation` `Include` tree through {@link import('./helpers.js').expandInclude}, capped
  * at {@link import('./types.js').RelationToolOptions.depth} (default
  * {@link import('./constants.js').RELATION_TOOL_DEPTH}) — a path exceeding the cap, or carrying an
@@ -1316,7 +1339,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * result to {@link import('./types.js').RelationToolOptions.limit} (default
  * {@link import('./constants.js').RELATION_TOOL_LIMIT}), taken through
  * {@link import('./helpers.js').resolveLimit} — `'find'` probes one row past the effective limit to
- * report `truncated`; `'links'` (which has no upstream pagination) fetches the FULL linked-key
+ * report `truncated`; `'links'` (which has no upstream pagination) fetches the full linked-key
  * list and slices/truncates it the same way. `'link'` / `'unlink'` write / remove one `through` junction
  * row.
  *
@@ -1422,44 +1445,44 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 }
 
 /**
- * Builds a standalone LLM-callable tool that infers a JSON Schema from example values — the
- * utility half of the "existing API/DB → MCP tool" bridge (the other half,
- * {@link createEndpointTool}, wraps one CONCRETE endpoint).
+ * Builds a standalone LLM-callable tool that infers a JSON Schema from example values — the utility
+ * half of the bridge from an existing API or database into an MCP tool (the other half,
+ * {@link createEndpointTool}, wraps one concrete endpoint).
  *
  * @remarks
  * The universal tool-handler contract: validates the call args against
  * {@link import('./shapers.js').inferToolShape} (`samples` non-empty, `format` / `enum` optional
  * booleans, `candidates` an optional array), infers a schema through `@orkestrel/contract`'s
  * `samplesToSchema`, wraps a non-object root as `{ value: <schema> }` through `schemaToObject` (mirrors
- * the tool-parameters convention every other `create*Tool` factory advertises), and RETURNS the
+ * the tool-parameters convention every other `create*Tool` factory advertises), and returns the
  * resulting parameters record. An empty `samples` array fails `inferToolShape`'s `min: 1` bound —
  * `contract.parse` returns `undefined` and the handler throws a typed `TOOL`
  * {@link import('./errors.js').ToolboxError}.
  *
- * When `candidates` is ABSENT, the return is the bare parameters record — unchanged from before
- * this array existed. When `candidates` is PRESENT (any array, including empty), the handler
- * compiles a SEPARATE per-call contract from the RAW inferred schema (through `@orkestrel/contract`'s
- * `schemaToShape`, NOT the `schemaToObject`-wrapped parameters — a bare-value sample checks a
+ * When `candidates` is absent, the return is the bare parameters record — unchanged from before
+ * this array existed. When `candidates` is present (any array, including empty), the handler
+ * compiles a separate per-call contract from the raw inferred schema (through `@orkestrel/contract`'s
+ * `schemaToShape`, not the `schemaToObject`-wrapped parameters — a bare-value sample checks a
  * bare-value candidate) and returns `{ parameters, checks }`, one check per candidate at the same
- * index. Every entry has a UNIFORM shape — `{ index, valid, coercible }`, with `faults` added ONLY
- * when `valid` is `false`: `valid` is the STRICT guard verdict (`checker.is(candidate)`), the
- * OPPOSITE of {@link createEndpointTool}'s enforcement, which coerces (`7` becomes `'7'` for a
- * string slot) — here a conformance report answers "does this value conform AS-IS": `7` against a
- * string slot is `valid: false`, full stop. `coercible` answers a SEPARATE question — "would the
- * NORMALIZING parse accept this value", that is would {@link createEndpointTool}'s default enforcement
+ * index. Every entry has a uniform shape — `{ index, valid, coercible }`, with `faults` added only
+ * when `valid` is `false`: `valid` is the strict guard verdict (`checker.is(candidate)`), the
+ * opposite of {@link createEndpointTool}'s enforcement, which coerces (`7` becomes `'7'` for a
+ * string slot) — here a conformance report answers "does this value conform as-is": `7` against a
+ * string slot is `valid: false`, full stop. `coercible` answers a separate question — "would the
+ * normalizing parse accept this value", that is would {@link createEndpointTool}'s default enforcement
  * admit it (`checker.parse(candidate) !== undefined`) — computed for every candidate regardless of
  * `valid`; by the house parse/guard round-trip, a `valid: true` entry is
- * ALWAYS also `coercible: true`. `@orkestrel/contract`'s `explain` mirrors the normalizing
+ * always also `coercible: true`. `@orkestrel/contract`'s `explain` mirrors the normalizing
  * `parse`'s leniency, not `is`'s strictness — so a strictly-invalid but coercible candidate (`7`
- * against a string slot) yields `{ valid: false, coercible: true, faults: [] }`: EMPTY faults, since
+ * against a string slot) yields `{ valid: false, coercible: true, faults: [] }`: empty faults, because
  * the mismatch the normalizing parse would silently fix is not one `explain` reports. `faults`
- * therefore only ever populates for a NON-coercible mismatch — a wrong type the parse can't coerce
+ * therefore only ever populates for a non-coercible mismatch — a wrong type the parse can't coerce
  * (a boolean in a string slot), a missing required key, or an out-of-enum value — where
  * `coercible: false`. `checker.is` / `.parse` / `.explain` are all total over JSON-safe input — a
- * JSON-safe hostile candidate (a `__proto__`-carrying object, deeply nested data) reaches all three
- * and yields a bounded, non-throwing per-candidate verdict; a NON-JSON-safe candidate (for example a
- * throwing-getter `Proxy`) never reaches the checker at all — it fails the OUTER `args` parse
- * against {@link import('./shapers.js').inferToolShape} and rejects the WHOLE call with the same
+ * JSON-safe hostile candidate (a `__proto__`-carrying object, deeply nested data) reaches each of them
+ * and yields a bounded, non-throwing per-candidate verdict; a non-JSON-safe candidate (for example a
+ * throwing-getter `Proxy`) never reaches the checker at all — it fails the outer `args` parse
+ * against {@link import('./shapers.js').inferToolShape} and rejects the whole call with the same
  * `TOOL` {@link import('./errors.js').ToolboxError} a malformed `samples`/`format`/`enum` throws,
  * with no per-candidate verdict produced.
  *
@@ -1536,36 +1559,36 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
 }
 
 /**
- * Wraps one CONCRETE endpoint ({@link import('./types.js').EndpointDefinition}) as an LLM-callable
- * `ToolInterface` — the endpoint half of the "existing API/DB → MCP tool" bridge (the other half,
- * {@link createInferTool}, is a standalone inference utility).
+ * Wraps one concrete endpoint ({@link import('./types.js').EndpointDefinition}) as an LLM-callable
+ * `ToolInterface` — the endpoint half of the bridge from an existing API or database into an MCP
+ * tool (the other half, {@link createInferTool}, is a standalone inference utility).
  *
  * @remarks
- * `parameters` is inferred ONCE at construction from `definition.samples` through
+ * `parameters` is inferred once at construction from `definition.samples` through
  * `@orkestrel/contract`'s `samplesToSchema` (tuned by {@link import('./types.js').EndpointToolOptions}'s
  * `format` / `enum`), wrapping a non-object root as `{ value: <schema> }` through `schemaToObject` —
- * the SAME object-rooted schema is both the ADVERTISED `parameters` and, by default
- * ({@link import('./types.js').EndpointToolOptions.validate} `true`), the ENFORCED contract:
- * `@orkestrel/contract`'s `schemaToShape` compiles it ONCE (through `createContract`) into a
+ * the same object-rooted schema is both the advertised `parameters` and, by default
+ * ({@link import('./types.js').EndpointToolOptions.validate} `true`), the enforced contract:
+ * `@orkestrel/contract`'s `schemaToShape` compiles it once (through `createContract`) into a
  * `ContractInterface` whose `.parse` runs on every call's `args` before `definition.execute` — a
- * NORMALIZING parse, not a strict type check: a scalar is COERCED to its inferred type where the
+ * normalizing parse, not a strict type check: a scalar is coerced to its inferred type where the
  * house parsers coerce (a number to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/
- * `'false'`/`1`/`0`), so `definition.execute` receives the COERCED value (for example `7` sent for a
+ * `'false'`/`1`/`0`), so `definition.execute` receives the coerced value (for example `7` sent for a
  * string slot arrives as `'7'`), not the raw call value. A call whose `args` fails to parse into
- * a record — a required key missing, or a value not coercible to its slot's type — THROWS a
+ * a record — a required key missing, or a value not coercible to its slot's type — throws a
  * typed `TOOL` {@link import('./errors.js').ToolboxError} carrying the compiled contract's
  * structured `explain` faults, and `definition.execute` is never called. `format` annotations are
- * NEVER asserted, and a key outside the closed inferred schema is SILENTLY DROPPED rather than
+ * never asserted, and a key outside the closed inferred schema is silently dropped rather than
  * rejected (see {@link import('./types.js').EndpointToolOptions.validate}). With
- * `validate: false`, the tool's `execute` PASSES THROUGH the model-supplied `args` to
- * `definition.execute` WITHOUT re-validation — the raw-passthrough opt-out. Either way, the
- * definition's return flows back as the tool call's plain result; a throw PROPAGATES uncaught,
+ * `validate: false`, the tool's `execute` passes through the model-supplied `args` to
+ * `definition.execute` without re-validation — the raw-passthrough opt-out. Either way, the
+ * definition's return flows back as the tool call's plain result; a throw propagates uncaught,
  * isolated by the `ToolManagerInterface` (`@orkestrel/tool`) into the canonical error envelope
  * — never caught or re-wrapped here.
  *
  * @param definition - The endpoint's identity, non-empty samples, and local handler (see
  *   {@link import('./types.js').EndpointDefinition})
- * @param options - Construction-time inference tuning + the validate opt-out (see
+ * @param options - Construction-time inference tuning and the validate opt-out (see
  *   {@link import('./types.js').EndpointToolOptions})
  * @returns A `ToolInterface` named `definition.name`
  *

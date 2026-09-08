@@ -5,7 +5,8 @@ import { ToolboxError } from '../errors.js'
 import { expandTables } from '../compilers.js'
 
 /**
- * Resolves database definitions into cached live handles for database tools.
+ * Resolves a database definition into a cached live handle for a database tool, over the tool's
+ * live handles, its stored definitions, its driver registry, and an optional key generator.
  *
  * @example
  * ```ts
@@ -83,7 +84,8 @@ export class DatabaseResolver {
 	}
 
 	/**
-	 * Resolves a cached or stored database by id.
+	 * Resolves a live database by id — the cached handle when one exists, otherwise a database
+	 * constructed from its stored definition.
 	 *
 	 * @param id - Database definition id
 	 * @returns The cached or newly constructed live database

@@ -51,7 +51,7 @@ export class ToolboxError extends Error {
 }
 
 /**
- * Narrows an unknown caught value to an {@link ToolboxError}.
+ * Narrows an unknown caught value to a {@link ToolboxError}.
  *
  * @param value - The value to test (typically a `catch` binding)
  * @returns True if `value` is an {@link ToolboxError}; false otherwise
