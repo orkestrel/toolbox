@@ -167,7 +167,7 @@ export class RecordingWorkflowStore implements WorkflowStoreInterface {
 // delta and RETURNS the result, honouring `signal` so an abort mid-stream throws a
 // `ProviderAbortError` carrying the accumulated partial (a genuine cancel-fold proof).
 
-/** Records one `generate` / `stream` call made on a {@link ScriptedProvider}. */
+/** Represents one recorded `generate` or `stream` call on a {@link ScriptedProvider}. */
 export interface ScriptedCall {
 	readonly messages: readonly Message[]
 }
@@ -185,8 +185,8 @@ export interface ScriptedProviderOptions {
 }
 
 /**
- * Exposes a scripted {@link ProviderInterface} plus its `started` call count and recorded
- * `calls`, the minimal shape a {@link ScriptedProvider} fixture exposes.
+ * Represents the minimal shape a {@link ScriptedProvider} fixture exposes — a scripted
+ * {@link ProviderInterface} plus its `started` call count and recorded `calls`.
  */
 export interface ScriptedProviderInterface extends ProviderInterface {
 	/** How many `stream` calls have started in total. */

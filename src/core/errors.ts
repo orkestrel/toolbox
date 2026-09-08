@@ -4,12 +4,12 @@ import type { ToolboxErrorCode } from './types.js'
 // `@orkestrel/workflow`'s `WorkflowError` and `@orkestrel/workspace`'s `WorkspaceError` already
 // cover their genuine domain failure paths (imported and thrown as-is, never duplicated here
 // under AGENTS' no-superfluous-wrappers law). Neither package error fits this package's own
-// malformed-call and resolution guards, so this package mints ONE typed error, `ToolboxError`,
-// mirroring `WorkflowError`'s exact shape (`code` + optional `context`) for the same reason: a
-// thrown, machine-readable, code-bearing error after AGENTS' “narrow untrusted input with guards”
-// boundary rejects a call, never a `{ error }` return. `ToolboxError` is this package's general
-// TOOL-CALL error — not scoped to agent delegation alone — so every package-owned `TOOL` misuse
-// shares it rather than minting one error class per tool.
+// malformed-call and resolution guards, so this package mints one typed error, `ToolboxError`,
+// mirroring `WorkflowError`'s exact shape (`code` and an optional `context`) for the same reason:
+// a thrown, machine-readable, code-bearing error after AGENTS' “narrow untrusted input with
+// guards” boundary rejects a call, never a `{ error }` return. `ToolboxError` is this package's
+// general tool-call error — not scoped to agent delegation alone — so every package-owned `TOOL`
+// misuse shares it rather than minting one error class per tool.
 
 /**
  * Represents a package-owned tool-call failure: malformed input or unresolved configuration (`TOOL`),

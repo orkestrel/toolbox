@@ -114,13 +114,13 @@ export function summarizeWorkflow(result: WorkflowResult): WorkflowToolResult {
 	}
 }
 
-// === Draft completion + flat-steps expansion (the tool's LENIENT authoring surfaces)
+// === Draft completion and flat-steps expansion (the tool's lenient authoring surfaces)
 //
-// Pure, deterministic synthesis that turns a WIDENED authoring form into a strict
-// `WorkflowDefinition` (`@orkestrel/workflow`). They auto-fill only OMITTED identity (a provided
-// id/name is preserved verbatim; an explicitly-empty `id: ''` is rejected UPSTREAM by the draft
-// contract, never reached here), so a small model can author a complete tree without emitting
-// the six required `id`/`name` strings. The factory re-validates the result against the STRICT
+// Pure, deterministic synthesis that turns a widened authoring form into a strict
+// `WorkflowDefinition` (`@orkestrel/workflow`). They auto-fill only omitted identity (a provided
+// id/name is preserved verbatim; an explicitly-empty `id: ''` is rejected upstream by the draft
+// contract, never reached here), so a small model can author a complete tree without emitting an
+// `id` or a `name` anywhere in it. The factory re-validates the result against the strict
 // `createWorkflowContract().is` gate before running (soundness).
 
 /**

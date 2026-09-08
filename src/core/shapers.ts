@@ -53,8 +53,8 @@ export const answerToolShape = unionShape(
 	}),
 )
 
-// Toolbox shapes — the shape VALUE each `create*Tool` factory (factories.ts) compiles into
-// the lockstep guard + parser + JSON Schema outputs. `agentToolShape` MUST agree
+// Toolbox shapes — the shape value each `create*Tool` factory (factories.ts) compiles into
+// the lockstep guard, parser, and JSON Schema outputs. `agentToolShape` must agree
 // with the hand-written `AgentToolArguments` (types.ts), which is the source of truth.
 // `workflowStepsShape` / `workflowDraftShape` are Toolbox's authoring boundary over the current
 // `@orkestrel/workflow` definition contract. `workspaceToolShape` is Toolbox's operation boundary

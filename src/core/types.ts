@@ -23,23 +23,23 @@ import type {
 import type { RelationManagerInterface } from '@orkestrel/relation'
 
 // Toolbox types — one interface per `create*Tool` / `create*Function` factory; these types are
-// the SOURCE OF TRUTH and the implementation conforms to them, never the reverse. The
+// the source of truth and the implementation conforms to them, never the reverse. The
 // workflow-authoring family (WorkflowSteps/WorkflowStep/WorkflowDraft/PhaseDraft/TaskDraft),
-// WorkflowToolResult, and adapter options are OWNED here and consume the current
+// WorkflowToolResult, and adapter options are owned here and consume the current
 // `@orkestrel/workflow` contracts. WorkspaceOperation remains Toolbox's model-facing operation
 // union over the editing surface owned by `@orkestrel/workspace`. Each tool exposes only the
 // dependency configuration seams its handler actually composes.
 
-// === Draft family (the workflow tool's LENIENT authoring surface — id/name optional)
+// === Draft family (the workflow tool's lenient authoring surface — id/name optional)
 //
-// A DRAFT mirrors the `WorkflowDefinition` family (`@orkestrel/workflow`) EXACTLY except `id`
-// and `name` are OPTIONAL at all three levels, so a small model can omit the six identity
-// strings. It is NOT a runtime form — `createWorkflowDraftContract` validates it (a provided
-// id/name still has `minLength: 1`, so an explicitly-empty `id: ''` is REJECTED, not "absent"),
-// and `completeDraft` synthesizes any MISSING id positionally + defaults a missing name to its
-// id, yielding a strict `WorkflowDefinition` that is THEN re-validated against the strict
-// contract before running (soundness preserved). `behavior` stays optional (a plain name string),
-// mirroring the definition family.
+// A draft mirrors the `WorkflowDefinition` family (`@orkestrel/workflow`) exactly except `id`
+// and `name` are optional at the workflow, phase, and task levels, so a small model can omit
+// every identity string. It is not a runtime form — `createWorkflowDraftContract` validates it
+// (a provided id/name still has `minLength: 1`, so an explicitly-empty `id: ''` is rejected,
+// not "absent"), and `completeDraft` synthesizes any missing id positionally and defaults a
+// missing name to its id, yielding a strict `WorkflowDefinition` that is then re-validated
+// against the strict contract before running (soundness preserved). `behavior` stays optional (a
+// plain name string), mirroring the definition family.
 
 /**
  * Represents a draft task — a `TaskDefinition` (`@orkestrel/workflow`) with optional `id` and
@@ -96,7 +96,7 @@ export interface WorkflowDraft {
 	readonly bail?: boolean
 }
 
-// === Flat-steps family (the workflow tool's ADVERTISED authoring surface — the simplest form)
+// === Flat-steps family (the workflow tool's advertised authoring surface — the simplest form)
 
 /**
  * Represents one flat step — `{ name }` — the building block of a {@link WorkflowSteps} blob.
@@ -630,14 +630,14 @@ export interface RelationToolOptions {
 
 // === Infer / endpoint bridge (existing API/DB → MCP tool)
 //
-// `createInferTool` and `createEndpointTool` bridge an EXISTING API/DB surface into an
+// `createInferTool` and `createEndpointTool` bridge an existing API/DB surface into an
 // LLM-callable `ToolInterface`, built on `@orkestrel/contract`'s sample-based schema inference
 // (`samplesToSchema` / `schemaToObject` / `schemaToParameters`) and its validating inverse
 // `schemaToShape` (an inferred `JSONSchema` → a `ContractShape`).
-// `createInferTool` is a STANDALONE utility tool a model calls directly to learn a JSON Schema
-// from example values; `createEndpointTool` wraps one CONCRETE endpoint (`EndpointDefinition`) —
-// its `parameters` are inferred ONCE at construction from `samples` and advertised to steer the
-// model, and by DEFAULT the tool's `execute` ENFORCES that same advertised schema against the
+// `createInferTool` is a standalone utility tool a model calls directly to learn a JSON Schema
+// from example values; `createEndpointTool` wraps one concrete endpoint (`EndpointDefinition`) —
+// its `parameters` are inferred once at construction from `samples` and advertised to steer the
+// model, and by default the tool's `execute` enforces that same advertised schema against the
 // model-supplied `args` before calling the definition's own `execute`
 // (`EndpointToolOptions.validate`, default `true`) — see the Contract invariant in `tool.md`.
 

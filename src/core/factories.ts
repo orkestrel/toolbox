@@ -483,10 +483,10 @@ export function createWorkflowTool(
 				})
 			}
 			const owned = cloned.value
-			// Branch on the owned args snapshot's SHAPE (no ambient context — a tool handler gets only
-			// `args`): empty ⇒ the wrapped definition; a `steps` array ⇒ the FLAT form, parsed +
-			// expanded; otherwise the nested DRAFT form, parsed + completed. A parse failure leaves
-			// `target` undefined ⇒ the strict gate below throws `TOOL`.
+			// Branch on the owned args snapshot's shape (no ambient context — a tool handler gets only
+			// `args`): empty ⇒ the wrapped definition; a `steps` array ⇒ the flat form, parsed and
+			// expanded; otherwise the nested draft form, parsed and completed. A parse failure leaves
+			// `target` undefined ⇒ the strict gate that follows throws `TOOL`.
 			let target: WorkflowDefinition | undefined
 			if (Object.keys(owned).length === 0) {
 				target = definition
@@ -497,8 +497,8 @@ export function createWorkflowTool(
 				const parsed = draft.parse(owned)
 				target = parsed === undefined ? undefined : completeDraft(parsed)
 			}
-			// The SOUNDNESS gate: whatever authoring form produced `target`, it must satisfy the
-			// STRICT canonical contract before it runs — the leniency never reaches the runner.
+			// The soundness gate: whatever authoring form produced `target`, it must satisfy the
+			// strict canonical contract before it runs — the leniency never reaches the runner.
 			if (target === undefined || !strict.is(target)) {
 				throw new ToolboxError('TOOL', 'malformed workflow definition', {
 					workflow: definition.id,
@@ -597,7 +597,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 			if (op === undefined) {
 				throw new ToolboxError('TOOL', 'unknown or malformed operation', { args })
 			}
-			// Registry ops act on the MANAGER, not a workspace — handle them first.
+			// Registry ops act on the manager, not a workspace — handle them first.
 			if (op.operation === 'workspaces') {
 				const activeId = manager.active?.id
 				return manager.workspaces().map((workspace) => ({
@@ -613,8 +613,8 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 					? { id: op.id, switched: false }
 					: { id: switched.id, switched: true, files: switched.count }
 			}
-			// Edit / read ops target the ACTIVE workspace. A WRITING op auto-creates and activates a
-			// default workspace when none is active (the no-active ergonomic seam) — while a pure-READ
+			// Edit and read ops target the active workspace. A writing op auto-creates and activates a
+			// default workspace when none is active (the no-active ergonomic seam) — while a pure-read
 			// op returns the empty result against no active workspace rather than creating one.
 			const active = manager.active
 			switch (op.operation) {
@@ -1053,7 +1053,7 @@ export function createMemoryDefinitionStore(): DefinitionStoreInterface {
 export function createDatabaseDefinitionStore(
 	driver: DriverInterface = createMemoryDriver(),
 ): DefinitionStoreInterface {
-	// The definition is stored as ONE OPAQUE JSON column (`rawShape`), so the row infers FLAT —
+	// The definition is stored as one opaque JSON column (`rawShape`), so the row infers flat —
 	// `{ id: string; definition: unknown }` = DatabaseDefinitionRow.
 	const columns = { id: stringShape(), definition: rawShape({}) }
 	const database = createDatabase({ driver, tables: { definitions: columns } })
