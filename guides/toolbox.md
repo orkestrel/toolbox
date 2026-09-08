@@ -64,7 +64,7 @@ Concrete `DefinitionStoreInterface` implementations (AGENTS' Stores rule, point-
 
 The total `(value: unknown) => value is T` guards this package applies at its untrusted boundaries — an authored lineage, a frozen agent adapter, the small-model column DSL, and a persisted database definition read back from a store.
 
-A `Shape` cell holds an interface's data members as bare names in braces, `?` marking an optional member and `plus` introducing its call-signature members, and a type alias's own type literal with a union's arms escaped as `\|`. In a guard table a `Shape` cell holds the type the guard narrows to.
+In a guard table a `Shape` cell holds the type the guard narrows to.
 
 | API                    | Kind     | Shape                | Summary                                                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------- | -------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
