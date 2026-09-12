@@ -262,6 +262,22 @@ Every `create*Tool` factory returns a plain `ToolInterface` (`@orkestrel/tool`'s
 | `set`    | `Promise<void>`                            | Inserts or replaces a definition under its own `id`, taking no separate id argument. |
 | `delete` | `Promise<void>`                            | Drops the definition for `id`, treating an absent id as a no-op that never throws.   |
 
+#### `MemoryDefinitionStore`
+
+| Method   | Returns                                    | Summary                                                                             |
+| -------- | ------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `get`    | `Promise<DatabaseDefinition \| undefined>` | Resolves the persisted definition for `id`, copied out of the backing `Map`.        |
+| `set`    | `Promise<void>`                            | Inserts or replaces a definition under its own `id`, copied into the backing `Map`. |
+| `delete` | `Promise<void>`                            | Drops the definition stored under `id`.                                             |
+
+#### `DatabaseDefinitionStore`
+
+| Method   | Returns                                    | Summary                                                                                                      |
+| -------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `get`    | `Promise<DatabaseDefinition \| undefined>` | Resolves the persisted definition for `id`, narrowing the opaque JSON column back to a `DatabaseDefinition`. |
+| `set`    | `Promise<void>`                            | Inserts or replaces a definition under its own `id` — the written row is `{ id, definition }`.               |
+| `delete` | `Promise<void>`                            | Drops the definition stored under `id`.                                                                      |
+
 #### `DatabaseResolver`
 
 | Method    | Returns                          | Summary                                                                                                                          |
