@@ -155,7 +155,7 @@ Exported from `@orkestrel/scaffold`, and reachable from
 | `ORKESTREL_RANGE_PATTERN`         | const | Matches the exact caret-pinned pre-1.0 range accepted for an `@orkestrel/*` runtime dependency.        |
 | `PRINT_WIDTH`                     | const | Caps the columns one emitted line may occupy, matching `printWidth` in `.oxfmtrc.json`.                |
 | `RELEASE_PROOF_COMMAND`           | const | Names the `prepublishOnly` row that runs the packed-package proof against a real registry.             |
-| `SERVICE_SCRIPT_PATH`             | const | Names the provisioner skeleton a workspace with declared service vendors is given once.                |
+| `SERVICE_SCRIPT_PATH`             | const | Names the inventory skeleton a workspace with declared service vendors is given once.                  |
 | `SERVICE_SETUP_PATH`              | const | Names the live-service readiness module whose presence makes a workspace `service`.                    |
 | `SERVICE_TEST_INCLUDE`            | const | Names the include the live-service project covers, which is a directory rather than one proof.         |
 | `SHOWCASE_CONFIG_PATH`            | const | Names the Vite wrapper whose presence makes a workspace `showcase`.                                    |
@@ -565,9 +565,10 @@ other structural facts do not need creation flags. Add a root `tests/setup*.test
 `setup`, `tests/guides.test.ts` for `guides`, `tests/integration.test.ts` for `integration`,
 `tests/conformance.test.ts` for `conformance`, `tests/setupService.ts` for `service`,
 `tests/setupGlobal.ts` for `global`, and `configs/app/vite.showcase.config.ts` for `showcase`;
-reading verbs detect each exact-case file and register its fixed machinery. Add `scripts/service.sh`
-for `vendors`. Reading verbs preserve and protect that birth-owned script, but do not infer its
-vendor list from edited text.
+reading verbs detect each exact-case file and register its fixed machinery. An explicitly supplied
+plan with `vendors` owns and protects the birth-owned `scripts/service.sh` inventory skeleton.
+Reading verbs do not infer its vendor list from edited text and cannot preserve an arbitrary present
+script on that basis.
 
 `distribution` is not on that list. Publishing at least one `src` environment is its whole
 condition, and scaffold writes `tests/distribution.test.ts` itself rather than waiting for you to.
@@ -586,10 +587,10 @@ and `configs/app/vite.showcase.config.ts` selects `showcase`. A containing direc
 the fact by itself. `tests/distribution.test.ts` selects nothing: the published `src` axis the
 target ships already decides the `distribution` project, and the file is planned from that.
 
-`vendors` is not reconstructed. Its only artifact, `scripts/service.sh`, is birth-owned, so edited
-script text is not a trustworthy declaration of a vendor list. A present script remains in the
-target and remains protected from deletion through the owned scripts inventory, but a reading verb
-does not infer vendors from it.
+`vendors` is not reconstructed. Its artifact, `scripts/service.sh`, is a birth-owned inventory
+skeleton rather than a working installer, so edited script text is not a trustworthy declaration of
+a vendor list. A target-reading verb derives no vendor list from a present script. Only an
+explicitly supplied plan with `vendors` owns that birth artifact.
 
 That is why the live-service project follows `service` rather than `vendors`. A reading verb has to
 plan the project before it can say anything about a target that runs one, and a vendor list it
@@ -846,12 +847,13 @@ is the one proof scaffold generates from the workspace's own shape.
 
 `service` says the workspace runs a live-service Vitest project over `tests/service`, and it alone
 registers that project, its `test:service` script, and the `tests/setupService.ts` readiness module
-the project names. A publishing workspace invokes it from `prepublishOnly`; a `private: true`
-workspace invokes it from `test`, which is the only gate it has. Its longer timeouts and disabled
-file parallelism are the same in both. `vendors` names each external service the workspace drives
-and emits `scripts/service.sh`, the provisioner that starts them. Neither is derivable from the
-other: a workspace may declare vendors before it writes a suite, and a suite may drive a service the
-skeleton does not start.
+the project names. The caller prepares the external service before it invokes the project, and the
+setup module verifies readiness. A publishing workspace invokes the project from `prepublishOnly`;
+a `private: true` workspace invokes it from `test`, which is the only gate it has. Its longer
+timeouts and disabled file parallelism are the same in each workspace form. `vendors` names each external service the
+workspace drives and emits `scripts/service.sh`, an inventory skeleton that starts nothing. The
+vendor inventory and live-service setup are independent: a workspace may declare vendors before it
+writes a suite, and a suite may drive a service the skeleton does not start.
 
 `integration` projects a cross-environment composition proof for any workspace, independently of
 whether it has a published `src`. Its generated seed imports every selected `src` and `app`
@@ -1059,8 +1061,9 @@ after a write it prints `next: npm run format`.
 
 Scaffold owns the `scripts` directory. An audit for the orchestration group reports every unplanned
 member as foreign. `overwrite` deletes an unplanned tracked member only when the tree is clean, its
-observed bytes still match, and the path is not protected. A planned birth-owned
-`scripts/service.sh` survives that deletion pass.
+observed bytes still match, and the path is not protected. An unplanned tracked
+`scripts/service.sh` is retired on that basis. An explicitly planned birth-owned script survives
+that deletion pass.
 
 `tests/distribution.test.ts` is the one proof scaffold generates, and the one test artifact it
 claims by presence. Generation is the line, not writing: scaffold writes the vendored
@@ -1252,10 +1255,29 @@ licence, the harness permission file, the scaffold-owned `scripts` directory, th
 shared policy register, the shared policy proof, the shared policy plugin, the shared configuration
 leaf and its proof, the byte-identical root dotfiles, and the guide mirrors a generated workspace
 starts from. It is a candidate list rather than a plan, because a workspace never mirrors its own
-guide. The session-start hooks inside `scripts` split by job:
-the bench probe reports whether a bench CLI resolves, and the dependency hook installs the
-lockfile's closure in a remote session. What wires a bench stays in the canon, and a session reads
+guide. The session-start hooks inside `scripts` split by job. The bench probe reports whether a
+bench CLI resolves, and the dependency hook installs the lockfile's closure in a remote session.
+The Ollama hook invokes `scripts/ollama.sh` only when `CLAUDE_CODE_REMOTE=true`; direct invocation
+remains available for live-service setup. What wires a bench stays in the canon, and a session reads
 it at its primary root.
+
+`scripts/ollama.sh` defaults to `http://127.0.0.1:11434` and `qwen3.5:2b-q4_K_M`. It requires Node
+for native URL and JSON handling and curl for the HTTP protocol. The script accepts an HTTP or HTTPS
+origin without credentials, path, query, or fragment. It reuses any reachable daemon without
+requiring a local Ollama executable. It inspects the selected model through `/api/show`, pulls only
+after a `404` absence response, and warms the model through a completed non-streaming `/api/chat`
+request with a 30-minute keep-alive. Version readiness, pull completion, and warm completion each
+require a `2xx` HTTP status; redirects and error statuses fail even when their bodies report
+completion.
+
+When an HTTP loopback endpoint is unreachable, the script may start an installed Ollama executable
+in an owned POSIX process group. A failure sends that owned group `TERM`, then sends `KILL` if it
+does not stop within 5 seconds; a reused daemon remains untouched. Direct reuse works from Git Bash on Windows, but local startup there fails because Bash
+cannot safely terminate the Windows process tree. Automatic installation is limited to Linux cloud
+or CI automation. The official installer download follows only HTTPS redirects, must be nonempty,
+and runs within the remaining setup deadline. The installer may require root or `sudo`, and its own
+platform prerequisites remain authoritative. The full setup deadline is 590 seconds, including a
+60-second local startup allowance, within the hook's 600-second timeout.
 
 `CANON_PATHS` is the instruction canon, staged for reading instead: the `AGENTS.md` coding contract,
 the `CLAUDE.md` harness bridge, the `.agents/orchestration.md` agent-operation contract, the rules
