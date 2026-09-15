@@ -19,7 +19,7 @@ import type { ToolboxErrorCode } from './types.js'
  * @remarks
  * Carries a machine-readable `code` (see {@link import('./types.js').ToolboxErrorCode}) and
  * an optional `context` bag for structured diagnostics. They are readable through an in-process
- * catch, including around a direct `tool.execute(args)` call. The `ToolManagerInterface`
+ * catch, including around a direct `tool.execute(args, context)` call. The `ToolManagerInterface`
  * (`@orkestrel/tool`) instead flattens every throw to the canonical tool result's top-level
  * `error` message string under AGENTS' “narrow untrusted input with guards” rule.
  *

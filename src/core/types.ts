@@ -1,6 +1,7 @@
 import type { AgentInterface, ConversationStoreInterface } from '@orkestrel/agent'
 import type { WorkspaceManagerInterface, WorkspaceStoreInterface } from '@orkestrel/workspace'
 import type { TerminalManagerInterface } from '@orkestrel/terminal'
+import type { ToolContext } from '@orkestrel/tool'
 import type {
 	LifecycleStatus,
 	WorkflowFault,
@@ -654,13 +655,21 @@ export interface InferToolOptions {
 
 /**
  * Represents the handler {@link EndpointDefinition.execute} implements — it mirrors
- * `@orkestrel/tool`'s `ToolOptions.execute` signature exactly (the same
- * `Readonly<Record<string, unknown>>` argument, the same `Promise<unknown> | unknown` return), so
- * `execute: (args) => definition.execute(args)` typechecks with zero assertions in
- * {@link import('./factories.js').createEndpointTool}.
+ * `@orkestrel/tool`'s `ToolOptions.execute` signature exactly, so
+ * {@link import('./factories.js').createEndpointTool} forwards the execution context it receives
+ * to the handler unchanged and a handler that reads `context.signal` observes the caller's
+ * cancellation.
+ *
+ * @remarks
+ * The mirrored signature is the same `Readonly<Record<string, unknown>>` argument, the same
+ * `ToolContext` second parameter, and the same `Promise<unknown> | unknown` return. A handler that
+ * declares `args` alone still satisfies the type, the way a function declaring fewer parameters
+ * than its contract does, so an endpoint definition written against the argument alone keeps
+ * typechecking and reads no signal.
  */
 export type EndpointHandler = (
 	args: Readonly<Record<string, unknown>>,
+	context: ToolContext,
 ) => Promise<unknown> | unknown
 
 /**

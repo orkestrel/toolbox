@@ -138,7 +138,9 @@ import {
  * (`{ publish: createToolFunction(tools, 'publish') }`); the pure workflow runner has no
  * knowledge of tools itself. The returned function executes `name` against `tools` with the
  * task's `controller.input` as the call arguments. The adapter resolves the live tool, calls its
- * `execute` method directly, and deep-gates the returned unknown through `parseJSONValue`.
+ * `execute` method directly, and deep-gates the returned unknown through `parseJSONValue`. The
+ * execution context it passes carries the task's own `controller.signal`, so a handler that
+ * reads `context.signal` observes the caller's cancellation.
  * Genuine execution throws retain identity. An unregistered name or non-JSON return throws this
  * package's typed `TOOL` `ToolboxError`.
  *
@@ -169,7 +171,9 @@ export function createToolFunction(tools: ToolManagerInterface, name: string): W
 		if (tool === undefined) {
 			throw new ToolboxError('TOOL', `tool '${name}' is not registered`, { tool: name })
 		}
-		const result = parseJSONValue(await tool.execute(controller.input))
+		const result = parseJSONValue(
+			await tool.execute(controller.input, { signal: controller.signal }),
+		)
 		if (result === undefined) {
 			throw new ToolboxError('TOOL', `tool '${name}' returned a non-JSON value`, { tool: name })
 		}
@@ -1116,11 +1120,14 @@ export function createDatabaseDefinitionStore(
  * import { createDatabaseTool } from '@src/core'
  *
  * const tool = createDatabaseTool()
- * await tool.execute({
- * 	operation: 'create',
- * 	id: 'shop',
- * 	tables: { products: { columns: { name: 'string', price: 'number' } } },
- * })
+ * await tool.execute(
+ * 	{
+ * 		operation: 'create',
+ * 		id: 'shop',
+ * 		tables: { products: { columns: { name: 'string', price: 'number' } } },
+ * 	},
+ * 	{ signal: new AbortController().signal },
+ * )
  * ```
  */
 export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInterface {
@@ -1358,7 +1365,10 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * import { createRelationTool } from '@src/core'
  *
  * const tool = createRelationTool({ managers: { shop: manager } })
- * await tool.execute({ operation: 'load', model: 'accounts', key: 'acc1', include: ['contacts'] })
+ * await tool.execute(
+ * 	{ operation: 'load', model: 'accounts', key: 'acc1', include: ['contacts'] },
+ * 	{ signal: new AbortController().signal },
+ * )
  * ```
  */
 export function createRelationTool(options: RelationToolOptions): ToolInterface {
@@ -1581,8 +1591,10 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * never asserted, and a key outside the closed inferred schema is silently dropped rather than
  * rejected (see {@link import('./types.js').EndpointToolOptions.validate}). With
  * `validate: false`, the tool's `execute` passes through the model-supplied `args` to
- * `definition.execute` without re-validation — the raw-passthrough opt-out. Either way, the
- * definition's return flows back as the tool call's plain result; a throw propagates uncaught,
+ * `definition.execute` without re-validation — the raw-passthrough opt-out. The execution context
+ * the tool's `execute` receives reaches `definition.execute` unchanged whichever way `args` are
+ * handled, so a handler that reads `context.signal` observes the caller's cancellation. Either way,
+ * the definition's return flows back as the tool call's plain result; a throw propagates uncaught,
  * isolated by the `ToolManagerInterface` (`@orkestrel/tool`) into the canonical error envelope
  * — never caught or re-wrapped here.
  *
@@ -1646,8 +1658,8 @@ export function createEndpointTool(
 			name: definition.name,
 			description: definition.description,
 			...(parameters === undefined ? {} : { parameters }),
-			execute(args) {
-				return definition.execute(args)
+			execute(args, context) {
+				return definition.execute(args, context)
 			},
 		})
 	}
@@ -1656,7 +1668,7 @@ export function createEndpointTool(
 		name: definition.name,
 		description: definition.description,
 		...(parameters === undefined ? {} : { parameters }),
-		execute(args) {
+		execute(args, context) {
 			const parsed = contract.parse(args)
 			if (parsed === undefined || !isRecord(parsed)) {
 				throw new ToolboxError('TOOL', 'malformed endpoint call arguments', {
@@ -1664,7 +1676,7 @@ export function createEndpointTool(
 					faults: contract.explain(args),
 				})
 			}
-			return definition.execute(parsed)
+			return definition.execute(parsed, context)
 		},
 	})
 }

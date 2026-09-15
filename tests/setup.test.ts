@@ -5,6 +5,7 @@ import {
 	createTestDefinition,
 	createTestTaskController,
 	createTestTimer,
+	createTestToolContext,
 	MalformedAgent,
 	RecordingWorkflowStore,
 	releaseTestTaskControllers,
@@ -60,6 +61,16 @@ describe('setup', () => {
 				},
 			},
 		})
+	})
+
+	it('createTestToolContext returns a fresh, real, never-aborted signal on every call', () => {
+		const first = createTestToolContext()
+		const second = createTestToolContext()
+
+		expect(first.signal).toBeInstanceOf(AbortSignal)
+		expect(first.signal).not.toBe(second.signal)
+		expect(first.signal.aborted).toBe(false)
+		expect(first.caller).toBeUndefined()
 	})
 
 	it('createTestTaskController wires a real controller over a p/t workflow with defaults', async () => {

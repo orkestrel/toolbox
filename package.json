@@ -97,10 +97,10 @@
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.59.1",
 		"@orkestrel/guide": "^0.0.19",
-		"@orkestrel/probe": "^0.0.14",
+		"@orkestrel/probe": "^0.0.15",
 		"@orkestrel/scaffold": "^0.0.70",
 		"@orkestrel/test": "^0.0.14",
-		"@types/node": "^26.5.1",
+		"@types/node": "^26.6.0",
 		"oxfmt": "^0.68.0",
 		"oxlint": "^1.83.0",
 		"typescript": "^6.0.3",

@@ -10,6 +10,7 @@ import type { DatabaseInterface } from '@orkestrel/database'
 import type { DatabaseDefinition } from '@src/core'
 import type { JSONRecord } from '@orkestrel/contract'
 import type { TimerHandler } from '@orkestrel/terminal'
+import type { ToolContext } from '@orkestrel/tool'
 import type {
 	TaskControllerInterface,
 	WorkflowSnapshot,
@@ -58,6 +59,21 @@ export function createTestDefinition(id = 'shop'): DatabaseDefinition {
 		indexes: { items: [['name'], ['name', 'price']] },
 		version: 3.5,
 	}
+}
+
+/**
+ * Creates the execution context an uncancelled direct `ToolInterface.execute` call receives.
+ *
+ * @remarks
+ * `@orkestrel/tool` requires a `ToolContext` on every `execute` call, and a test that drives a tool
+ * directly owns no cancellation to forward. Each call returns a fresh real `AbortController`
+ * signal that nothing aborts, which is the state a handler reads while its caller is still waiting.
+ * A test about cancellation builds its own context from the controller it aborts.
+ *
+ * @returns A context whose `signal` is a real, never-aborted abort signal
+ */
+export function createTestToolContext(): ToolContext {
+	return { signal: new AbortController().signal }
 }
 
 /** Options for a live workflow task controller captured mid-run. */

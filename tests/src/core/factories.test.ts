@@ -60,6 +60,7 @@ import { captureError, createRecorder, waitForAbort, waitForDelay } from '@orkes
 import {
 	createTestTaskController,
 	createTestTimer,
+	createTestToolContext,
 	MalformedAgent,
 	RecordingWorkflowStore,
 	releaseTestTaskControllers,
@@ -230,6 +231,24 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 		expect(seen.calls[0]?.[0]).toEqual({ path: '/repo' })
 	})
 
+	it('the running task`s cancellation reaches the tool handler through the execution context', async () => {
+		const tools = createToolManager()
+		tools.add(
+			createTool({
+				name: 'watch',
+				execute: async (_args, context) => {
+					await waitForAbort(context.signal)
+					return 'observed'
+				},
+			}),
+		)
+		const cancellation = new AbortController()
+		const controller = await createTestTaskController({ signal: cancellation.signal })
+		const running = createToolFunction(tools, 'watch')(controller)
+		cancellation.abort(new Error('cancelled mid-tool'))
+		expect(await running).toBe('observed')
+	})
+
 	it('a directly thrown tool error is preserved by identity', async () => {
 		const tools = createToolManager()
 		const thrown = new Error('tool exploded')
@@ -391,7 +410,9 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		expect(agent.context.tools.count).toBe(1)
 		const tool = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
 		if (tool === undefined) throw new Error('workflow tool was not bound')
-		expect(await tool.execute({ name: 'child', steps: [{ name: 'nested' }] })).toEqual({
+		expect(
+			await tool.execute({ name: 'child', steps: [{ name: 'nested' }] }, createTestToolContext()),
+		).toEqual({
 			status: 'completed',
 			count: 1,
 			durable: true,
@@ -409,7 +430,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		)
 		const tool = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
 		if (tool === undefined) throw new Error('workflow tool was not bound')
-		const error = await rejectionOf(tool.execute({}))
+		const error = await rejectionOf(tool.execute({}, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('cycle')
 	})
@@ -745,19 +766,28 @@ describe('createWorkflowTool — its parameters advertise the FLAT authoring sha
 describe('createWorkflowTool — authoring forms (flat / draft / full / precedence)', () => {
 	it('a valid authored full-form blob runs that workflow and RETURNS the plain run summary', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		const summary = readSummary(await tool.execute({ ...simpleDefinition('authored') }))
+		const summary = readSummary(
+			await tool.execute({ ...simpleDefinition('authored') }, createTestToolContext()),
+		)
 		expect(summary).toEqual({ status: 'completed', count: 1 })
 	})
 
 	it('no authored args runs the WRAPPED definition (the tool genuinely wraps it)', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		expect(readSummary(await tool.execute({}))).toEqual({ status: 'completed', count: 1 })
+		expect(readSummary(await tool.execute({}, createTestToolContext()))).toEqual({
+			status: 'completed',
+			count: 1,
+		})
 	})
 
 	it('an omitted behavior completes with native JSON null', async () => {
 		const store = createMemoryWorkflowStore()
 		const tool = createWorkflowTool(simpleDefinition('omitted'), createWorkflowRunner(), { store })
-		expect(await tool.execute({})).toEqual({ status: 'completed', count: 1, durable: true })
+		expect(await tool.execute({}, createTestToolContext())).toEqual({
+			status: 'completed',
+			count: 1,
+			durable: true,
+		})
 		const snapshot = await store.get('omitted')
 		expect(snapshot?.phases[0]?.tasks[0]?.result?.result).toEqual({
 			success: true,
@@ -773,7 +803,10 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'missing' }] }],
 		}
 		const error = await rejectionOf(
-			createWorkflowTool(definition, createWorkflowRunner(), { store }).execute({}),
+			createWorkflowTool(definition, createWorkflowRunner(), { store }).execute(
+				{},
+				createTestToolContext(),
+			),
 		)
 		expect(error).toBeInstanceOf(WorkflowError)
 		expect(isWorkflowError(error) ? error.code : undefined).toBe('TRANSITION')
@@ -783,11 +816,14 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	it('a malformed authored blob throws a typed TOOL ToolboxError', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
 		const error = await rejectionOf(
-			tool.execute({
-				id: '',
-				name: 'X',
-				phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 0 }],
-			}),
+			tool.execute(
+				{
+					id: '',
+					name: 'X',
+					phases: [{ id: 'p', name: 'P', tasks: [], concurrency: 0 }],
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(isToolboxError(error) ? error.context : undefined).toMatchObject({
@@ -820,7 +856,7 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			throwingOwnKeysWorkflowArguments,
 			throwingGetWorkflowArguments,
 		]) {
-			const error = await rejectionOf(tool.execute(args))
+			const error = await rejectionOf(tool.execute(args, createTestToolContext()))
 			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 			expect(error instanceof Error ? error.message : '').toBe('malformed workflow definition')
 		}
@@ -832,7 +868,9 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
-		const error = await rejectionOf(tool.execute({ ...simpleDefinition('deep') }))
+		const error = await rejectionOf(
+			tool.execute({ ...simpleDefinition('deep') }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('max depth')
 	})
@@ -841,7 +879,9 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
 			lineage: ['workflow:loop', 'agent:a'],
 		})
-		const error = await rejectionOf(tool.execute({ ...simpleDefinition('loop') }))
+		const error = await rejectionOf(
+			tool.execute({ ...simpleDefinition('loop') }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('cycle')
 	})
@@ -858,9 +898,12 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			functions: { x: () => 'x', y: () => 'y' },
 		})
 		const summary = readSummary(
-			await tool.execute({
-				phases: [{ tasks: [{ behavior: 'x' }] }, { tasks: [{ behavior: 'y' }] }],
-			}),
+			await tool.execute(
+				{
+					phases: [{ tasks: [{ behavior: 'x' }] }, { tasks: [{ behavior: 'y' }] }],
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(summary).toEqual({ status: 'completed', count: 2 })
 	})
@@ -870,14 +913,17 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			functions: { compile: () => 'compiled', publish: () => 'published' },
 		})
 		const summary = readSummary(
-			await tool.execute({ name: 'build', steps: [{ name: 'compile' }, { name: 'publish' }] }),
+			await tool.execute(
+				{ name: 'build', steps: [{ name: 'compile' }, { name: 'publish' }] },
+				createTestToolContext(),
+			),
 		)
 		expect(summary).toEqual({ status: 'completed', count: 2 })
 	})
 
 	it('a flat blob that cannot expand throws a typed TOOL ToolboxError', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		const error = await rejectionOf(tool.execute({ steps: [{}] }))
+		const error = await rejectionOf(tool.execute({ steps: [{}] }, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
@@ -886,7 +932,12 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
 			agents: { review: agent },
 		})
-		expect(await tool.execute({ name: 'agent-root', steps: [{ name: 'review' }] })).toEqual({
+		expect(
+			await tool.execute(
+				{ name: 'agent-root', steps: [{ name: 'review' }] },
+				createTestToolContext(),
+			),
+		).toEqual({
 			status: 'completed',
 			count: 1,
 		})
@@ -896,7 +947,12 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		const allowed = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN),
 		})
-		expect(await allowed.execute({ ...simpleDefinition(`w${MAX_WORKFLOW_CHAIN}`) })).toEqual({
+		expect(
+			await allowed.execute(
+				{ ...simpleDefinition(`w${MAX_WORKFLOW_CHAIN}`) },
+				createTestToolContext(),
+			),
+		).toEqual({
 			status: 'completed',
 			count: 1,
 		})
@@ -905,7 +961,10 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
 		const error = await rejectionOf(
-			rejected.execute({ ...simpleDefinition(`w${MAX_WORKFLOW_CHAIN + 1}`) }),
+			rejected.execute(
+				{ ...simpleDefinition(`w${MAX_WORKFLOW_CHAIN + 1}`) },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 	})
@@ -915,15 +974,18 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			functions: { a: () => 'a', b: () => 'b' },
 		})
 		const summary = readSummary(
-			await tool.execute({
-				name: 'precedence',
-				steps: [{ name: 'a' }, { name: 'b' }],
-				phases: [
-					{ id: 'x', name: 'X', tasks: [{ id: 'x0', name: 'X0', behavior: 'p' }] },
-					{ id: 'y', name: 'Y', tasks: [{ id: 'y0', name: 'Y0', behavior: 'q' }] },
-					{ id: 'z', name: 'Z', tasks: [{ id: 'z0', name: 'Z0', behavior: 'r' }] },
-				],
-			}),
+			await tool.execute(
+				{
+					name: 'precedence',
+					steps: [{ name: 'a' }, { name: 'b' }],
+					phases: [
+						{ id: 'x', name: 'X', tasks: [{ id: 'x0', name: 'X0', behavior: 'p' }] },
+						{ id: 'y', name: 'Y', tasks: [{ id: 'y0', name: 'Y0', behavior: 'q' }] },
+						{ id: 'z', name: 'Z', tasks: [{ id: 'z0', name: 'Z0', behavior: 'r' }] },
+					],
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(summary).toEqual({ status: 'completed', count: 2 })
 	})
@@ -980,7 +1042,9 @@ describe('createWorkflowTool — optional native durable store', () => {
 		const store = createMemoryWorkflowStore()
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), { store })
 		expect(await store.get('authored')).toBeUndefined()
-		expect(await tool.execute({ ...simpleDefinition('authored') })).toEqual({
+		expect(
+			await tool.execute({ ...simpleDefinition('authored') }, createTestToolContext()),
+		).toEqual({
 			status: 'completed',
 			count: 1,
 			durable: true,
@@ -993,7 +1057,7 @@ describe('createWorkflowTool — optional native durable store', () => {
 	it('the persisted snapshot round-trips through the strict contract and is restorable', async () => {
 		const store = createMemoryWorkflowStore()
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), { store })
-		await tool.execute({ ...simpleDefinition('restorable') })
+		await tool.execute({ ...simpleDefinition('restorable') }, createTestToolContext())
 		const persisted = await store.get('restorable')
 		expect(persisted?.phases[0]?.tasks[0]?.status).toBe('completed')
 		expect(persisted === undefined ? undefined : createRestoredWorkflow(persisted).status).toBe(
@@ -1007,15 +1071,20 @@ describe('createWorkflowTool — optional native durable store', () => {
 			functions: { one: () => 1, two: () => 2 },
 			store,
 		})
-		await tool.execute({ name: 'shared', steps: [{ name: 'one' }] })
+		await tool.execute({ name: 'shared', steps: [{ name: 'one' }] }, createTestToolContext())
 		expect((await store.get('shared'))?.phases).toHaveLength(1)
-		await tool.execute({ name: 'shared', steps: [{ name: 'one' }, { name: 'two' }] })
+		await tool.execute(
+			{ name: 'shared', steps: [{ name: 'one' }, { name: 'two' }] },
+			createTestToolContext(),
+		)
 		expect((await store.get('shared'))?.phases).toHaveLength(2)
 	})
 
 	it('an ABSENT store has NO persistence side effects', async () => {
 		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		const summary = readSummary(await tool.execute({ ...simpleDefinition('no-store') }))
+		const summary = readSummary(
+			await tool.execute({ ...simpleDefinition('no-store') }, createTestToolContext()),
+		)
 		expect(summary).toEqual({ status: 'completed', count: 1 })
 		// No store was supplied; nothing to assert beyond the run completing without error.
 	})
@@ -1026,14 +1095,14 @@ describe('createWorkflowTool — optional native durable store', () => {
 			store,
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
-		await rejectionOf(tool.execute({ ...simpleDefinition('unreached') }))
+		await rejectionOf(tool.execute({ ...simpleDefinition('unreached') }, createTestToolContext()))
 		expect(await store.get('unreached')).toBeUndefined()
 	})
 
 	it('native persistence records the ordered pending, running, completed subsequence', async () => {
 		const store = new RecordingWorkflowStore()
 		const tool = createWorkflowTool(simpleDefinition('recorded'), createWorkflowRunner(), { store })
-		await tool.execute({})
+		await tool.execute({}, createTestToolContext())
 		const statuses = store.snapshots.map((snapshot) => snapshot.phases[0]?.tasks[0]?.status)
 		const pending = statuses.indexOf('pending')
 		const running = statuses.indexOf('running', pending + 1)
@@ -1047,7 +1116,7 @@ describe('createWorkflowTool — optional native durable store', () => {
 		const store = new RecordingWorkflowStore(Number.POSITIVE_INFINITY)
 		const result = await createWorkflowTool(simpleDefinition('rejected'), createWorkflowRunner(), {
 			store,
-		}).execute({})
+		}).execute({}, createTestToolContext())
 		expect(result).toMatchObject({
 			durable: false,
 			fault: { message: 'checkpoint refused' },
@@ -1058,7 +1127,7 @@ describe('createWorkflowTool — optional native durable store', () => {
 		const store = new RecordingWorkflowStore(1)
 		const result = await createWorkflowTool(simpleDefinition('fail-once'), createWorkflowRunner(), {
 			store,
-		}).execute({})
+		}).execute({}, createTestToolContext())
 		expect(result).toMatchObject({
 			durable: true,
 			fault: { checkpoint: 'initial', message: 'checkpoint refused' },
@@ -1073,9 +1142,14 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 	it('with no options, edits land on a freshly-constructed in-memory-backed manager', async () => {
 		const tool = createWorkspaceTool()
 		expect(tool.name).toBe('workspace')
-		const result = await tool.execute({ operation: 'write', path: 'a.ts', content: 'x' })
+		const result = await tool.execute(
+			{ operation: 'write', path: 'a.ts', content: 'x' },
+			createTestToolContext(),
+		)
 		expect(result).toEqual({ path: 'a.ts', state: 'created' })
-		expect(await tool.execute({ operation: 'read', path: 'a.ts' })).toBe('x')
+		expect(await tool.execute({ operation: 'read', path: 'a.ts' }, createTestToolContext())).toBe(
+			'x',
+		)
 	})
 
 	it('honors name / description overrides', () => {
@@ -1086,29 +1160,40 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 
 	it('forwards `sensitive` and returns the workspace ReplaceResult without translation', async () => {
 		const tool = createWorkspaceTool()
-		await tool.execute({ operation: 'write', path: 'a.txt', content: 'Alpha alpha' })
+		await tool.execute(
+			{ operation: 'write', path: 'a.txt', content: 'Alpha alpha' },
+			createTestToolContext(),
+		)
 		expect(
-			await tool.execute({
-				operation: 'search',
-				query: 'alpha',
-				sensitive: true,
-			}),
+			await tool.execute(
+				{
+					operation: 'search',
+					query: 'alpha',
+					sensitive: true,
+				},
+				createTestToolContext(),
+			),
 		).toHaveLength(1)
 		expect(
-			await tool.execute({
-				operation: 'replace',
-				query: 'alpha',
-				replacement: 'x',
-				sensitive: false,
-			}),
+			await tool.execute(
+				{
+					operation: 'replace',
+					query: 'alpha',
+					replacement: 'x',
+					sensitive: false,
+				},
+				createTestToolContext(),
+			),
 		).toEqual({ occurrences: 2, files: 1 })
-		expect(await tool.execute({ operation: 'read', path: 'a.txt' })).toBe('x x')
+		expect(await tool.execute({ operation: 'read', path: 'a.txt' }, createTestToolContext())).toBe(
+			'x x',
+		)
 	})
 
 	it('rejects a malformed operation with this package`s TOOL ToolboxError', async () => {
 		const tool = createWorkspaceTool()
 		const error = await rejectionOf(
-			Promise.resolve().then(() => tool.execute({ operation: 'unknown' })),
+			Promise.resolve().then(() => tool.execute({ operation: 'unknown' }, createTestToolContext())),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
@@ -1118,7 +1203,10 @@ describe('createWorkspaceTool — explicit store (persistence observable through
 	it('a write through the tool is retrievable through a fresh manager over the SAME store', async () => {
 		const store = createMemoryWorkspaceStore()
 		const tool = createWorkspaceTool({ store })
-		await tool.execute({ operation: 'write', path: 'notes.md', content: '# Title' })
+		await tool.execute(
+			{ operation: 'write', path: 'notes.md', content: '# Title' },
+			createTestToolContext(),
+		)
 		// The tool's own manager auto-creates + activates a default workspace on the write (the
 		// no-active ergonomic seam) but never persists on its own — persistence flows through the
 		// store only once a caller explicitly saves through a manager built over it.
@@ -1134,9 +1222,14 @@ describe('createWorkspaceTool — explicit store (persistence observable through
 	it('the tool operates correctly (its handler works) when constructed over a store', async () => {
 		const store = createMemoryWorkspaceStore()
 		const tool = createWorkspaceTool({ store })
-		const result = await tool.execute({ operation: 'write', path: 'a.ts', content: 'x' })
+		const result = await tool.execute(
+			{ operation: 'write', path: 'a.ts', content: 'x' },
+			createTestToolContext(),
+		)
 		expect(result).toEqual({ path: 'a.ts', state: 'created' })
-		expect(await tool.execute({ operation: 'read', path: 'a.ts' })).toBe('x')
+		expect(await tool.execute({ operation: 'read', path: 'a.ts' }, createTestToolContext())).toBe(
+			'x',
+		)
 	})
 })
 
@@ -1145,7 +1238,10 @@ describe('createWorkspaceTool — explicit manager (drives the caller`s manager 
 		const manager = createWorkspaceManager()
 		const workspace = manager.add()
 		const tool = createWorkspaceTool({ manager })
-		await tool.execute({ operation: 'write', path: 'a.ts', content: 'const x = 1' })
+		await tool.execute(
+			{ operation: 'write', path: 'a.ts', content: 'const x = 1' },
+			createTestToolContext(),
+		)
 		expect(workspace.read('a.ts')).toBe('const x = 1')
 	})
 
@@ -1153,7 +1249,7 @@ describe('createWorkspaceTool — explicit manager (drives the caller`s manager 
 		const manager = createWorkspaceManager()
 		expect(manager.active).toBeUndefined()
 		const tool = createWorkspaceTool({ manager })
-		await tool.execute({ operation: 'write', path: 'x.txt', content: 'y' })
+		await tool.execute({ operation: 'write', path: 'x.txt', content: 'y' }, createTestToolContext())
 		expect(manager.count).toBe(1)
 		expect(manager.active?.read('x.txt')).toBe('y')
 	})
@@ -1163,7 +1259,10 @@ describe('createWorkspaceTool — explicit manager (drives the caller`s manager 
 		const manager = createWorkspaceManager({ store })
 		manager.add({ id: 'w' })
 		const tool = createWorkspaceTool({ manager })
-		await tool.execute({ operation: 'write', path: 'a.ts', content: 'via-manager' })
+		await tool.execute(
+			{ operation: 'write', path: 'a.ts', content: 'via-manager' },
+			createTestToolContext(),
+		)
 		expect(await manager.save('w')).toBe(true)
 		const reader = createWorkspaceManager({ store })
 		const opened = await reader.open('w')
@@ -1177,7 +1276,10 @@ describe('createWorkspaceTool — precedence: manager wins when BOTH manager and
 		const manager = createWorkspaceManager()
 		const workspace = manager.add()
 		const tool = createWorkspaceTool({ manager, store })
-		await tool.execute({ operation: 'write', path: 'a.ts', content: 'from-manager' })
+		await tool.execute(
+			{ operation: 'write', path: 'a.ts', content: 'from-manager' },
+			createTestToolContext(),
+		)
 		expect(workspace.read('a.ts')).toBe('from-manager')
 		// `store` was NOT used to build the tool's manager — a fresh manager over it has nothing.
 		const overStore = createWorkspaceManager({ store })
@@ -1193,11 +1295,11 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
-		const error = await rejectionOf(tool.execute({}))
+		const error = await rejectionOf(tool.execute({}, createTestToolContext()))
 		expect(isToolboxError(error)).toBe(true)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 
-		const emptyTask = await rejectionOf(tool.execute({ task: '' }))
+		const emptyTask = await rejectionOf(tool.execute({ task: '' }, createTestToolContext()))
 		expect(isToolboxError(emptyTask) ? emptyTask.code : undefined).toBe('TOOL')
 	})
 
@@ -1216,7 +1318,9 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
-		const error = await rejectionOf(tool.execute({ task: 'x', tools: 'not-an-array' }))
+		const error = await rejectionOf(
+			tool.execute({ task: 'x', tools: 'not-an-array' }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
@@ -1225,7 +1329,7 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry) // no default provider configured
-		const error = await rejectionOf(tool.execute({ task: 'do it' }))
+		const error = await rejectionOf(tool.execute({ task: 'do it' }, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 })
@@ -1235,7 +1339,7 @@ describe('createAgentTool — depth / cycle guard', () => {
 		const provider = new ScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', depth: AGENT_TOOL_DEPTH })
-		const error = await rejectionOf(tool.execute({ task: 'do it' }))
+		const error = await rejectionOf(tool.execute({ task: 'do it' }, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
@@ -1244,7 +1348,7 @@ describe('createAgentTool — depth / cycle guard', () => {
 		const provider = new ScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', ancestry: ['agent:main'] })
-		const error = await rejectionOf(tool.execute({ task: 'do it' }))
+		const error = await rejectionOf(tool.execute({ task: 'do it' }, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
@@ -1255,7 +1359,7 @@ describe('createAgentTool — delegation happy-path with a real minimal registry
 		const provider = new ScriptedProvider([{ content: 'delegated result' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main' })
-		const result = await tool.execute({ task: 'summarize the notes' })
+		const result = await tool.execute({ task: 'summarize the notes' }, createTestToolContext())
 		expect(result).toBe('delegated result')
 		expect(provider.calls[0]?.messages[0]).toMatchObject({
 			role: 'user',
@@ -1270,7 +1374,7 @@ describe('createAgentTool — delegation happy-path with a real minimal registry
 			providers: { primary: defaultProvider, secondary: otherProvider },
 		})
 		const tool = createAgentTool(registry, { provider: 'primary' })
-		const result = await tool.execute({ task: 'x', provider: 'secondary' })
+		const result = await tool.execute({ task: 'x', provider: 'secondary' }, createTestToolContext())
 		expect(result).toBe('other-provider')
 		expect(defaultProvider.started).toBe(0)
 	})
@@ -1279,7 +1383,7 @@ describe('createAgentTool — delegation happy-path with a real minimal registry
 		const provider = new ScriptedProvider([{ content: 'ok' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', system: 'default system' })
-		await tool.execute({ task: 'x', system: 'override system' })
+		await tool.execute({ task: 'x', system: 'override system' }, createTestToolContext())
 		expect(provider.started).toBe(1)
 	})
 })
@@ -1289,7 +1393,7 @@ describe('createAgentTool — abort fold (abort during generate settles per the 
 		const provider = new ScriptedProvider([{ content: 'partial-delegate' }], { delay: 20 })
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main' })
-		const result = await tool.execute({ task: 'do it' })
+		const result = await tool.execute({ task: 'do it' }, createTestToolContext())
 		expect(result).toBe('partial-delegate')
 		expect(provider.started).toBe(1)
 	})
@@ -1312,7 +1416,7 @@ describe('createAgentTool — optional conversation store', () => {
 		const provider = new ScriptedProvider([{ content: 'delegated' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', store })
-		const result = await tool.execute({ task: 'summarize the notes' })
+		const result = await tool.execute({ task: 'summarize the notes' }, createTestToolContext())
 		expect(result).toBe('delegated')
 		expect(seen.count).toBe(1)
 		const stored = await backing.get(seen.calls[0]?.[0] ?? '')
@@ -1333,8 +1437,8 @@ describe('createAgentTool — optional conversation store', () => {
 		const provider = new ScriptedProvider([{ content: 'first' }, { content: 'second' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', store })
-		await tool.execute({ task: 'first task' })
-		await tool.execute({ task: 'second task' })
+		await tool.execute({ task: 'first task' }, createTestToolContext())
+		await tool.execute({ task: 'second task' }, createTestToolContext())
 		expect(seen.count).toBe(2)
 		expect(new Set(seen.calls.map((call) => call[0])).size).toBe(2)
 	})
@@ -1343,7 +1447,7 @@ describe('createAgentTool — optional conversation store', () => {
 		const provider = new ScriptedProvider([{ content: 'no-store-result' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main' })
-		const result = await tool.execute({ task: 'do it' })
+		const result = await tool.execute({ task: 'do it' }, createTestToolContext())
 		expect(result).toBe('no-store-result')
 	})
 
@@ -1430,9 +1534,15 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 		manager.add(describeTool)
 
 		expect(describeTool.name).toBe(DESCRIBE_TOOL_NAME)
-		expect(await describeTool.execute({ name: 'workflow' })).toBe(WORKFLOW_TOOL_DESCRIPTION)
-		expect(await describeTool.execute({ name: 'workspace' })).toBe(WORKSPACE_TOOL_DESCRIPTION)
-		expect(await describeTool.execute({ name: 'agent' })).toBe(agentTool.description)
+		expect(await describeTool.execute({ name: 'workflow' }, createTestToolContext())).toBe(
+			WORKFLOW_TOOL_DESCRIPTION,
+		)
+		expect(await describeTool.execute({ name: 'workspace' }, createTestToolContext())).toBe(
+			WORKSPACE_TOOL_DESCRIPTION,
+		)
+		expect(await describeTool.execute({ name: 'agent' }, createTestToolContext())).toBe(
+			agentTool.description,
+		)
 	})
 
 	it('an unknown tool name THROWS a typed TOOL ToolboxError through the manager`s error envelope', async () => {
@@ -1447,16 +1557,18 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 		if (result.success) throw new Error('expected the unknown tool lookup to fail')
 		expect(result.error).toContain('nonexistent')
 
-		const direct = await rejectionOf(describeTool.execute({ name: 'nonexistent' }))
+		const direct = await rejectionOf(
+			describeTool.execute({ name: 'nonexistent' }, createTestToolContext()),
+		)
 		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
 	})
 
 	it('malformed args (missing/empty name) are REJECTED with a typed TOOL ToolboxError', async () => {
 		const manager = createToolManager()
 		const describeTool = createDescribeTool(manager)
-		const missing = await rejectionOf(describeTool.execute({}))
+		const missing = await rejectionOf(describeTool.execute({}, createTestToolContext()))
 		expect(isToolboxError(missing) ? missing.code : undefined).toBe('TOOL')
-		const empty = await rejectionOf(describeTool.execute({ name: '' }))
+		const empty = await rejectionOf(describeTool.execute({ name: '' }, createTestToolContext()))
 		expect(isToolboxError(empty) ? empty.code : undefined).toBe('TOOL')
 	})
 })
@@ -1473,17 +1585,23 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		expect(askTool.name).toBe(PROMPT_TOOL_NAME)
 		expect(answerTool.name).toBe(ANSWER_TOOL_NAME)
 
-		const pending = askTool.execute(createAskCall('reviewer', 'confirm', 'Approve?'))
+		const pending = askTool.execute(
+			createAskCall('reviewer', 'confirm', 'Approve?'),
+			createTestToolContext(),
+		)
 
 		// Give the ask a tick to park, then list + answer through the answer tool.
 		await waitForDelay(0)
-		const listed = await answerTool.execute({ operation: 'pending' })
+		const listed = await answerTool.execute({ operation: 'pending' }, createTestToolContext())
 		expect(Array.isArray(listed) ? listed.length : 0).toBe(1)
 		const first = Array.isArray(listed) ? listed[0] : undefined
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
 		expect(typeof id).toBe('string')
 
-		const ack = await answerTool.execute({ operation: 'answer', id, values: { value: true } })
+		const ack = await answerTool.execute(
+			{ operation: 'answer', id, values: { value: true } },
+			createTestToolContext(),
+		)
 		expect(ack).toEqual({ answered: id })
 		expect(await pending).toEqual({ value: true })
 	})
@@ -1495,11 +1613,15 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const askFromA = createPromptTool({ manager, from: 'a' })
 		const askFromB = createPromptTool({ manager, from: 'b' })
 
-		const aAsksB = Promise.resolve(askFromA.execute(createAskCall('b', 'confirm', 'ok?')))
+		const aAsksB = Promise.resolve(
+			askFromA.execute(createAskCall('b', 'confirm', 'ok?'), createTestToolContext()),
+		)
 		aAsksB.catch(() => {})
 		await waitForDelay(0)
 
-		const error = await rejectionOf(askFromB.execute(createAskCall('a', 'confirm', 'ok?')))
+		const error = await rejectionOf(
+			askFromB.execute(createAskCall('a', 'confirm', 'ok?'), createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEADLOCK')
 	})
 
@@ -1507,7 +1629,9 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const manager = createTerminalManager()
 		manager.add('agent')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(askTool.execute(createAskCall('ghost', 'text', 'name?')))
+		const error = await rejectionOf(
+			askTool.execute(createAskCall('ghost', 'text', 'name?'), createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(isToolboxError(error) ? error.context?.to : undefined).toBe('ghost')
 		expect(isToolboxError(error) ? error.context?.count : undefined).toBe(1)
@@ -1520,7 +1644,9 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('reviewer', { timeout: 10, timer: timer.timer })
 		const askTool = createPromptTool({ manager, from: 'agent' })
 
-		const pending = rejectionOf(askTool.execute(createAskCall('reviewer', 'text', 'name?')))
+		const pending = rejectionOf(
+			askTool.execute(createAskCall('reviewer', 'text', 'name?'), createTestToolContext()),
+		)
 		await waitForDelay(0)
 		timer.fire(0)
 		const error = await pending
@@ -1535,12 +1661,12 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 
 		const pending = Promise.resolve(
-			askTool.execute(createAskCall('reviewer', 'confirm', 'Approve?')),
+			askTool.execute(createAskCall('reviewer', 'confirm', 'Approve?'), createTestToolContext()),
 		)
 		pending.catch(() => {})
 		await waitForDelay(0)
 
-		const listed = await answerTool.execute({ operation: 'pending' })
+		const listed = await answerTool.execute({ operation: 'pending' }, createTestToolContext())
 		expect(Array.isArray(listed)).toBe(true)
 		const first = Array.isArray(listed) ? listed[0] : undefined
 		expect(first).toMatchObject({
@@ -1550,7 +1676,10 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 
 		// Answer it so the outstanding ask settles and doesn't leak between tests.
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
-		await answerTool.execute({ operation: 'answer', id, values: { value: true } })
+		await answerTool.execute(
+			{ operation: 'answer', id, values: { value: true } },
+			createTestToolContext(),
+		)
 	})
 
 	it("answer tool 'answer' applies a typed values record and resolves", async () => {
@@ -1560,13 +1689,19 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 
-		const pending = askTool.execute(createAskCall('reviewer', 'confirm', 'Approve?'))
+		const pending = askTool.execute(
+			createAskCall('reviewer', 'confirm', 'Approve?'),
+			createTestToolContext(),
+		)
 		await waitForDelay(0)
-		const listed = await answerTool.execute({ operation: 'pending' })
+		const listed = await answerTool.execute({ operation: 'pending' }, createTestToolContext())
 		const first = Array.isArray(listed) ? listed[0] : undefined
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
 
-		const ack = await answerTool.execute({ operation: 'answer', id, values: { value: true } })
+		const ack = await answerTool.execute(
+			{ operation: 'answer', id, values: { value: true } },
+			createTestToolContext(),
+		)
 		expect(ack).toEqual({ answered: id })
 		expect(await pending).toEqual({ value: true })
 	})
@@ -1578,13 +1713,16 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 		const asked = Promise.resolve(
-			askTool.execute(createAskCall('reviewer', 'select', 'Choose one')),
+			askTool.execute(createAskCall('reviewer', 'select', 'Choose one'), createTestToolContext()),
 		)
 		await waitForDelay(0)
 		const [form] = manager.pending('reviewer')
 		if (form === undefined) throw new Error('expected a parked form')
 
-		await answerTool.execute({ operation: 'answer', id: form.id, values: { value: 'x' } })
+		await answerTool.execute(
+			{ operation: 'answer', id: form.id, values: { value: 'x' } },
+			createTestToolContext(),
+		)
 
 		await expect(asked).resolves.toEqual({ value: 'x' })
 	})
@@ -1596,13 +1734,19 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 		const asked = Promise.resolve(
-			askTool.execute(createAskCall('reviewer', 'checkbox', 'Choose many')),
+			askTool.execute(
+				createAskCall('reviewer', 'checkbox', 'Choose many'),
+				createTestToolContext(),
+			),
 		)
 		await waitForDelay(0)
 		const [form] = manager.pending('reviewer')
 		if (form === undefined) throw new Error('expected a parked form')
 
-		await answerTool.execute({ operation: 'answer', id: form.id, values: { value: ['x', 'y'] } })
+		await answerTool.execute(
+			{ operation: 'answer', id: form.id, values: { value: ['x', 'y'] } },
+			createTestToolContext(),
+		)
 
 		await expect(asked).resolves.toEqual({ value: ['x', 'y'] })
 	})
@@ -1614,19 +1758,22 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 		const asked = Promise.resolve(
-			askTool.execute({
-				to: 'reviewer',
-				schema: {
-					fields: [{ control: 'text', name: 'value', rule: { required: true } }],
+			askTool.execute(
+				{
+					to: 'reviewer',
+					schema: {
+						fields: [{ control: 'text', name: 'value', rule: { required: true } }],
+					},
 				},
-			}),
+				createTestToolContext(),
+			),
 		)
 		await waitForDelay(0)
 		const [form] = manager.pending('reviewer')
 		if (form === undefined) throw new Error('expected a parked form')
 
 		const error = await rejectionOf(
-			answerTool.execute({ operation: 'answer', id: form.id, values: {} }),
+			answerTool.execute({ operation: 'answer', id: form.id, values: {} }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('ANSWER')
 		expect(isToolboxError(error) ? error.context?.reason : undefined).toBe('rejected')
@@ -1634,7 +1781,10 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 			{ field: 'value', message: 'This field is required', rule: 'required' },
 		])
 
-		await answerTool.execute({ operation: 'answer', id: form.id, values: { value: 'Ada' } })
+		await answerTool.execute(
+			{ operation: 'answer', id: form.id, values: { value: 'Ada' } },
+			createTestToolContext(),
+		)
 		await expect(asked).resolves.toEqual({ value: 'Ada' })
 	})
 
@@ -1643,7 +1793,10 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('reviewer')
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 		const error = await rejectionOf(
-			answerTool.execute({ operation: 'answer', id: 'ghost-id', values: { value: true } }),
+			answerTool.execute(
+				{ operation: 'answer', id: 'ghost-id', values: { value: true } },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('ANSWER')
 		expect(isToolboxError(error) ? error.context?.reason : undefined).toBe('unknown')
@@ -1659,15 +1812,20 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 
 		// Passing `from`/`to` in args is ignored — the shapes don't even accept them, and the
 		// handler never reads them: an ask still parks under the FIXED `from`, never `spoof`.
-		const pending = Promise.resolve(askTool.execute(createAskCall('reviewer', 'confirm', 'ok?')))
+		const pending = Promise.resolve(
+			askTool.execute(createAskCall('reviewer', 'confirm', 'ok?'), createTestToolContext()),
+		)
 		pending.catch(() => {})
 		await waitForDelay(0)
 
-		const listed = await answerTool.execute({ operation: 'pending' })
+		const listed = await answerTool.execute({ operation: 'pending' }, createTestToolContext())
 		const first = Array.isArray(listed) ? listed[0] : undefined
 		expect(first).toMatchObject({ from: 'agent' })
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
-		await answerTool.execute({ operation: 'answer', id, values: { value: true } })
+		await answerTool.execute(
+			{ operation: 'answer', id, values: { value: true } },
+			createTestToolContext(),
+		)
 	})
 
 	it('a select schema with malformed choices throws a typed TOOL ToolboxError without parking', async () => {
@@ -1676,14 +1834,17 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({
-				to: 'reviewer',
-				schema: {
-					fields: [
-						{ control: 'select', name: 'value', label: 'pick one', choices: 'not-an-array' },
-					],
+			askTool.execute(
+				{
+					to: 'reviewer',
+					schema: {
+						fields: [
+							{ control: 'select', name: 'value', label: 'pick one', choices: 'not-an-array' },
+						],
+					},
 				},
-			}),
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(error instanceof Error ? error.message : '').toBe('malformed form schema')
@@ -1696,10 +1857,13 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({
-				to: 'reviewer',
-				schema: { fields: [{ control: 'checkbox', name: 'value', label: 'pick some' }] },
-			}),
+			askTool.execute(
+				{
+					to: 'reviewer',
+					schema: { fields: [{ control: 'checkbox', name: 'value', label: 'pick some' }] },
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(error instanceof Error ? error.message : '').toBe('malformed form schema')
@@ -1712,10 +1876,13 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const execution = Promise.resolve(
-			askTool.execute({
-				to: 'reviewer',
-				schema: { fields: [{ control: 'select', name: 'value', choices: [] }] },
-			}),
+			askTool.execute(
+				{
+					to: 'reviewer',
+					schema: { fields: [{ control: 'select', name: 'value', choices: [] }] },
+				},
+				createTestToolContext(),
+			),
 		)
 		execution.catch(() => {})
 		await waitForDelay(0)
@@ -1756,7 +1923,9 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 			destroy: () => {},
 		}
 		const askTool = createPromptTool({ manager: stub, from: 'a' })
-		const error = await rejectionOf(askTool.execute(createAskCall('b', 'text', 'name?')))
+		const error = await rejectionOf(
+			askTool.execute(createAskCall('b', 'text', 'name?'), createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		const message = error instanceof Error ? error.message : ''
 		expect(message).toContain('failed')
@@ -1772,7 +1941,9 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(askTool.execute({ schema: buildFormSchema('text', 'hi') }))
+		const error = await rejectionOf(
+			askTool.execute({ schema: buildFormSchema('text', 'hi') }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
@@ -1782,7 +1953,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(askTool.execute({ to: 'reviewer' }))
+		const error = await rejectionOf(askTool.execute({ to: 'reviewer' }, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
@@ -1793,7 +1964,10 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({ to: 'reviewer', schema: { fields: 'not-an-array' } }),
+			askTool.execute(
+				{ to: 'reviewer', schema: { fields: 'not-an-array' } },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
@@ -1805,10 +1979,13 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({
-				to: 'reviewer',
-				schema: { fields: [{ control: 'wizard', name: 'value', label: 'hi' }] },
-			}),
+			askTool.execute(
+				{
+					to: 'reviewer',
+					schema: { fields: [{ control: 'wizard', name: 'value', label: 'hi' }] },
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
@@ -1821,29 +1998,35 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
 		const pending = Promise.resolve(
-			askTool.execute({
-				to: 'reviewer',
-				schema: {
-					label: 'Profile',
-					fields: [
-						{ control: 'text', name: 'name', label: 'Name' },
-						{ control: 'confirm', name: 'approved', label: 'Approved' },
-					],
+			askTool.execute(
+				{
+					to: 'reviewer',
+					schema: {
+						label: 'Profile',
+						fields: [
+							{ control: 'text', name: 'name', label: 'Name' },
+							{ control: 'confirm', name: 'approved', label: 'Approved' },
+						],
+					},
 				},
-			}),
+				createTestToolContext(),
+			),
 		)
 		pending.catch(() => {})
 		await waitForDelay(0)
 		expect(manager.pending('reviewer')).toHaveLength(1)
-		const listed = await answerTool.execute({ operation: 'pending' })
+		const listed = await answerTool.execute({ operation: 'pending' }, createTestToolContext())
 		const first = Array.isArray(listed) ? listed[0] : undefined
 		expect(first).toMatchObject({ schema: { label: 'Profile' } })
 		const id = first !== null && typeof first === 'object' && 'id' in first ? first.id : undefined
-		await answerTool.execute({
-			operation: 'answer',
-			id,
-			values: { name: 'Ada', approved: true },
-		})
+		await answerTool.execute(
+			{
+				operation: 'answer',
+				id,
+				values: { name: 'Ada', approved: true },
+			},
+			createTestToolContext(),
+		)
 		expect(await pending).toEqual({ name: 'Ada', approved: true })
 	})
 
@@ -1853,10 +2036,13 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({
-				to: 'reviewer',
-				schema: { fields: [{ control: 'text', name: 'value', label: {} }] },
-			}),
+			askTool.execute(
+				{
+					to: 'reviewer',
+					schema: { fields: [{ control: 'text', name: 'value', label: {} }] },
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
@@ -1868,15 +2054,18 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({
-				to: 'reviewer',
-				schema: {
-					fields: [
-						{ control: 'text', name: 'value' },
-						{ control: 'confirm', name: 'value' },
-					],
+			askTool.execute(
+				{
+					to: 'reviewer',
+					schema: {
+						fields: [
+							{ control: 'text', name: 'value' },
+							{ control: 'confirm', name: 'value' },
+						],
+					},
 				},
-			}),
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
@@ -1888,12 +2077,15 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await rejectionOf(
-			askTool.execute({
-				to: 'reviewer',
-				schema: {
-					fields: [{ control: 'select', name: 'value', label: 'pick one', choices: 'a,b' }],
+			askTool.execute(
+				{
+					to: 'reviewer',
+					schema: {
+						fields: [{ control: 'select', name: 'value', label: 'pick one', choices: 'a,b' }],
+					},
 				},
-			}),
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
@@ -1943,7 +2135,10 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 			const askTool = askTools.get(from)
 			if (askTool === undefined) throw new Error('unreachable')
 			const promise = Promise.resolve(
-				askTool.execute(createAskCall(to, control, `question from ${from} to ${to}`)),
+				askTool.execute(
+					createAskCall(to, control, `question from ${from} to ${to}`),
+					createTestToolContext(),
+				),
 			)
 			promise.catch(() => {})
 			return promise
@@ -1962,7 +2157,7 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		for (const to of upper) {
 			const answerTool = answerTools.get(to)
 			if (answerTool === undefined) throw new Error('unreachable')
-			const listed = await answerTool.execute({ operation: 'pending' })
+			const listed = await answerTool.execute({ operation: 'pending' }, createTestToolContext())
 			if (!Array.isArray(listed)) throw new Error('expected an array')
 			const addressed = asks.filter((ask) => ask.to === to)
 			for (const [index, entry] of listed.entries()) {
@@ -1984,11 +2179,14 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		for (const entry of shuffled) {
 			const answerTool = answerTools.get(entry.to)
 			if (answerTool === undefined) throw new Error('unreachable')
-			const ack = await answerTool.execute({
-				operation: 'answer',
-				id: entry.id,
-				values: entry.values,
-			})
+			const ack = await answerTool.execute(
+				{
+					operation: 'answer',
+					id: entry.id,
+					values: entry.values,
+				},
+				createTestToolContext(),
+			)
 			expect(ack).toEqual({ answered: entry.id })
 		}
 
@@ -2006,11 +2204,15 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		const askB = askTools.get('t1')
 		if (askA === undefined || askB === undefined) throw new Error('unreachable')
 
-		const first = Promise.resolve(askA.execute(createAskCall('t1', 'confirm', 'ok?')))
+		const first = Promise.resolve(
+			askA.execute(createAskCall('t1', 'confirm', 'ok?'), createTestToolContext()),
+		)
 		first.catch(() => {})
 		await waitForDelay(0)
 
-		const error = await rejectionOf(askB.execute(createAskCall('t0', 'confirm', 'ok?')))
+		const error = await rejectionOf(
+			askB.execute(createAskCall('t0', 'confirm', 'ok?'), createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEADLOCK')
 		const context = isToolboxError(error) ? error.context : undefined
 		const path = context !== undefined && 'path' in context ? context.path : undefined
@@ -2028,10 +2230,14 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 
 		// A second, ordinary ask (no timer) stays pending throughout — proves the expiry is scoped
 		// to the one form whose broker was configured with the injected timer, not global.
-		const other = Promise.resolve(askFromT1.execute(createAskCall('t2', 'text', 'still waiting')))
+		const other = Promise.resolve(
+			askFromT1.execute(createAskCall('t2', 'text', 'still waiting'), createTestToolContext()),
+		)
 		other.catch(() => {})
 
-		const expiring = rejectionOf(askFromT0.execute(createAskCall('t9', 'text', 'name?')))
+		const expiring = rejectionOf(
+			askFromT0.execute(createAskCall('t9', 'text', 'name?'), createTestToolContext()),
+		)
 		await waitForDelay(0)
 		timer.fire(0)
 		const error = await expiring
@@ -2086,22 +2292,34 @@ describe('createDatabaseTool — create', () => {
 	it('happy path: mixed bare-kind and {type,optional} column specs mint a live database', async () => {
 		const tool = createDatabaseTool()
 		expect(tool.name).toBe(DATABASE_TOOL_NAME)
-		const result = await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		const result = await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
 		expect(result).toEqual({ id: 'shop', tables: ['items'] })
 	})
 
 	it('uses a configured generator for a row whose primary is omitted', async () => {
 		const tool = createDatabaseTool({ generator: () => 'generated' })
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		const added = await tool.execute({
-			operation: 'add',
-			id: 'shop',
-			table: 'items',
-			row: { name: 'generated item', price: 3, active: true },
-		})
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		const added = await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: { name: 'generated item', price: 3, active: true },
+			},
+			createTestToolContext(),
+		)
 		expect(added).toEqual({ key: 'generated' })
 		expect(
-			await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'generated' }),
+			await tool.execute(
+				{ operation: 'get', id: 'shop', table: 'items', key: 'generated' },
+				createTestToolContext(),
+			),
 		).toEqual({ row: { id: 'generated', name: 'generated item', price: 3, active: true } })
 	})
 
@@ -2109,13 +2327,16 @@ describe('createDatabaseTool — create', () => {
 		const driver = createMemoryDriver()
 		const store = createMemoryDefinitionStore()
 		const tool = createDatabaseTool({ drivers: { memory: () => driver }, store })
-		await tool.execute({
-			operation: 'create',
-			id: 'shop',
-			tables: itemsTables(),
-			indexes: { items: [['active'], ['name', 'price']] },
-			version: 2.5,
-		})
+		await tool.execute(
+			{
+				operation: 'create',
+				id: 'shop',
+				tables: itemsTables(),
+				indexes: { items: [['active'], ['name', 'price']] },
+				version: 2.5,
+			},
+			createTestToolContext(),
+		)
 		expect(await store.get('shop')).toEqual({
 			id: 'shop',
 			driver: 'memory',
@@ -2124,7 +2345,10 @@ describe('createDatabaseTool — create', () => {
 			version: 2.5,
 		})
 
-		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+		await tool.execute(
+			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			createTestToolContext(),
+		)
 		if (driver.metadata === undefined) throw new Error('expected MemoryDriver metadata capability')
 		const metadata = await driver.metadata()
 		expect(metadata?.version).toBe(2.5)
@@ -2152,11 +2376,16 @@ describe('createDatabaseTool — create', () => {
 		const tool = createDatabaseTool({ store })
 
 		const createError = await rejectionOf(
-			tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() }),
+			tool.execute(
+				{ operation: 'create', id: 'shop', tables: itemsTables() },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(createError) ? createError.code : undefined).toBe('DATABASE')
 
-		const lookupError = await rejectionOf(tool.execute({ operation: 'tables', id: 'shop' }))
+		const lookupError = await rejectionOf(
+			tool.execute({ operation: 'tables', id: 'shop' }, createTestToolContext()),
+		)
 		expect(isToolboxError(lookupError) ? lookupError.code : undefined).toBe('TOOL')
 		expect(isToolboxError(lookupError) ? lookupError.message : '').toContain(
 			"unknown database 'shop'",
@@ -2173,8 +2402,11 @@ describe('createDatabaseTool — create', () => {
 describe('createDatabaseTool — tables', () => {
 	it('lists table name/primary/columns for a created database', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		const result = await tool.execute({ operation: 'tables', id: 'shop' })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		const result = await tool.execute({ operation: 'tables', id: 'shop' }, createTestToolContext())
 		expect(isRecord(result) && Array.isArray(result.tables) ? result.tables : []).toEqual([
 			expect.objectContaining({ name: 'items', primary: 'id' }),
 		])
@@ -2184,18 +2416,30 @@ describe('createDatabaseTool — tables', () => {
 describe('createDatabaseTool — get', () => {
 	it('single key resolves { row }, an array resolves { rows } with misses left absent', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			createTestToolContext(),
+		)
 
-		const single = await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })
+		const single = await tool.execute(
+			{ operation: 'get', id: 'shop', table: 'items', key: 'a' },
+			createTestToolContext(),
+		)
 		expect(isRecord(single) ? single.row : undefined).toEqual(itemRow('a'))
 
-		const many = await tool.execute({
-			operation: 'get',
-			id: 'shop',
-			table: 'items',
-			key: ['a', 'missing'],
-		})
+		const many = await tool.execute(
+			{
+				operation: 'get',
+				id: 'shop',
+				table: 'items',
+				key: ['a', 'missing'],
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(many) && Array.isArray(many.rows) ? many.rows : []).toEqual([
 			itemRow('a'),
 			undefined,
@@ -2206,25 +2450,34 @@ describe('createDatabaseTool — get', () => {
 describe('createDatabaseTool — records (serialized query)', () => {
 	it('conditions/order/limit/offset are honored through the SERIALIZED query form', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({
-			operation: 'add',
-			id: 'shop',
-			table: 'items',
-			row: [itemRow('a', { price: 5 }), itemRow('b', { price: 15 }), itemRow('c', { price: 25 })],
-		})
-
-		const result = await tool.execute({
-			operation: 'records',
-			id: 'shop',
-			table: 'items',
-			query: {
-				conditions: [{ column: 'price', operator: 'above', values: [1] }],
-				order: [{ column: 'price', direction: 'descending' }],
-				limit: 2,
-				offset: 1,
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: [itemRow('a', { price: 5 }), itemRow('b', { price: 15 }), itemRow('c', { price: 25 })],
 			},
-		})
+			createTestToolContext(),
+		)
+
+		const result = await tool.execute(
+			{
+				operation: 'records',
+				id: 'shop',
+				table: 'items',
+				query: {
+					conditions: [{ column: 'price', operator: 'above', values: [1] }],
+					order: [{ column: 'price', direction: 'descending' }],
+					limit: 2,
+					offset: 1,
+				},
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(result) && Array.isArray(result.rows) ? result.rows : []).toEqual([
 			itemRow('b', { price: 15 }),
 			itemRow('a', { price: 5 }),
@@ -2237,19 +2490,28 @@ describe('createDatabaseTool — records (serialized query)', () => {
 describe('createDatabaseTool — count', () => {
 	it('counts rows matching a query', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({
-			operation: 'add',
-			id: 'shop',
-			table: 'items',
-			row: [itemRow('a'), itemRow('b'), itemRow('c', { active: false })],
-		})
-		const result = await tool.execute({
-			operation: 'count',
-			id: 'shop',
-			table: 'items',
-			query: { conditions: [{ column: 'active', operator: 'equals', values: [true] }] },
-		})
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: [itemRow('a'), itemRow('b'), itemRow('c', { active: false })],
+			},
+			createTestToolContext(),
+		)
+		const result = await tool.execute(
+			{
+				operation: 'count',
+				id: 'shop',
+				table: 'items',
+				query: { conditions: [{ column: 'active', operator: 'equals', values: [true] }] },
+			},
+			createTestToolContext(),
+		)
 		expect(result).toEqual({ count: 2 })
 	})
 })
@@ -2257,13 +2519,19 @@ describe('createDatabaseTool — count', () => {
 describe('createDatabaseTool — aggregate', () => {
 	it('computes all five aggregate functions over a numeric column', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({
-			operation: 'add',
-			id: 'shop',
-			table: 'items',
-			row: [itemRow('a', { price: 5 }), itemRow('b', { price: 15 }), itemRow('c', { price: 25 })],
-		})
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: [itemRow('a', { price: 5 }), itemRow('b', { price: 15 }), itemRow('c', { price: 25 })],
+			},
+			createTestToolContext(),
+		)
 
 		const functions = ['count', 'sum', 'average', 'minimum', 'maximum'] as const
 		const expected: Readonly<Record<(typeof functions)[number], number>> = {
@@ -2274,13 +2542,16 @@ describe('createDatabaseTool — aggregate', () => {
 			maximum: 25,
 		}
 		for (const fn of functions) {
-			const result = await tool.execute({
-				operation: 'aggregate',
-				id: 'shop',
-				table: 'items',
-				function: fn,
-				column: 'price',
-			})
+			const result = await tool.execute(
+				{
+					operation: 'aggregate',
+					id: 'shop',
+					table: 'items',
+					function: fn,
+					column: 'price',
+				},
+				createTestToolContext(),
+			)
 			expect(result).toEqual({ value: expected[fn] })
 		}
 	})
@@ -2289,32 +2560,50 @@ describe('createDatabaseTool — aggregate', () => {
 describe('createDatabaseTool — add', () => {
 	it('single row resolves { key }, an array resolves { keys }', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
 
-		const single = await tool.execute({
-			operation: 'add',
-			id: 'shop',
-			table: 'items',
-			row: itemRow('a'),
-		})
+		const single = await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: itemRow('a'),
+			},
+			createTestToolContext(),
+		)
 		expect(single).toEqual({ key: 'a' })
 
-		const many = await tool.execute({
-			operation: 'add',
-			id: 'shop',
-			table: 'items',
-			row: [itemRow('b'), itemRow('c')],
-		})
+		const many = await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: [itemRow('b'), itemRow('c')],
+			},
+			createTestToolContext(),
+		)
 		expect(many).toEqual({ keys: ['b', 'c'] })
 	})
 
 	it('a duplicate key CONFLICT re-surfaces as a typed DATABASE error with context.code CONFLICT', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			createTestToolContext(),
+		)
 
 		const error = await rejectionOf(
-			tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') }),
+			tool.execute(
+				{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
 		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('CONFLICT')
@@ -2324,21 +2613,33 @@ describe('createDatabaseTool — add', () => {
 describe('createDatabaseTool — set (upsert)', () => {
 	it('inserts an absent key and replaces an existing one', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({
-			operation: 'set',
-			id: 'shop',
-			table: 'items',
-			row: itemRow('a', { price: 1 }),
-		})
-		await tool.execute({
-			operation: 'set',
-			id: 'shop',
-			table: 'items',
-			row: itemRow('a', { price: 2 }),
-		})
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{
+				operation: 'set',
+				id: 'shop',
+				table: 'items',
+				row: itemRow('a', { price: 1 }),
+			},
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{
+				operation: 'set',
+				id: 'shop',
+				table: 'items',
+				row: itemRow('a', { price: 2 }),
+			},
+			createTestToolContext(),
+		)
 
-		const result = await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })
+		const result = await tool.execute(
+			{ operation: 'get', id: 'shop', table: 'items', key: 'a' },
+			createTestToolContext(),
+		)
 		expect(isRecord(result) ? result.row : undefined).toEqual(itemRow('a', { price: 2 }))
 	})
 })
@@ -2346,46 +2647,67 @@ describe('createDatabaseTool — set (upsert)', () => {
 describe('createDatabaseTool — update', () => {
 	it('single key resolves { updated }, an array resolves { updated: [] }', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({
-			operation: 'add',
-			id: 'shop',
-			table: 'items',
-			row: [itemRow('a'), itemRow('b')],
-		})
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: [itemRow('a'), itemRow('b')],
+			},
+			createTestToolContext(),
+		)
 
-		const single = await tool.execute({
-			operation: 'update',
-			id: 'shop',
-			table: 'items',
-			key: 'a',
-			changes: { price: 99 },
-		})
+		const single = await tool.execute(
+			{
+				operation: 'update',
+				id: 'shop',
+				table: 'items',
+				key: 'a',
+				changes: { price: 99 },
+			},
+			createTestToolContext(),
+		)
 		expect(single).toEqual({ updated: true })
 
-		const many = await tool.execute({
-			operation: 'update',
-			id: 'shop',
-			table: 'items',
-			key: ['a', 'b'],
-			changes: { active: false },
-		})
+		const many = await tool.execute(
+			{
+				operation: 'update',
+				id: 'shop',
+				table: 'items',
+				key: ['a', 'b'],
+				changes: { active: false },
+			},
+			createTestToolContext(),
+		)
 		expect(many).toEqual({ updated: [true, true] })
 	})
 
 	it('a row that fails re-validation re-surfaces as a typed DATABASE error with context.code VALIDATION', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			createTestToolContext(),
+		)
 
 		const error = await rejectionOf(
-			tool.execute({
-				operation: 'update',
-				id: 'shop',
-				table: 'items',
-				key: 'a',
-				changes: { price: 'not-a-number' },
-			}),
+			tool.execute(
+				{
+					operation: 'update',
+					id: 'shop',
+					table: 'items',
+					key: 'a',
+					changes: { price: 'not-a-number' },
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
 		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('VALIDATION')
@@ -2395,22 +2717,34 @@ describe('createDatabaseTool — update', () => {
 describe('createDatabaseTool — remove', () => {
 	it('single key resolves { removed }, an array resolves { removed: [] }', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({
-			operation: 'add',
-			id: 'shop',
-			table: 'items',
-			row: [itemRow('a'), itemRow('b')],
-		})
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: [itemRow('a'), itemRow('b')],
+			},
+			createTestToolContext(),
+		)
 
-		const single = await tool.execute({ operation: 'remove', id: 'shop', table: 'items', key: 'a' })
+		const single = await tool.execute(
+			{ operation: 'remove', id: 'shop', table: 'items', key: 'a' },
+			createTestToolContext(),
+		)
 		expect(single).toEqual({ removed: true })
-		const many = await tool.execute({
-			operation: 'remove',
-			id: 'shop',
-			table: 'items',
-			key: ['b', 'x'],
-		})
+		const many = await tool.execute(
+			{
+				operation: 'remove',
+				id: 'shop',
+				table: 'items',
+				key: ['b', 'x'],
+			},
+			createTestToolContext(),
+		)
 		expect(many).toEqual({ removed: [true, false] })
 	})
 })
@@ -2418,11 +2752,16 @@ describe('createDatabaseTool — remove', () => {
 describe('createDatabaseTool — destroy', () => {
 	it('drops the database; a subsequent operation throws a typed TOOL "unknown database" error', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		const result = await tool.execute({ operation: 'destroy', id: 'shop' })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		const result = await tool.execute({ operation: 'destroy', id: 'shop' }, createTestToolContext())
 		expect(result).toEqual({ id: 'shop', destroyed: true })
 
-		const error = await rejectionOf(tool.execute({ operation: 'tables', id: 'shop' }))
+		const error = await rejectionOf(
+			tool.execute({ operation: 'tables', id: 'shop' }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(
 			isToolboxError(error) && typeof error.message === 'string'
@@ -2435,46 +2774,65 @@ describe('createDatabaseTool — destroy', () => {
 describe('createDatabaseTool — error paths', () => {
 	it('an unknown id (no cached handle, no store) throws a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
-		const error = await rejectionOf(tool.execute({ operation: 'tables', id: 'missing' }))
+		const error = await rejectionOf(
+			tool.execute({ operation: 'tables', id: 'missing' }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
 	it('an unknown driver name on create throws a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
 		const error = await rejectionOf(
-			tool.execute({ operation: 'create', id: 'shop', tables: itemsTables(), driver: 'nope' }),
+			tool.execute(
+				{ operation: 'create', id: 'shop', tables: itemsTables(), driver: 'nope' },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
 	it('a duplicate create (same id twice) throws a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
 		const error = await rejectionOf(
-			tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() }),
+			tool.execute(
+				{ operation: 'create', id: 'shop', tables: itemsTables() },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
 	it('malformed args (missing required fields) throw a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
-		const error = await rejectionOf(tool.execute({ operation: 'create' }))
+		const error = await rejectionOf(tool.execute({ operation: 'create' }, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 
-		const badOperation = await rejectionOf(tool.execute({ operation: 'nope', id: 'shop' }))
+		const badOperation = await rejectionOf(
+			tool.execute({ operation: 'nope', id: 'shop' }, createTestToolContext()),
+		)
 		expect(isToolboxError(badOperation) ? badOperation.code : undefined).toBe('TOOL')
 	})
 
 	it('a row that fails validation on add re-surfaces as a typed DATABASE error with context.code VALIDATION', async () => {
 		const tool = createDatabaseTool()
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
 		const error = await rejectionOf(
-			tool.execute({
-				operation: 'add',
-				id: 'shop',
-				table: 'items',
-				row: { id: 'a', name: 'x', price: 1, active: 'not-a-boolean' },
-			}),
+			tool.execute(
+				{
+					operation: 'add',
+					id: 'shop',
+					table: 'items',
+					row: { id: 'a', name: 'x', price: 1, active: 'not-a-boolean' },
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
 		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('VALIDATION')
@@ -2490,7 +2848,10 @@ describe('createDatabaseTool — readonly gates mutations, leaves reads open', (
 
 		const tool = createDatabaseTool({ readonly: true, databases: { shop: buildItemsHandle() } })
 		const error = await rejectionOf(
-			tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('b') }),
+			tool.execute(
+				{ operation: 'add', id: 'shop', table: 'items', row: itemRow('b') },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
@@ -2509,33 +2870,53 @@ describe('createDatabaseTool — readonly gates mutations, leaves reads open', (
 			{ operation: 'destroy', id: 'shop' },
 		]
 		for (const call of mutations) {
-			const error = await rejectionOf(tool.execute(call))
+			const error = await rejectionOf(tool.execute(call, createTestToolContext()))
 			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		}
 
-		expect(await tool.execute({ operation: 'tables', id: 'shop' })).toEqual({
+		expect(
+			await tool.execute({ operation: 'tables', id: 'shop' }, createTestToolContext()),
+		).toEqual({
 			tables: [expect.objectContaining({ name: 'items', primary: 'id' })],
 		})
-		expect(await tool.execute({ operation: 'get', id: 'shop', table: 'items', key: 'a' })).toEqual({
+		expect(
+			await tool.execute(
+				{ operation: 'get', id: 'shop', table: 'items', key: 'a' },
+				createTestToolContext(),
+			),
+		).toEqual({
 			row: { id: 'a', name: 'x', price: 1, active: true },
 		})
-		expect(await tool.execute({ operation: 'records', id: 'shop', table: 'items' })).toEqual({
+		expect(
+			await tool.execute(
+				{ operation: 'records', id: 'shop', table: 'items' },
+				createTestToolContext(),
+			),
+		).toEqual({
 			rows: [{ id: 'a', name: 'x', price: 1, active: true }],
 			count: 1,
 			truncated: false,
 			limit: 1000,
 		})
-		expect(await tool.execute({ operation: 'count', id: 'shop', table: 'items' })).toEqual({
+		expect(
+			await tool.execute(
+				{ operation: 'count', id: 'shop', table: 'items' },
+				createTestToolContext(),
+			),
+		).toEqual({
 			count: 1,
 		})
 		expect(
-			await tool.execute({
-				operation: 'aggregate',
-				id: 'shop',
-				table: 'items',
-				function: 'count',
-				column: 'id',
-			}),
+			await tool.execute(
+				{
+					operation: 'aggregate',
+					id: 'shop',
+					table: 'items',
+					function: 'count',
+					column: 'id',
+				},
+				createTestToolContext(),
+			),
 		).toEqual({ value: 1 })
 	})
 })
@@ -2543,23 +2924,32 @@ describe('createDatabaseTool — readonly gates mutations, leaves reads open', (
 describe('createDatabaseTool — truncation & offset paging', () => {
 	it('records over a small limit reports truncated:true, count == limit; offset paging walks the rest', async () => {
 		const tool = createDatabaseTool({ limit: 2 })
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({
-			operation: 'add',
-			id: 'shop',
-			table: 'items',
-			row: [itemRow('a'), itemRow('b'), itemRow('c'), itemRow('d'), itemRow('e')],
-		})
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: [itemRow('a'), itemRow('b'), itemRow('c'), itemRow('d'), itemRow('e')],
+			},
+			createTestToolContext(),
+		)
 
 		const collected: unknown[] = []
 		let offset = 0
 		for (let page = 0; page < 3; page++) {
-			const result = await tool.execute({
-				operation: 'records',
-				id: 'shop',
-				table: 'items',
-				query: { order: [{ column: 'id', direction: 'ascending' }], offset },
-			})
+			const result = await tool.execute(
+				{
+					operation: 'records',
+					id: 'shop',
+					table: 'items',
+					query: { order: [{ column: 'id', direction: 'ascending' }], offset },
+				},
+				createTestToolContext(),
+			)
 			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
 			expect(result.count).toBe(result.rows.length)
 			collected.push(...result.rows)
@@ -2574,12 +2964,15 @@ describe('createDatabaseTool — truncation & offset paging', () => {
 			itemRow('e'),
 		])
 
-		const first = await tool.execute({
-			operation: 'records',
-			id: 'shop',
-			table: 'items',
-			query: { order: [{ column: 'id', direction: 'ascending' }] },
-		})
+		const first = await tool.execute(
+			{
+				operation: 'records',
+				id: 'shop',
+				table: 'items',
+				query: { order: [{ column: 'id', direction: 'ascending' }] },
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(first) ? first.truncated : undefined).toBe(true)
 		expect(isRecord(first) ? first.count : undefined).toBe(2)
 	})
@@ -2593,16 +2986,25 @@ describe('createDatabaseTool — lazy re-mint over a shared store', () => {
 		const sharedDriver = createMemoryDriver()
 		const drivers = { memory: () => sharedDriver }
 		const toolA = createDatabaseTool({ store, drivers })
-		await toolA.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await toolA.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
+		await toolA.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await toolA.execute(
+			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			createTestToolContext(),
+		)
 
 		const toolB = createDatabaseTool({ store, drivers })
-		const result = await toolB.execute({ operation: 'records', id: 'shop', table: 'items' })
+		const result = await toolB.execute(
+			{ operation: 'records', id: 'shop', table: 'items' },
+			createTestToolContext(),
+		)
 		expect(isRecord(result) && Array.isArray(result.rows) ? result.rows : []).toEqual([
 			itemRow('a'),
 		])
 
-		await toolB.execute({ operation: 'destroy', id: 'shop' })
+		await toolB.execute({ operation: 'destroy', id: 'shop' }, createTestToolContext())
 		expect(await store.get('shop')).toBeUndefined()
 	})
 })
@@ -2624,9 +3026,18 @@ describe('createDatabaseTool — timeout option threads without breaking a norma
 
 	it('a configured timeout does not interfere with an ordinary create/add/records round trip', async () => {
 		const tool = createDatabaseTool({ timeout: 5_000 })
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
-		await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') })
-		const result = await tool.execute({ operation: 'records', id: 'shop', table: 'items' })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			createTestToolContext(),
+		)
+		const result = await tool.execute(
+			{ operation: 'records', id: 'shop', table: 'items' },
+			createTestToolContext(),
+		)
 		expect(isRecord(result) && Array.isArray(result.rows) ? result.rows : []).toEqual([
 			itemRow('a'),
 		])
@@ -2636,7 +3047,10 @@ describe('createDatabaseTool — timeout option threads without breaking a norma
 describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice update, destroy', () => {
 	it('exact counts survive the round trip', async () => {
 		const tool = createDatabaseTool({ limit: 100 })
-		await tool.execute({ operation: 'create', id: 'shop', tables: itemsTables() })
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			createTestToolContext(),
+		)
 
 		const total = 500
 		const batchSize = 50
@@ -2644,19 +3058,25 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice
 			const batch = Array.from({ length: batchSize }, (_unused, offset) =>
 				itemRow(String(start + offset).padStart(4, '0')),
 			)
-			const added = await tool.execute({ operation: 'add', id: 'shop', table: 'items', row: batch })
+			const added = await tool.execute(
+				{ operation: 'add', id: 'shop', table: 'items', row: batch },
+				createTestToolContext(),
+			)
 			expect(isRecord(added) && Array.isArray(added.keys) ? added.keys.length : 0).toBe(batchSize)
 		}
 
 		const collected: unknown[] = []
 		let offset = 0
 		for (;;) {
-			const result = await tool.execute({
-				operation: 'records',
-				id: 'shop',
-				table: 'items',
-				query: { order: [{ column: 'id', direction: 'ascending' }], offset },
-			})
+			const result = await tool.execute(
+				{
+					operation: 'records',
+					id: 'shop',
+					table: 'items',
+					query: { order: [{ column: 'id', direction: 'ascending' }], offset },
+				},
+				createTestToolContext(),
+			)
 			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
 			collected.push(...result.rows)
 			offset += result.rows.length
@@ -2665,44 +3085,59 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice
 		expect(collected).toHaveLength(total)
 
 		const sliceIds = Array.from({ length: 25 }, (_unused, index) => String(index).padStart(4, '0'))
-		const updated = await tool.execute({
-			operation: 'update',
-			id: 'shop',
-			table: 'items',
-			key: sliceIds,
-			changes: { active: false },
-		})
+		const updated = await tool.execute(
+			{
+				operation: 'update',
+				id: 'shop',
+				table: 'items',
+				key: sliceIds,
+				changes: { active: false },
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(updated) && Array.isArray(updated.updated) ? updated.updated : []).toEqual(
 			Array.from({ length: 25 }, () => true),
 		)
 
-		const inactive = await tool.execute({
-			operation: 'count',
-			id: 'shop',
-			table: 'items',
-			query: { conditions: [{ column: 'active', operator: 'equals', values: [false] }] },
-		})
+		const inactive = await tool.execute(
+			{
+				operation: 'count',
+				id: 'shop',
+				table: 'items',
+				query: { conditions: [{ column: 'active', operator: 'equals', values: [false] }] },
+			},
+			createTestToolContext(),
+		)
 		expect(inactive).toEqual({ count: 25 })
 
-		const untouchedRow = await tool.execute({
-			operation: 'get',
-			id: 'shop',
-			table: 'items',
-			key: '0499',
-		})
+		const untouchedRow = await tool.execute(
+			{
+				operation: 'get',
+				id: 'shop',
+				table: 'items',
+				key: '0499',
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(untouchedRow) ? untouchedRow.row : undefined).toEqual(itemRow('0499'))
 
-		const updatedRow = await tool.execute({
-			operation: 'get',
-			id: 'shop',
-			table: 'items',
-			key: '0000',
-		})
+		const updatedRow = await tool.execute(
+			{
+				operation: 'get',
+				id: 'shop',
+				table: 'items',
+				key: '0000',
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(updatedRow) ? updatedRow.row : undefined).toEqual(
 			itemRow('0000', { active: false }),
 		)
 
-		const destroyed = await tool.execute({ operation: 'destroy', id: 'shop' })
+		const destroyed = await tool.execute(
+			{ operation: 'destroy', id: 'shop' },
+			createTestToolContext(),
+		)
 		expect(destroyed).toEqual({ id: 'shop', destroyed: true })
 	})
 })
@@ -2768,12 +3203,15 @@ describe('createRelationTool — manager resolution', () => {
 		const manager = buildRelationManager()
 		await seedAccount(manager, 'a1', 'Acme')
 		const tool = createRelationTool({ managers: { shop: manager } })
-		const result = await tool.execute({
-			operation: 'load',
-			model: 'accounts',
-			key: 'a1',
-			include: [],
-		})
+		const result = await tool.execute(
+			{
+				operation: 'load',
+				model: 'accounts',
+				key: 'a1',
+				include: [],
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(result) ? result.row : undefined).toMatchObject({ id: 'a1', name: 'Acme' })
 	})
 
@@ -2783,13 +3221,16 @@ describe('createRelationTool — manager resolution', () => {
 		await seedAccount(shop, 'a1', 'Shop Acme')
 		await seedAccount(other, 'a1', 'Other Acme')
 		const tool = createRelationTool({ managers: { shop, other } })
-		const result = await tool.execute({
-			operation: 'load',
-			manager: 'other',
-			model: 'accounts',
-			key: 'a1',
-			include: [],
-		})
+		const result = await tool.execute(
+			{
+				operation: 'load',
+				manager: 'other',
+				model: 'accounts',
+				key: 'a1',
+				include: [],
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(result) ? result.row : undefined).toMatchObject({ name: 'Other Acme' })
 	})
 
@@ -2797,13 +3238,16 @@ describe('createRelationTool — manager resolution', () => {
 		const manager = buildRelationManager()
 		const tool = createRelationTool({ managers: { shop: manager } })
 		const error = await rejectionOf(
-			tool.execute({
-				operation: 'load',
-				manager: 'ghost',
-				model: 'accounts',
-				key: 'a1',
-				include: [],
-			}),
+			tool.execute(
+				{
+					operation: 'load',
+					manager: 'ghost',
+					model: 'accounts',
+					key: 'a1',
+					include: [],
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(isToolboxError(error) ? error.context?.managers : undefined).toEqual(['shop'])
@@ -2814,7 +3258,10 @@ describe('createRelationTool — manager resolution', () => {
 		const other = buildRelationManager()
 		const tool = createRelationTool({ managers: { shop, other } })
 		const error = await rejectionOf(
-			tool.execute({ operation: 'load', model: 'accounts', key: 'a1', include: [] }),
+			tool.execute(
+				{ operation: 'load', model: 'accounts', key: 'a1', include: [] },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(isToolboxError(error) ? error.context?.managers : undefined).toEqual(['shop', 'other'])
@@ -2826,7 +3273,10 @@ describe('createRelationTool — model resolution', () => {
 		const manager = buildRelationManager()
 		const tool = createRelationTool({ managers: { shop: manager } })
 		const error = await rejectionOf(
-			tool.execute({ operation: 'load', model: 'ghost', key: 'a1', include: [] }),
+			tool.execute(
+				{ operation: 'load', model: 'ghost', key: 'a1', include: [] },
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		const models = isToolboxError(error) ? error.context?.models : undefined
@@ -2844,12 +3294,15 @@ describe('createRelationTool — load', () => {
 		await seedAccount(manager, 'a1', 'Acme')
 		await seedContact(manager, 'c1', 'a1', 'Wile')
 		const tool = createRelationTool({ managers: { shop: manager } })
-		const result = await tool.execute({
-			operation: 'load',
-			model: 'accounts',
-			key: 'a1',
-			include: ['contacts.account'],
-		})
+		const result = await tool.execute(
+			{
+				operation: 'load',
+				model: 'accounts',
+				key: 'a1',
+				include: ['contacts.account'],
+			},
+			createTestToolContext(),
+		)
 		const row = isRecord(result) ? result.row : undefined
 		const contacts = isRecord(row) && Array.isArray(row.contacts) ? row.contacts : []
 		expect(contacts).toHaveLength(1)
@@ -2863,12 +3316,15 @@ describe('createRelationTool — load', () => {
 		const manager = buildRelationManager()
 		await seedAccount(manager, 'a1', 'Acme')
 		const tool = createRelationTool({ managers: { shop: manager } })
-		const result = await tool.execute({
-			operation: 'load',
-			model: 'accounts',
-			key: ['a1', 'ghost'],
-			include: [],
-		})
+		const result = await tool.execute(
+			{
+				operation: 'load',
+				model: 'accounts',
+				key: ['a1', 'ghost'],
+				include: [],
+			},
+			createTestToolContext(),
+		)
 		const rows = isRecord(result) && Array.isArray(result.rows) ? result.rows : []
 		expect(rows).toHaveLength(2)
 		expect(isRecord(rows[0]) ? rows[0].id : undefined).toBe('a1')
@@ -2883,14 +3339,17 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 		await seedAccount(manager, 'a2', 'Bravo')
 		await seedAccount(manager, 'a3', 'Charlie')
 		const tool = createRelationTool({ managers: { shop: manager } })
-		const result = await tool.execute({
-			operation: 'find',
-			model: 'accounts',
-			include: [],
-			sort: 'name',
-			direction: 'descending',
-			offset: 1,
-		})
+		const result = await tool.execute(
+			{
+				operation: 'find',
+				model: 'accounts',
+				include: [],
+				sort: 'name',
+				direction: 'descending',
+				offset: 1,
+			},
+			createTestToolContext(),
+		)
 		const rows = isRecord(result) && Array.isArray(result.rows) ? result.rows : []
 		expect(rows.map((row) => (isRecord(row) ? row.name : undefined))).toEqual(['Bravo', 'Alpha'])
 	})
@@ -2901,7 +3360,10 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 		await seedAccount(manager, 'a2')
 		await seedAccount(manager, 'a3')
 		const tool = createRelationTool({ managers: { shop: manager }, limit: 2 })
-		const result = await tool.execute({ operation: 'find', model: 'accounts', include: [] })
+		const result = await tool.execute(
+			{ operation: 'find', model: 'accounts', include: [] },
+			createTestToolContext(),
+		)
 		expect(isRecord(result) ? result.truncated : undefined).toBe(true)
 		expect(isRecord(result) ? result.count : undefined).toBe(2)
 	})
@@ -2914,15 +3376,21 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 		await seedRep(manager, 'r1')
 		await manager.model('accounts').link('a1', 'reps', 'r1')
 		const tool = createRelationTool({ managers: { shop: manager }, limit: -1 })
-		const found = await tool.execute({ operation: 'find', model: 'accounts', include: [] })
+		const found = await tool.execute(
+			{ operation: 'find', model: 'accounts', include: [] },
+			createTestToolContext(),
+		)
 		expect(isRecord(found) ? found.count : undefined).toBe(0)
 		expect(isRecord(found) ? found.limit : undefined).toBe(0)
-		const linked = await tool.execute({
-			operation: 'links',
-			model: 'accounts',
-			key: 'a1',
-			relation: 'reps',
-		})
+		const linked = await tool.execute(
+			{
+				operation: 'links',
+				model: 'accounts',
+				key: 'a1',
+				relation: 'reps',
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(linked) ? linked.count : undefined).toBe(0)
 	})
 
@@ -2933,14 +3401,17 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 		const collected: unknown[] = []
 		let offset = 0
 		for (let page = 0; page < 3; page++) {
-			const result = await tool.execute({
-				operation: 'find',
-				model: 'accounts',
-				include: [],
-				sort: 'id',
-				direction: 'ascending',
-				offset,
-			})
+			const result = await tool.execute(
+				{
+					operation: 'find',
+					model: 'accounts',
+					include: [],
+					sort: 'id',
+					direction: 'ascending',
+					offset,
+				},
+				createTestToolContext(),
+			)
 			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
 			collected.push(...result.rows)
 			offset += result.rows.length
@@ -2963,46 +3434,61 @@ describe('createRelationTool — link / unlink / links round trip on a through r
 		await seedRep(manager, 'r1')
 		const tool = createRelationTool({ managers: { shop: manager } })
 
-		const before = await tool.execute({
-			operation: 'links',
-			model: 'accounts',
-			key: 'a1',
-			relation: 'reps',
-		})
+		const before = await tool.execute(
+			{
+				operation: 'links',
+				model: 'accounts',
+				key: 'a1',
+				relation: 'reps',
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(before) ? before.keys : undefined).toEqual([])
 
-		const linked = await tool.execute({
-			operation: 'link',
-			model: 'accounts',
-			key: 'a1',
-			relation: 'reps',
-			target: 'r1',
-		})
+		const linked = await tool.execute(
+			{
+				operation: 'link',
+				model: 'accounts',
+				key: 'a1',
+				relation: 'reps',
+				target: 'r1',
+			},
+			createTestToolContext(),
+		)
 		expect(linked).toEqual({ linked: true })
 
-		const after = await tool.execute({
-			operation: 'links',
-			model: 'accounts',
-			key: 'a1',
-			relation: 'reps',
-		})
+		const after = await tool.execute(
+			{
+				operation: 'links',
+				model: 'accounts',
+				key: 'a1',
+				relation: 'reps',
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(after) ? after.keys : undefined).toEqual(['r1'])
 
-		const unlinked = await tool.execute({
-			operation: 'unlink',
-			model: 'accounts',
-			key: 'a1',
-			relation: 'reps',
-			target: 'r1',
-		})
+		const unlinked = await tool.execute(
+			{
+				operation: 'unlink',
+				model: 'accounts',
+				key: 'a1',
+				relation: 'reps',
+				target: 'r1',
+			},
+			createTestToolContext(),
+		)
 		expect(unlinked).toEqual({ unlinked: true })
 
-		const removed = await tool.execute({
-			operation: 'links',
-			model: 'accounts',
-			key: 'a1',
-			relation: 'reps',
-		})
+		const removed = await tool.execute(
+			{
+				operation: 'links',
+				model: 'accounts',
+				key: 'a1',
+				relation: 'reps',
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(removed) ? removed.keys : undefined).toEqual([])
 	})
 
@@ -3014,12 +3500,15 @@ describe('createRelationTool — link / unlink / links round trip on a through r
 			await manager.model('accounts').link('a1', 'reps', id)
 		}
 		const tool = createRelationTool({ managers: { shop: manager }, limit: 2 })
-		const result = await tool.execute({
-			operation: 'links',
-			model: 'accounts',
-			key: 'a1',
-			relation: 'reps',
-		})
+		const result = await tool.execute(
+			{
+				operation: 'links',
+				model: 'accounts',
+				key: 'a1',
+				relation: 'reps',
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(result) ? result.truncated : undefined).toBe(true)
 		expect(isRecord(result) && Array.isArray(result.keys) ? result.keys.length : 0).toBe(2)
 	})
@@ -3031,12 +3520,15 @@ describe('createRelationTool — depth cap', () => {
 		await seedAccount(manager, 'a1')
 		const tool = createRelationTool({ managers: { shop: manager }, depth: 1 })
 		const error = await rejectionOf(
-			tool.execute({
-				operation: 'load',
-				model: 'accounts',
-				key: 'a1',
-				include: ['contacts.account'],
-			}),
+			tool.execute(
+				{
+					operation: 'load',
+					model: 'accounts',
+					key: 'a1',
+					include: ['contacts.account'],
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
@@ -3049,13 +3541,16 @@ describe('createRelationTool — error mapping (RelationError → typed RELATION
 		await seedContact(manager, 'c1', 'a1')
 		const tool = createRelationTool({ managers: { shop: manager } })
 		const error = await rejectionOf(
-			tool.execute({
-				operation: 'link',
-				model: 'accounts',
-				key: 'a1',
-				relation: 'contacts',
-				target: 'c1',
-			}),
+			tool.execute(
+				{
+					operation: 'link',
+					model: 'accounts',
+					key: 'a1',
+					relation: 'contacts',
+					target: 'c1',
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('RELATION')
 		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('NOT_THROUGH')
@@ -3066,13 +3561,16 @@ describe('createRelationTool — error mapping (RelationError → typed RELATION
 		await seedAccount(manager, 'a1')
 		const tool = createRelationTool({ managers: { shop: manager } })
 		const error = await rejectionOf(
-			tool.execute({
-				operation: 'link',
-				model: 'accounts',
-				key: 'a1',
-				relation: 'ghost',
-				target: 'x',
-			}),
+			tool.execute(
+				{
+					operation: 'link',
+					model: 'accounts',
+					key: 'a1',
+					relation: 'ghost',
+					target: 'x',
+				},
+				createTestToolContext(),
+			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('RELATION')
 		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('UNKNOWN_RELATION')
@@ -3101,11 +3599,14 @@ describe('pressure: createRelationTool — 200-parent seed, nested load, 50-row 
 		}
 		const tool = createRelationTool({ managers: { shop: manager }, limit: 1000 })
 
-		const found = await tool.execute({
-			operation: 'find',
-			model: 'accounts',
-			include: ['contacts.account'],
-		})
+		const found = await tool.execute(
+			{
+				operation: 'find',
+				model: 'accounts',
+				include: ['contacts.account'],
+			},
+			createTestToolContext(),
+		)
 		const rows = isRecord(found) && Array.isArray(found.rows) ? found.rows : []
 		expect(rows).toHaveLength(parentCount)
 		for (const row of rows) {
@@ -3126,36 +3627,48 @@ describe('pressure: createRelationTool — 200-parent seed, nested load, 50-row 
 		for (const id of repIds) await seedRep(manager, id)
 
 		for (let i = 0; i < repIds.length; i++) {
-			await tool.execute({
-				operation: 'link',
-				model: 'accounts',
-				key: 'hub',
-				relation: 'reps',
-				target: repIds[i],
-			})
-			const result = await tool.execute({
-				operation: 'links',
-				model: 'accounts',
-				key: 'hub',
-				relation: 'reps',
-			})
+			await tool.execute(
+				{
+					operation: 'link',
+					model: 'accounts',
+					key: 'hub',
+					relation: 'reps',
+					target: repIds[i],
+				},
+				createTestToolContext(),
+			)
+			const result = await tool.execute(
+				{
+					operation: 'links',
+					model: 'accounts',
+					key: 'hub',
+					relation: 'reps',
+				},
+				createTestToolContext(),
+			)
 			expect(isRecord(result) ? result.count : undefined).toBe(i + 1)
 		}
 
 		for (let i = 0; i < repIds.length; i++) {
-			await tool.execute({
-				operation: 'unlink',
-				model: 'accounts',
-				key: 'hub',
-				relation: 'reps',
-				target: repIds[i],
-			})
-			const result = await tool.execute({
-				operation: 'links',
-				model: 'accounts',
-				key: 'hub',
-				relation: 'reps',
-			})
+			await tool.execute(
+				{
+					operation: 'unlink',
+					model: 'accounts',
+					key: 'hub',
+					relation: 'reps',
+					target: repIds[i],
+				},
+				createTestToolContext(),
+			)
+			const result = await tool.execute(
+				{
+					operation: 'links',
+					model: 'accounts',
+					key: 'hub',
+					relation: 'reps',
+				},
+				createTestToolContext(),
+			)
 			expect(isRecord(result) ? result.count : undefined).toBe(repIds.length - (i + 1))
 		}
 	})
@@ -3193,14 +3706,14 @@ describe('createInferTool', () => {
 			{ createdAt: '2024-01-01T00:00:00.000Z' },
 			{ createdAt: '2024-02-01T00:00:00.000Z' },
 		]
-		const withoutFormat = await tool.execute({ samples })
+		const withoutFormat = await tool.execute({ samples }, createTestToolContext())
 		expect(withoutFormat).toEqual({
 			type: 'object',
 			properties: { createdAt: { type: 'string' } },
 			required: ['createdAt'],
 			additionalProperties: false,
 		})
-		const withFormat = await tool.execute({ samples, format: true })
+		const withFormat = await tool.execute({ samples, format: true }, createTestToolContext())
 		expect(withFormat).toEqual({
 			type: 'object',
 			properties: { createdAt: { type: 'string', format: 'date-time' } },
@@ -3212,14 +3725,14 @@ describe('createInferTool', () => {
 	it('the enum toggle adds an enum constraint only when true', async () => {
 		const tool = createInferTool()
 		const samples = [{ status: 'open' }, { status: 'open' }, { status: 'closed' }]
-		const withoutEnum = await tool.execute({ samples })
+		const withoutEnum = await tool.execute({ samples }, createTestToolContext())
 		expect(withoutEnum).toEqual({
 			type: 'object',
 			properties: { status: { type: 'string' } },
 			required: ['status'],
 			additionalProperties: false,
 		})
-		const withEnum = await tool.execute({ samples, enum: true })
+		const withEnum = await tool.execute({ samples, enum: true }, createTestToolContext())
 		expect(withEnum).toEqual({
 			type: 'object',
 			properties: { status: { enum: ['closed', 'open'] } },
@@ -3240,16 +3753,18 @@ describe('createInferTool', () => {
 		if (result.success) throw new Error('expected empty samples to fail')
 		expect(result.error).toBeDefined()
 
-		const direct = await rejectionOf(tool.execute({ samples: [] }))
+		const direct = await rejectionOf(tool.execute({ samples: [] }, createTestToolContext()))
 		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
 	})
 
 	it('malformed args (missing samples) THROW a typed TOOL ToolboxError', async () => {
 		const tool = createInferTool()
-		const missing = await rejectionOf(tool.execute({}))
+		const missing = await rejectionOf(tool.execute({}, createTestToolContext()))
 		expect(isToolboxError(missing) ? missing.code : undefined).toBe('TOOL')
 
-		const wrongType = await rejectionOf(tool.execute({ samples: 'not-an-array' }))
+		const wrongType = await rejectionOf(
+			tool.execute({ samples: 'not-an-array' }, createTestToolContext()),
+		)
 		expect(isToolboxError(wrongType) ? wrongType.code : undefined).toBe('TOOL')
 	})
 
@@ -3261,9 +3776,12 @@ describe('createInferTool', () => {
 
 	it('defaults: omitted format/enum behave as false', async () => {
 		const tool = createInferTool()
-		const dateResult = await tool.execute({
-			samples: [{ at: '2024-01-01T00:00:00.000Z' }],
-		})
+		const dateResult = await tool.execute(
+			{
+				samples: [{ at: '2024-01-01T00:00:00.000Z' }],
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(dateResult) && isRecord(dateResult.properties)).toBe(true)
 		const atSchema =
 			isRecord(dateResult) && isRecord(dateResult.properties) ? dateResult.properties.at : undefined
@@ -3272,7 +3790,7 @@ describe('createInferTool', () => {
 
 	it('heterogeneous samples (mixed object/string) still return a valid, value-wrapped parameters record', async () => {
 		const tool = createInferTool()
-		const result = await tool.execute({ samples: [{ a: 1 }, 'x'] })
+		const result = await tool.execute({ samples: [{ a: 1 }, 'x'] }, createTestToolContext())
 		expect(result).toEqual({
 			type: 'object',
 			properties: {
@@ -3297,7 +3815,7 @@ describe('createInferTool', () => {
 		const tool = createInferTool()
 		const deep = { a: { b: { c: { d: { e: 'leaf' } } } } }
 		const array = Array.from({ length: 200 }, (_, i) => i)
-		const result = await tool.execute({ samples: [{ deep, array }] })
+		const result = await tool.execute({ samples: [{ deep, array }] }, createTestToolContext())
 		expect(result).toBeDefined()
 	})
 
@@ -3307,10 +3825,13 @@ describe('createInferTool', () => {
 			{ id: 1, name: 'Ada' },
 			{ id: 2, name: 'Bob' },
 		]
-		const result = await tool.execute({
-			samples,
-			candidates: [{ id: 3, name: 'Cy' }, { id: 4 }, 'not-a-record'],
-		})
+		const result = await tool.execute(
+			{
+				samples,
+				candidates: [{ id: 3, name: 'Cy' }, { id: 4 }, 'not-a-record'],
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(result) ? result.checks : undefined).toEqual([
 			{ index: 0, valid: true, coercible: true },
 			{
@@ -3330,10 +3851,13 @@ describe('createInferTool', () => {
 
 	it('(c2) strict-verdict pin: a candidate that WOULD coerce under a normalizing parse is still INVALID under the strict guard, yielding coercible: true with EMPTY faults', async () => {
 		const tool = createInferTool()
-		const result = await tool.execute({
-			samples: [{ name: 'Ada' }],
-			candidates: [{ name: 7 }],
-		})
+		const result = await tool.execute(
+			{
+				samples: [{ name: 'Ada' }],
+				candidates: [{ name: 7 }],
+			},
+			createTestToolContext(),
+		)
 		// contrast: createEndpointTool's enforcement NORMALIZES through `.parse` (7 coerces to '7' and
 		// would be accepted); createInferTool's candidate check uses the strict `.is` guard, where a
 		// number is never a string regardless of whether it coerces cleanly. `coercible: true` reports
@@ -3346,10 +3870,13 @@ describe('createInferTool', () => {
 
 	it('(c2b) non-coercible wrong-type candidate: a boolean in a string slot is invalid AND non-coercible, with non-empty faults', async () => {
 		const tool = createInferTool()
-		const result = await tool.execute({
-			samples: [{ name: 'Ada' }],
-			candidates: [{ name: true }],
-		})
+		const result = await tool.execute(
+			{
+				samples: [{ name: 'Ada' }],
+				candidates: [{ name: true }],
+			},
+			createTestToolContext(),
+		)
 		// discriminates the three cases together with c1's index-0 (conformant: valid + coercible)
 		// and c2's index-0 (coercible-only: !valid but coercible) — this is the fully-rejected case:
 		// !valid and !coercible, with faults populated.
@@ -3366,15 +3893,18 @@ describe('createInferTool', () => {
 	it('(c3) empty candidates array returns wrapped { parameters, checks: [] }, parameters deep-equal to the bare no-candidates return', async () => {
 		const tool = createInferTool()
 		const samples = [{ id: 1, name: 'Ada' }]
-		const bare = await tool.execute({ samples })
-		const wrapped = await tool.execute({ samples, candidates: [] })
+		const bare = await tool.execute({ samples }, createTestToolContext())
+		const wrapped = await tool.execute({ samples, candidates: [] }, createTestToolContext())
 		expect(isRecord(wrapped) ? wrapped.checks : undefined).toEqual([])
 		expect(isRecord(wrapped) ? wrapped.parameters : undefined).toEqual(bare)
 	})
 
 	it('(c4) no candidates returns the bare parameters record, NOT a { parameters, checks } wrapper', async () => {
 		const tool = createInferTool()
-		const result = await tool.execute({ samples: [{ id: 1, name: 'Ada' }] })
+		const result = await tool.execute(
+			{ samples: [{ id: 1, name: 'Ada' }] },
+			createTestToolContext(),
+		)
 		expect(isRecord(result) ? 'checks' in result : undefined).toBe(false)
 		expect(result).toEqual({
 			type: 'object',
@@ -3386,7 +3916,10 @@ describe('createInferTool', () => {
 
 	it('(c5) bare-value samples check candidates against the RAW string schema, not a value-wrapped object', async () => {
 		const tool = createInferTool()
-		const result = await tool.execute({ samples: ['a', 'b'], candidates: ['x', 7] })
+		const result = await tool.execute(
+			{ samples: ['a', 'b'], candidates: ['x', 7] },
+			createTestToolContext(),
+		)
 		expect(isRecord(result) ? result.parameters : undefined).toEqual({
 			type: 'object',
 			properties: { value: { type: 'string' } },
@@ -3401,11 +3934,14 @@ describe('createInferTool', () => {
 
 	it('(c6) enum:true rejects an out-of-enum candidate and accepts an in-enum one; format:true never asserts format on a check', async () => {
 		const tool = createInferTool()
-		const enumResult = await tool.execute({
-			samples: [{ status: 'open' }, { status: 'open' }, { status: 'closed' }],
-			enum: true,
-			candidates: [{ status: 'closed' }, { status: 'unknown' }],
-		})
+		const enumResult = await tool.execute(
+			{
+				samples: [{ status: 'open' }, { status: 'open' }, { status: 'closed' }],
+				enum: true,
+				candidates: [{ status: 'closed' }, { status: 'unknown' }],
+			},
+			createTestToolContext(),
+		)
 		expect(isRecord(enumResult) ? enumResult.checks : undefined).toEqual([
 			{ index: 0, valid: true, coercible: true },
 			{
@@ -3416,11 +3952,14 @@ describe('createInferTool', () => {
 			},
 		])
 
-		const formatResult = await tool.execute({
-			samples: [{ at: '2024-01-01T00:00:00.000Z' }],
-			format: true,
-			candidates: [{ at: 'not-an-email' }],
-		})
+		const formatResult = await tool.execute(
+			{
+				samples: [{ at: '2024-01-01T00:00:00.000Z' }],
+				format: true,
+				candidates: [{ at: 'not-an-email' }],
+			},
+			createTestToolContext(),
+		)
 		// format is never asserted — a non-email string in an email-inferred slot is still VALID.
 		expect(isRecord(formatResult) ? formatResult.checks : undefined).toEqual([
 			{ index: 0, valid: true, coercible: true },
@@ -3480,7 +4019,9 @@ describe('createInferTool', () => {
 		if (result.success) throw new Error('expected malformed candidates to fail')
 		expect(result.error).toBeDefined()
 
-		const direct = await rejectionOf(tool.execute({ samples: [{ id: 1 }], candidates: 'nope' }))
+		const direct = await rejectionOf(
+			tool.execute({ samples: [{ id: 1 }], candidates: 'nope' }, createTestToolContext()),
+		)
 		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
 	})
 })
@@ -3521,8 +4062,46 @@ describe('createEndpointTool', () => {
 			{ validate: false },
 		)
 		const args = { id: 'unrelated-shape', extra: { nested: true }, list: [1, 2, 3] }
-		await tool.execute(args)
+		await tool.execute(args, createTestToolContext())
 		expect(received).toBe(args)
+	})
+
+	// Each wrapper body forwards the execution context on its own — the validating one alongside the
+	// contract-parsed record, the passthrough one alongside the raw record — so each path owns its
+	// own proof and a fix to one cannot cover the other.
+	it('default validation FORWARDS the execution context: a handler on the contract-parsed path observes the caller cancellation', async () => {
+		const tool = createEndpointTool({
+			name: 'watchUser',
+			description: 'Waits until the caller stops waiting.',
+			samples: [{ id: '1' }, { id: '2' }],
+			execute: async (_args, context) => {
+				await waitForAbort(context.signal)
+				return 'observed'
+			},
+		})
+		const cancellation = new AbortController()
+		const running = tool.execute({ id: '1' }, { signal: cancellation.signal })
+		cancellation.abort(new Error('cancelled mid-endpoint'))
+		expect(await running).toBe('observed')
+	})
+
+	it('validate: false FORWARDS the execution context: a handler on the raw-passthrough path observes the caller cancellation', async () => {
+		const tool = createEndpointTool(
+			{
+				name: 'watchUser',
+				description: 'Waits until the caller stops waiting.',
+				samples: [{ id: '1' }, { id: '2' }],
+				execute: async (_args, context) => {
+					await waitForAbort(context.signal)
+					return 'observed'
+				},
+			},
+			{ validate: false },
+		)
+		const cancellation = new AbortController()
+		const running = tool.execute({ id: '1' }, { signal: cancellation.signal })
+		cancellation.abort(new Error('cancelled mid-endpoint'))
+		expect(await running).toBe('observed')
 	})
 
 	it('default validation COERCES a scalar to its inferred type before the handler runs', async () => {
@@ -3539,7 +4118,7 @@ describe('createEndpointTool', () => {
 				return args
 			},
 		})
-		await tool.execute({ id: 7, name: 'x' })
+		await tool.execute({ id: 7, name: 'x' }, createTestToolContext())
 		expect(received).toEqual({ id: '7', name: 'x' })
 	})
 
@@ -3554,7 +4133,9 @@ describe('createEndpointTool', () => {
 			execute: (args) => args,
 		})
 		const error = await rejectionOf(
-			Promise.resolve().then(() => tool.execute({ id: true, name: 'Ada' })),
+			Promise.resolve().then(() =>
+				tool.execute({ id: true, name: 'Ada' }, createTestToolContext()),
+			),
 		)
 		expect(isToolboxError(error)).toBe(true)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -3720,7 +4301,7 @@ describe('createEndpointTool', () => {
 			{ validate: false },
 		)
 		const args = { value: 'hello', unrelated: true }
-		await tool.execute(args)
+		await tool.execute(args, createTestToolContext())
 		expect(received).toEqual(args)
 	})
 
@@ -3741,7 +4322,7 @@ describe('createEndpointTool', () => {
 			},
 		})
 		const args = { id: '1', name: 'Ada' }
-		await tool.execute(args)
+		await tool.execute(args, createTestToolContext())
 		// Normalization yields a parsed COPY, not the same reference — assert deep-equal.
 		expect(received).toEqual(args)
 	})
@@ -3781,7 +4362,7 @@ describe('createEndpointTool', () => {
 		const strict = createEndpointTool(definition)
 		let caught: unknown
 		try {
-			await strict.execute({ id: '1' })
+			await strict.execute({ id: '1' }, createTestToolContext())
 		} catch (error) {
 			caught = error
 		}
@@ -3796,7 +4377,7 @@ describe('createEndpointTool', () => {
 				return args
 			},
 		})
-		await strictWithRecorder.execute({ id: '1', name: 'Ada', extra: true })
+		await strictWithRecorder.execute({ id: '1', name: 'Ada', extra: true }, createTestToolContext())
 		expect(strictReceived).toEqual({ id: '1', name: 'Ada' })
 
 		let received: unknown
@@ -3810,7 +4391,7 @@ describe('createEndpointTool', () => {
 			},
 			{ validate: false },
 		)
-		await lenient.execute({ id: '1', name: 'Ada', extra: true })
+		await lenient.execute({ id: '1', name: 'Ada', extra: true }, createTestToolContext())
 		expect(received).toEqual({ id: '1', name: 'Ada', extra: true })
 	})
 
@@ -3829,11 +4410,11 @@ describe('createEndpointTool', () => {
 			},
 			{ enum: true },
 		)
-		await tool.execute({ status: 'closed' })
+		await tool.execute({ status: 'closed' }, createTestToolContext())
 		expect(received).toEqual({ status: 'closed' })
 		let caught: unknown
 		try {
-			await tool.execute({ status: 'pending' })
+			await tool.execute({ status: 'pending' }, createTestToolContext())
 		} catch (error) {
 			caught = error
 		}
@@ -3854,7 +4435,7 @@ describe('createEndpointTool', () => {
 			},
 			{ format: true },
 		)
-		await tool.execute({ email: 'not-an-email' })
+		await tool.execute({ email: 'not-an-email' }, createTestToolContext())
 		expect(received).toEqual({ email: 'not-an-email' })
 	})
 
@@ -3869,12 +4450,12 @@ describe('createEndpointTool', () => {
 				return args
 			},
 		})
-		await tool.execute({ value: 'hello' })
+		await tool.execute({ value: 'hello' }, createTestToolContext())
 		expect(received).toEqual({ value: 'hello' })
 		let caught: unknown
 		try {
 			// A boolean does not coerce to a string (unlike a number) — a genuine type mismatch.
-			await tool.execute({ value: true })
+			await tool.execute({ value: true }, createTestToolContext())
 		} catch (error) {
 			caught = error
 		}
@@ -3890,7 +4471,7 @@ describe('createEndpointTool', () => {
 		})
 		const hostile: unknown = JSON.parse('{"id":"1","name":"Ada","__proto__":{"polluted":true}}')
 		if (!isRecord(hostile)) throw new Error('unreachable')
-		const result = await tool.execute(hostile)
+		const result = await tool.execute(hostile, createTestToolContext())
 		expect(isRecord(result) ? result.polluted : undefined).toBeUndefined()
 		const clean: Record<string, unknown> = {}
 		expect(clean.polluted).toBeUndefined()
@@ -3925,7 +4506,7 @@ describe('createEndpointTool', () => {
 		const args = { id: '1', name: 'Ada' }
 		const results: unknown[] = []
 		for (let i = 0; i < 200; i++) {
-			results.push(await tool.execute(args))
+			results.push(await tool.execute(args, createTestToolContext()))
 		}
 		const first = results[0]
 		expect(first).toEqual(args)
