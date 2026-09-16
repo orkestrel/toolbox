@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/toolbox",
-	"version": "0.0.14",
+	"version": "0.0.15",
 	"description": "Concrete LLM-callable tools for the @orkestrel line — workflow authoring, workspace editing, sub-agent delegation, and more, over the @orkestrel/tool runtime, with pluggable stores. Part of the @orkestrel line.",
 	"keywords": [
 		"agent",
@@ -100,7 +100,7 @@
 		"@orkestrel/probe": "^0.0.16",
 		"@orkestrel/scaffold": "^0.0.71",
 		"@orkestrel/test": "^0.0.15",
-		"@types/node": "^26.6.0",
+		"@types/node": "^26.6.1",
 		"oxfmt": "^0.68.0",
 		"oxlint": "^1.83.0",
 		"typescript": "^6.0.3",
