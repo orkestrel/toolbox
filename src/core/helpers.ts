@@ -18,6 +18,7 @@ import type { PhaseDraft, TaskDraft, WorkflowDraft, WorkflowSteps } from './type
 import { isTerminalError } from '@orkestrel/terminal'
 import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
+import { isObject } from '@orkestrel/contract'
 import { ToolboxError } from './errors.js'
 import { isWorkflowLineage } from './validators.js'
 
@@ -320,7 +321,7 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
 			}
 			ancestors.push(branch)
 			const existing = branch[segment]
-			branch = typeof existing === 'object' ? existing : {}
+			branch = isObject(existing) ? existing : {}
 		}
 		const leaf = segments[last]
 		if (leaf === undefined) {

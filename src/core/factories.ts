@@ -38,7 +38,12 @@ import {
 	attempt,
 	cloneJSONRecord,
 	createContract,
+	isArray,
+	isError,
+	isFunction,
+	isNumber,
 	isRecord,
+	isString,
 	parseJSONValue,
 	rawShape,
 	samplesToSchema,
@@ -334,7 +339,7 @@ export function createWorkflowFunctions(
 	const composed: Record<string, WorkflowFunction> = {}
 	Object.setPrototypeOf(composed, null)
 	for (const [name, fn] of Object.entries(functions)) {
-		if (typeof fn !== 'function') {
+		if (!isFunction(fn)) {
 			throw new ToolboxError('TOOL', `workflow function '${name}' is not callable`, {
 				function: name,
 			})
@@ -494,7 +499,7 @@ export function createWorkflowTool(
 			let target: WorkflowDefinition | undefined
 			if (Object.keys(owned).length === 0) {
 				target = definition
-			} else if (Array.isArray(owned.steps)) {
+			} else if (isArray(owned.steps)) {
 				const flat = steps.parse(owned)
 				target = flat === undefined ? undefined : expandSteps(flat)
 			} else {
@@ -1133,7 +1138,7 @@ export function createDatabaseDefinitionStore(
 export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInterface {
 	if (
 		options.timeout !== undefined &&
-		(options.timeout < 0 || !Number.isSafeInteger(options.timeout))
+		(options.timeout < 0 || !isNumber(options.timeout) || !Number.isSafeInteger(options.timeout))
 	) {
 		throw new ToolboxError('TOOL', 'database timeout must be a nonnegative safe integer', {
 			timeout: options.timeout,
@@ -1225,8 +1230,8 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 					case 'get': {
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
-						const many = Array.isArray(call.key)
-						const keys = Array.isArray(call.key) ? call.key : [call.key]
+						const many = isArray(call.key)
+						const keys = isArray(call.key) ? call.key : [call.key]
 						const rows = await table.get(keys)
 						return many ? { rows } : { row: rows[0] }
 					}
@@ -1259,16 +1264,16 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 					case 'add': {
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
-						const many = Array.isArray(call.row)
-						const rows = Array.isArray(call.row) ? call.row : [call.row]
+						const many = isArray(call.row)
+						const rows = isArray(call.row) ? call.row : [call.row]
 						const keys = await table.add(rows, read)
 						return many ? { keys } : { key: keys[0] }
 					}
 					case 'set': {
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
-						const many = Array.isArray(call.row)
-						const rows = Array.isArray(call.row) ? call.row : [call.row]
+						const many = isArray(call.row)
+						const rows = isArray(call.row) ? call.row : [call.row]
 						const keys = await table.set(rows, read)
 						return many ? { keys } : { key: keys[0] }
 					}
@@ -1276,16 +1281,16 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
 						const changes = call.changes
-						const many = Array.isArray(call.key)
-						const keys = Array.isArray(call.key) ? call.key : [call.key]
+						const many = isArray(call.key)
+						const keys = isArray(call.key) ? call.key : [call.key]
 						const updated = await table.update(keys, changes, read)
 						return many ? { updated } : { updated: updated[0] }
 					}
 					case 'remove': {
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
-						const many = Array.isArray(call.key)
-						const keys = Array.isArray(call.key) ? call.key : [call.key]
+						const many = isArray(call.key)
+						const keys = isArray(call.key) ? call.key : [call.key]
 						const removed = await table.remove(keys, read)
 						return many ? { removed } : { removed: removed[0] }
 					}
@@ -1307,7 +1312,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 				if (isToolboxError(error)) throw error
 				const code = inferDatabaseCode(error)
 				if (code === undefined) throw error
-				throw new ToolboxError('DATABASE', error instanceof Error ? error.message : String(error), {
+				throw new ToolboxError('DATABASE', isError(error) ? error.message : String(error), {
 					code,
 					operation: call.operation,
 					id: call.id,
@@ -1392,7 +1397,7 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 				switch (call.operation) {
 					case 'load': {
 						const include = expandInclude(call.include, depth)
-						if (typeof call.key === 'string' || typeof call.key === 'number') {
+						if (isString(call.key) || isNumber(call.key)) {
 							const row = await model.load(call.key, include)
 							return { row }
 						}
@@ -1432,20 +1437,16 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 				if (isToolboxError(error)) throw error
 				const relation = inferRelationCode(error)
 				if (relation !== undefined) {
-					throw new ToolboxError(
-						'RELATION',
-						error instanceof Error ? error.message : String(error),
-						{
-							code: relation,
-							operation: call.operation,
-							model: call.model,
-							...('relation' in call ? { relation: call.relation } : {}),
-						},
-					)
+					throw new ToolboxError('RELATION', isError(error) ? error.message : String(error), {
+						code: relation,
+						operation: call.operation,
+						model: call.model,
+						...('relation' in call ? { relation: call.relation } : {}),
+					})
 				}
 				const database = inferDatabaseCode(error)
 				if (database === undefined) throw error
-				throw new ToolboxError('DATABASE', error instanceof Error ? error.message : String(error), {
+				throw new ToolboxError('DATABASE', isError(error) ? error.message : String(error), {
 					code: database,
 					operation: call.operation,
 				})

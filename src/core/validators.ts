@@ -1,3 +1,4 @@
+import type { Guard } from '@orkestrel/contract'
 import type {
 	AgentFunction,
 	ColumnPrimitive,
@@ -5,7 +6,17 @@ import type {
 	DatabaseDefinition,
 	WorkflowLineage,
 } from './types.js'
-import { attempt, isFiniteNumber, isNonEmptyString, isRecord, isString } from '@orkestrel/contract'
+import {
+	attempt,
+	isArray,
+	isBoolean,
+	isFiniteNumber,
+	isFunction,
+	isNonEmptyString,
+	isRecord,
+	isString,
+	literalOf,
+} from '@orkestrel/contract'
 
 // Toolbox guards — the total `(value: unknown) => value is T` narrows this package applies at its
 // untrusted boundaries: an authored lineage, a frozen agent adapter, the small-model column DSL,
@@ -19,7 +30,7 @@ import { attempt, isFiniteNumber, isNonEmptyString, isRecord, isString } from '@
  */
 export function isWorkflowLineage(value: unknown): value is WorkflowLineage {
 	const inspected = attempt(() => {
-		if (!Array.isArray(value)) return false
+		if (!isArray(value)) return false
 		const seen = new Set<string>()
 		for (const [index, tag] of value.entries()) {
 			if (!isString(tag)) return false
@@ -40,7 +51,7 @@ export function isWorkflowLineage(value: unknown): value is WorkflowLineage {
  */
 export function isAgentFunction(value: unknown): value is AgentFunction {
 	const inspected = attempt(() => {
-		if (typeof value !== 'function' || !Object.isFrozen(value)) return false
+		if (!isFunction(value) || !Object.isFrozen(value)) return false
 		const category = Reflect.getOwnPropertyDescriptor(value, 'category')
 		const lineage = Reflect.getOwnPropertyDescriptor(value, 'lineage')
 		return (
@@ -65,7 +76,7 @@ export function isColumnSpec(value: unknown): value is ColumnSpec {
 	if (!isRecord(value)) return false
 	return (
 		isColumnPrimitive(value.primitive) &&
-		(value.optional === undefined || typeof value.optional === 'boolean')
+		(value.optional === undefined || isBoolean(value.optional))
 	)
 }
 
@@ -75,9 +86,12 @@ export function isColumnSpec(value: unknown): value is ColumnSpec {
  * @param value - The value to inspect
  * @returns True if `value` is `'string'`, `'integer'`, `'number'`, or `'boolean'`; false otherwise
  */
-export function isColumnPrimitive(value: unknown): value is ColumnPrimitive {
-	return value === 'string' || value === 'integer' || value === 'number' || value === 'boolean'
-}
+export const isColumnPrimitive: Guard<ColumnPrimitive> = literalOf(
+	'string',
+	'integer',
+	'number',
+	'boolean',
+)
 
 /**
  * Narrows an unknown value to a {@link DatabaseDefinition} — a non-empty `id` and `driver`, a
@@ -109,9 +123,9 @@ export function isDatabaseDefinition(value: unknown): value is DatabaseDefinitio
 	if (value.indexes !== undefined) {
 		if (!isRecord(value.indexes)) return false
 		for (const groups of Object.values(value.indexes)) {
-			if (!Array.isArray(groups)) return false
+			if (!isArray(groups)) return false
 			for (const group of groups) {
-				if (!Array.isArray(group) || group.length === 0) return false
+				if (!isArray(group) || group.length === 0) return false
 				for (const column of group) {
 					if (!isNonEmptyString(column)) return false
 				}

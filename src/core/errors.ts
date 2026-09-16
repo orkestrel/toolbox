@@ -1,4 +1,5 @@
 import type { ToolboxErrorCode } from './types.js'
+import { isInstance } from '@orkestrel/contract'
 
 // Toolbox errors — one error class per domain this package mints its own error for.
 // `@orkestrel/workflow`'s `WorkflowError` and `@orkestrel/workspace`'s `WorkspaceError` already
@@ -68,5 +69,5 @@ export class ToolboxError extends Error {
  * ```
  */
 export function isToolboxError(value: unknown): value is ToolboxError {
-	return value instanceof ToolboxError
+	return isInstance(value, ToolboxError)
 }

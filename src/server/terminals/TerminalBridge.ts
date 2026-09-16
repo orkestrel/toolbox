@@ -7,7 +7,13 @@ import type {
 } from '../types.js'
 import { defaultTimer, HEADER_TOKEN } from '@orkestrel/terminal'
 import { isFormValues } from '@orkestrel/form'
-import { isNonEmptyString, isRecord } from '@orkestrel/contract'
+import {
+	isFiniteNumber,
+	isInstance,
+	isNonEmptyString,
+	isRecord,
+	parseJSON,
+} from '@orkestrel/contract'
 import {
 	collectRequestBody,
 	ContentTooLargeError,
@@ -49,7 +55,7 @@ export class TerminalBridge {
 		this.#timer = options?.timer ?? defaultTimer
 		const limit = options?.limit
 		this.#limit =
-			limit === undefined || !Number.isFinite(limit)
+			limit === undefined || !isFiniteNumber(limit)
 				? DEFAULT_BODY_LIMIT
 				: Math.max(0, Math.floor(limit))
 		this.#accepts = this.#valid.bind(this)
@@ -110,17 +116,15 @@ export class TerminalBridge {
 		try {
 			bytes = await collectRequestBody(request, Math.max(1, this.#limit))
 		} catch (error) {
-			if (error instanceof ContentTooLargeError) return new Response(null, { status: 413 })
+			if (isInstance(error, ContentTooLargeError)) return new Response(null, { status: 413 })
 			throw error
 		}
 		if (bytes.byteLength > 0 && bytes.byteLength > this.#limit) {
 			return new Response(null, { status: 413 })
 		}
 
-		let body: unknown
-		try {
-			body = JSON.parse(new TextDecoder().decode(bytes))
-		} catch {
+		const body = parseJSON(new TextDecoder().decode(bytes))
+		if (body === undefined) {
 			return new Response(null, { status: 400 })
 		}
 		if (!isRecord(body) || !isNonEmptyString(body.id) || !isFormValues(body.values)) {
