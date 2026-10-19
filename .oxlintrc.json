@@ -38,7 +38,7 @@
 		],
 
 		"import/no-default-export": "error",
-		"import/no-dynamic-require": ["error", { "esmodule": true }],
+		"import/no-dynamic-require": ["error", { "esmodule": false }],
 		"import/extensions": "off",
 		"import/no-unassigned-import": [
 			"error",
