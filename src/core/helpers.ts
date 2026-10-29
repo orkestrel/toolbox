@@ -18,7 +18,8 @@ import type { PhaseDraft, TaskDraft, WorkflowDraft, WorkflowSteps } from './type
 import { isTerminalError } from '@orkestrel/terminal'
 import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
-import { isObject } from '@orkestrel/contract'
+import type { ContractInterface, JSONRecord } from '@orkestrel/contract'
+import { isArray, isObject } from '@orkestrel/contract'
 import { ToolboxError } from './errors.js'
 import { isWorkflowLineage } from './validators.js'
 
@@ -305,44 +306,37 @@ export function inferRelationCode(error: unknown): RelationErrorCode | undefined
  * ```
  */
 export function expandInclude(paths: readonly string[] | undefined, depth: number): Include {
-	let include: Include = {}
-	for (const path of paths ?? []) {
+	return Iterator.from(paths ?? []).reduce<Include>((include, path) => {
 		const segments = path.split('.')
 		if (segments.length > depth || segments.some((segment) => segment.length === 0)) {
 			throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
 		}
-		const ancestors: Include[] = []
-		let branch = include
+		const ancestors: Include[] = [include]
 		const last = segments.length - 1
-		for (let index = 0; index < last; index++) {
-			const segment = segments[index]
-			if (segment === undefined) {
+		for (const [index, segment] of segments.entries()) {
+			if (index === last) break
+			const branch = ancestors.at(-1)
+			if (branch === undefined)
 				throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
-			}
-			ancestors.push(branch)
 			const existing = branch[segment]
-			branch = isObject(existing) ? existing : {}
+			ancestors.push(isObject(existing) ? existing : {})
 		}
 		const leaf = segments[last]
-		if (leaf === undefined) {
+		const branch = ancestors.at(-1)
+		if (leaf === undefined || branch === undefined) {
 			throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
 		}
 		const existing = branch[leaf]
-		let merged: Include = {
-			...branch,
-			[leaf]: existing === undefined ? true : existing,
-		}
-		for (let index = last - 1; index >= 0; index--) {
-			const ancestor = ancestors[index]
-			const segment = segments[index]
-			if (ancestor === undefined || segment === undefined) {
-				throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
-			}
-			merged = { ...ancestor, [segment]: merged }
-		}
-		include = merged
-	}
-	return include
+		return ancestors.slice(0, -1).reduceRight<Include>(
+			(merged, ancestor, index) => {
+				const segment = segments[index]
+				if (segment === undefined)
+					throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
+				return { ...ancestor, [segment]: merged }
+			},
+			{ ...branch, [leaf]: existing === undefined ? true : existing },
+		)
+	}, {})
 }
 
 /**
@@ -490,4 +484,30 @@ export function resolveLimit(requested: number | undefined, cap: number): number
 export function clampQuery(query: QueryInput | undefined, cap: number): ClampedQuery {
 	const limit = resolveLimit(query?.limit, cap)
 	return { query: { ...query, limit: limit + 1 }, limit }
+}
+/**
+ * Resolves an owned workflow input through the supplied flat or draft contracts.
+ * @example
+ * ```ts
+ * import { createContract } from '@orkestrel/contract'
+ * import { completeDraft, createWorkflowDraftContract, resolveWorkflowTarget, workflowStepsShape } from '@src/core'
+ *
+ * const definition = completeDraft({ phases: [{ tasks: [{}] }] })
+ * const steps: import('@orkestrel/contract').ContractInterface<import('./types.js').WorkflowSteps> = createContract(workflowStepsShape)
+ * resolveWorkflowTarget({}, definition, steps, createWorkflowDraftContract()) // definition
+ * ```
+ */
+export function resolveWorkflowTarget(
+	owned: JSONRecord,
+	definition: WorkflowDefinition,
+	steps: ContractInterface<WorkflowSteps>,
+	draft: ContractInterface<WorkflowDraft>,
+): WorkflowDefinition | undefined {
+	if (Object.keys(owned).length === 0) return definition
+	if (isArray(owned.steps)) {
+		const flat = steps.parse(owned)
+		return flat === undefined ? undefined : expandSteps(flat)
+	}
+	const parsed = draft.parse(owned)
+	return parsed === undefined ? undefined : completeDraft(parsed)
 }

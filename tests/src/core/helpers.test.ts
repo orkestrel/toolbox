@@ -1,3 +1,6 @@
+import type { ContractInterface } from '@orkestrel/contract'
+import { createContract } from '@orkestrel/contract'
+import { captureError } from '@orkestrel/test'
 import type { QueryInput } from '@orkestrel/database'
 import type { WorkflowDraft, WorkflowSteps } from '@src/core'
 import type {
@@ -11,6 +14,9 @@ import {
 	ToolboxError,
 	clampQuery,
 	completeDraft,
+	resolveWorkflowTarget,
+	createWorkflowDraftContract,
+	workflowStepsShape,
 	completePhaseDraft,
 	completeTaskDraft,
 	deriveWorkflowDepth,
@@ -76,12 +82,7 @@ describe('workflow lineage helpers', () => {
 			['workflow:a', 'workflow:b'],
 			['workflow:a', 'agent:b', 'workflow:a'],
 		]) {
-			let error: unknown
-			try {
-				normalizeLineage(lineage)
-			} catch (caught) {
-				error = caught
-			}
+			const error = captureError(() => normalizeLineage(lineage))
 			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		}
 	})
@@ -447,12 +448,7 @@ describe('expandInclude — expand a flat dot-path include list into a nested In
 
 	it('a path exceeding the depth cap throws a typed TOOL ToolboxError', () => {
 		expect(() => expandInclude(['a.b.c'], 2)).toThrow(ToolboxError)
-		let caught: unknown
-		try {
-			expandInclude(['a.b.c'], 2)
-		} catch (error) {
-			caught = error
-		}
+		const caught = captureError(() => expandInclude(['a.b.c'], 2))
 		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
 	})
 
@@ -468,5 +464,24 @@ describe('expandInclude — expand a flat dot-path include list into a nested In
 
 	it('an empty array yields the empty Include', () => {
 		expect(expandInclude([], 3)).toEqual({})
+	})
+})
+describe('resolveWorkflowTarget', () => {
+	it('keeps the wrapped definition and resolves both authored forms through real contracts', () => {
+		const definition = completeDraft({ id: 'wrapped', phases: [{ tasks: [{}] }] })
+		const steps: ContractInterface<WorkflowSteps> = createContract(workflowStepsShape)
+		const draft = createWorkflowDraftContract()
+		expect(resolveWorkflowTarget({}, definition, steps, draft)).toBe(definition)
+		const flat = { steps: [{ name: 'compile' }] }
+		expect(resolveWorkflowTarget(flat, definition, steps, draft)).toEqual(expandSteps(flat))
+		const nested = { phases: [{ tasks: [{ behavior: 'compile' }] }] }
+		expect(resolveWorkflowTarget(nested, definition, steps, draft)).toEqual(completeDraft(nested))
+	})
+	it('leaves a refused flat or draft input absent for the strict caller gate', () => {
+		const definition = completeDraft({ phases: [{ tasks: [{}] }] })
+		const steps: ContractInterface<WorkflowSteps> = createContract(workflowStepsShape)
+		const draft = createWorkflowDraftContract()
+		expect(resolveWorkflowTarget({ steps: [{}] }, definition, steps, draft)).toBeUndefined()
+		expect(resolveWorkflowTarget({ phases: false }, definition, steps, draft)).toBeUndefined()
 	})
 })

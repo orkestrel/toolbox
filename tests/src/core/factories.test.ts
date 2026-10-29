@@ -1,16 +1,12 @@
+import type { ToolboxAsk } from '../../setup.js'
 import type { AgentToolArguments } from '@src/core'
-import type { ProviderResult } from '@orkestrel/agent'
-import type { ToolResult } from '@orkestrel/tool'
 import type { WorkflowDraft } from '@src/core'
-import type { DatabaseInterface } from '@orkestrel/database'
 import type { WorkflowDefinition, WorkflowFunction, WorkflowRegistry } from '@orkestrel/workflow'
-import type { TerminalManagerInterface } from '@orkestrel/terminal'
-import type { FieldControl, FormSchema, FormValues } from '@orkestrel/form'
-import type { RelationManagerInterface } from '@orkestrel/relation'
+import type { FormValues } from '@orkestrel/form'
 import { createAgent, createAgentRegistry, createMemoryConversationStore } from '@orkestrel/agent'
 import { createMemoryWorkspaceStore, createWorkspaceManager } from '@orkestrel/workspace'
 import { createTool, createToolManager } from '@orkestrel/tool'
-import { booleanShape, isRecord, numberShape, stringShape } from '@orkestrel/contract'
+import { isRecord, numberShape, stringShape } from '@orkestrel/contract'
 import {
 	createMemoryWorkflowStore,
 	createWorkflowRunner,
@@ -54,10 +50,35 @@ import {
 } from '@src/core'
 import { createTerminalManager, TerminalError } from '@orkestrel/terminal'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
-import { belongsTo, createRelationManager, hasMany, hasThrough } from '@orkestrel/relation'
 import { afterEach, describe, expect, it } from 'vitest'
 import { captureError, createRecorder, waitForAbort, waitForDelay } from '@orkestrel/test'
 import {
+	createNestedWorkflow,
+	readToolboxSummary,
+	buildFormSchema,
+	createAskCall,
+	buildWorkflowLineageFixture,
+	buildToolLineageFixture,
+	createWorkflowProviderCall,
+	readToolboxRejection,
+	executeThroughManager,
+	createItemTables,
+	createItemRow,
+	buildItemsHandle,
+	buildRelationManager,
+	seedAccount,
+	seedContact,
+	seedRep,
+	revokedWorkflowArguments,
+	throwingOwnKeysWorkflowArguments,
+	throwingGetWorkflowArguments,
+	ToolboxValue,
+	createOpaqueLeafRegistry,
+	createSharedMemoryDrivers,
+	createLookupEndpointDefinition,
+	captureToolboxFailure,
+	buildTerminals,
+	TOOLBOX_TERMINALS,
 	createTestTaskController,
 	createTestTimer,
 	createTestToolContext,
@@ -76,139 +97,10 @@ afterEach(releaseTestTaskControllers)
 
 // A one-task definition whose `behavior` is omitted, so Workflow performs the deliberate JSON-null
 // no-op and the run completes without a functions registry.
-function simpleDefinition(id = 'nested'): WorkflowDefinition {
-	return {
-		id,
-		name: id,
-		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] }],
-	}
-}
-
-function readSummary(value: unknown): { status: string; count: number } | undefined {
-	if (!isRecord(value) || typeof value.status !== 'string' || typeof value.count !== 'number') {
-		return undefined
-	}
-	return { status: value.status, count: value.count }
-}
-
-function rejectTerminalAsk(..._args: readonly unknown[]): Promise<never> {
-	return Promise.reject(new TerminalError('DRIVER', 'driver failed'))
-}
-
-function buildFormSchema(control: FieldControl, label: string): FormSchema {
-	if (control === 'confirm') {
-		return { fields: [{ control: 'confirm', name: 'value', label }] }
-	}
-	if (control === 'select' || control === 'checkbox') {
-		return {
-			fields: [
-				{
-					control,
-					name: 'value',
-					label,
-					choices: [
-						{ label: 'X', value: 'x' },
-						{ label: 'Y', value: 'y' },
-					],
-				},
-			],
-		}
-	}
-	if (control === 'text') return { fields: [{ control: 'text', name: 'value', label }] }
-	throw new Error(`unsupported test form control '${control}'`)
-}
-
-function createAskCall(
-	to: string,
-	control: FieldControl,
-	label: string,
-): Readonly<Record<string, unknown>> {
-	return { to, schema: buildFormSchema(control, label) }
-}
-
-function buildWorkflowLineageFixture(depth: number): readonly string[] {
-	const lineage: string[] = ['workflow:w0']
-	for (let index = 1; index <= depth; index += 1) {
-		lineage.push(`agent:a${index}`, `workflow:w${index}`)
-	}
-	return lineage
-}
-
-function buildToolLineageFixture(depth: number): readonly string[] {
-	if (depth === 0) return []
-	const lineage: string[] = ['workflow:w0']
-	for (let index = 1; index <= depth; index += 1) {
-		lineage.push(`agent:a${index}`)
-		if (index < depth) lineage.push(`workflow:w${index}`)
-	}
-	return lineage
-}
-
-function createWorkflowProviderCall(id: string, behavior: string): ProviderResult {
-	return {
-		content: '',
-		tools: [
-			{
-				id: `call-${id}`,
-				name: WORKFLOW_TOOL_NAME,
-				arguments: {
-					id,
-					name: id,
-					bail: true,
-					phases: [
-						{
-							id: 'p',
-							name: 'P',
-							tasks: [{ id: 't', name: 'T', behavior }],
-						},
-					],
-				},
-			},
-		],
-	}
-}
-
-const revokedWorkflowArguments = Proxy.revocable<Record<string, unknown>>({}, {})
-revokedWorkflowArguments.revoke()
-
-const throwingOwnKeysWorkflowArguments = new Proxy<Record<string, unknown>>(
-	{},
-	{
-		ownKeys() {
-			throw new Error('hostile ownKeys')
-		},
-	},
-)
-
-const throwingGetWorkflowArguments = new Proxy<Record<string, unknown>>(
-	{ steps: undefined },
-	{
-		get() {
-			throw new Error('hostile get')
-		},
-	},
-)
-
-async function rejectionOf(promise: Promise<unknown> | unknown): Promise<unknown> {
-	try {
-		await promise
-		return undefined
-	} catch (error) {
-		return error
-	}
-}
 
 // A minimal, hand-built TaskContext — pure DATA, the lineage shape createAgentFunction /
 // createToolFunction read from controller.task. Lets the adapter tests call the returned
 // WorkflowFunction directly, without driving a full runner round-trip.
-function executeThroughManager(
-	tool: ReturnType<typeof createWorkflowTool>,
-	args: Readonly<Record<string, unknown>> = { ...simpleDefinition('via-mgr') },
-): Promise<ToolResult> {
-	const manager = createToolManager()
-	manager.add(tool)
-	return manager.execute({ id: 'call-1', name: tool.name, arguments: args })
-}
 
 // ── createToolFunction — wraps a registered tool as a WorkflowFunction ───────
 
@@ -261,20 +153,20 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 			}),
 		)
 		const fn = createToolFunction(tools, 'boom')
-		const error = await rejectionOf(fn(await createTestTaskController()))
+		const error = await readToolboxRejection(fn(await createTestTaskController()))
 		expect(error).toBe(thrown)
 	})
 
 	it('an UNREGISTERED tool name throws a typed TOOL ToolboxError', async () => {
 		const tools = createToolManager()
 		const fn = createToolFunction(tools, 'missing')
-		const error = await rejectionOf(fn(await createTestTaskController()))
+		const error = await readToolboxRejection(fn(await createTestTaskController()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
 	it('rejects wrapping the reserved live workflow tool at construction', () => {
 		const tools = createToolManager()
-		tools.add(createWorkflowTool(simpleDefinition(), createWorkflowRunner()))
+		tools.add(createWorkflowTool(createNestedWorkflow(), createWorkflowRunner()))
 		const error = captureError(() => createToolFunction(tools, WORKFLOW_TOOL_NAME))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
@@ -288,7 +180,7 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 		sparse.length = 1
 		const invalid: readonly unknown[] = [
 			undefined,
-			() => undefined,
+			Object,
 			1n,
 			Number.NaN,
 			Number.POSITIVE_INFINITY,
@@ -301,7 +193,7 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 		for (const [index, value] of invalid.entries()) {
 			const name = `invalid-${index}`
 			tools.add(createTool({ name, execute: () => value }))
-			const error = await rejectionOf(
+			const error = await readToolboxRejection(
 				createToolFunction(tools, name)(await createTestTaskController()),
 			)
 			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -379,7 +271,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		const fn = createAgentFunction(agent, {
 			lineage: buildWorkflowLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			fn(await createTestTaskController({ workflow: `w${MAX_WORKFLOW_CHAIN + 1}` })),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
@@ -392,7 +284,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		const fn = createAgentFunction(agent, {
 			lineage: ['workflow:w0', `agent:${agent.id}`, 'workflow:w1'],
 		})
-		const error = await rejectionOf(fn(await createTestTaskController({ workflow: 'w1' })))
+		const error = await readToolboxRejection(fn(await createTestTaskController({ workflow: 'w1' })))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
@@ -430,7 +322,7 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		)
 		const tool = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
 		if (tool === undefined) throw new Error('workflow tool was not bound')
-		const error = await rejectionOf(tool.execute({}, createTestToolContext()))
+		const error = await readToolboxRejection(tool.execute({}, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('cycle')
 	})
@@ -471,13 +363,15 @@ describe('createAgentFunction — contextual metadata and lifecycle guards', () 
 	it('rejects a contextual workflow mismatch before agent activity', async () => {
 		const provider = new ScriptedProvider([{ content: 'unreached' }])
 		const fn = createAgentFunction(createAgent(provider), { lineage: ['workflow:expected'] })
-		const error = await rejectionOf(fn(await createTestTaskController({ workflow: 'actual' })))
+		const error = await readToolboxRejection(
+			fn(await createTestTaskController({ workflow: 'actual' })),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
 
 	it('uses Agent-owned full projection and maps a malformed structural result to TOOL', async () => {
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			createAgentFunction(new MalformedAgent())(await createTestTaskController()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -486,7 +380,9 @@ describe('createAgentFunction — contextual metadata and lifecycle guards', () 
 	it('preserves a genuine provider error by identity', async () => {
 		const failure = new Error('provider refused')
 		const agent = createAgent(new ScriptedProvider([{ content: 'unreached' }], { failure }))
-		const error = await rejectionOf(createAgentFunction(agent)(await createTestTaskController()))
+		const error = await readToolboxRejection(
+			createAgentFunction(agent)(await createTestTaskController()),
+		)
 		expect(error).toBe(failure)
 		expect(agent.status).toBe('error')
 	})
@@ -496,7 +392,9 @@ describe('createAgentFunction — contextual metadata and lifecycle guards', () 
 		const fn = createAgentFunction(agent, { runner: createWorkflowRunner() })
 		const first = fn(await createTestTaskController({ workflow: 'first' }))
 		const bound = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
-		const error = await rejectionOf(fn(await createTestTaskController({ workflow: 'second' })))
+		const error = await readToolboxRejection(
+			fn(await createTestTaskController({ workflow: 'second' })),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(agent.context.tools.tool(WORKFLOW_TOOL_NAME)).toBe(bound)
 		await first
@@ -521,7 +419,7 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 	})
 
 	it('snapshots and freezes opaque functions and agent registries', () => {
-		const leaves = { leaf: () => 'leaf' }
+		const leaves = createOpaqueLeafRegistry()
 		const agents = { review: createAgent(new ScriptedProvider([{ content: 'review' }])) }
 		const functions = createWorkflowFunctions(createWorkflowRunner(), {
 			functions: leaves,
@@ -608,7 +506,7 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 	})
 
 	it('rejects non-callable runtime entries and factory-specific lineage endings', () => {
-		const invalid: WorkflowRegistry = { leaf: () => 'leaf' }
+		const invalid: WorkflowRegistry = createOpaqueLeafRegistry()
 		Object.defineProperty(invalid, 'leaf', { enumerable: true, value: 7 })
 		const callable = captureError(() =>
 			createWorkflowFunctions(createWorkflowRunner(), { functions: invalid }),
@@ -620,7 +518,7 @@ describe('createWorkflowFunctions — recursion-safe registry composition', () =
 			createAgentFunction(agent, { lineage: ['workflow:w', 'agent:a'] }),
 		)
 		const toolEnding = captureError(() =>
-			createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
+			createWorkflowTool(createNestedWorkflow(), createWorkflowRunner(), {
 				lineage: ['workflow:w'],
 			}),
 		)
@@ -744,7 +642,7 @@ describe('workflow/agent recursion through real providers and runners', () => {
 
 describe('createWorkflowTool — its parameters advertise the FLAT authoring shape', () => {
 	it('the advertised parameters expose only name/steps (no id/phases)', () => {
-		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
+		const tool = createWorkflowTool(createNestedWorkflow(), createWorkflowRunner())
 		expect(tool.parameters?.type).toBe('object')
 		const properties = tool.parameters?.properties
 		expect(isRecord(properties) ? Object.keys(properties).sort() : []).toEqual(['name', 'steps'])
@@ -753,7 +651,7 @@ describe('createWorkflowTool — its parameters advertise the FLAT authoring sha
 	})
 
 	it('the step `name` field carries a description', () => {
-		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
+		const tool = createWorkflowTool(createNestedWorkflow(), createWorkflowRunner())
 		const properties = tool.parameters?.properties
 		const steps = isRecord(properties) ? properties.steps : undefined
 		const items = isRecord(steps) ? steps.items : undefined
@@ -765,16 +663,16 @@ describe('createWorkflowTool — its parameters advertise the FLAT authoring sha
 
 describe('createWorkflowTool — authoring forms (flat / draft / full / precedence)', () => {
 	it('a valid authored full-form blob runs that workflow and RETURNS the plain run summary', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		const summary = readSummary(
-			await tool.execute({ ...simpleDefinition('authored') }, createTestToolContext()),
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		const summary = readToolboxSummary(
+			await tool.execute({ ...createNestedWorkflow('authored') }, createTestToolContext()),
 		)
 		expect(summary).toEqual({ status: 'completed', count: 1 })
 	})
 
 	it('no authored args runs the WRAPPED definition (the tool genuinely wraps it)', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		expect(readSummary(await tool.execute({}, createTestToolContext()))).toEqual({
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		expect(readToolboxSummary(await tool.execute({}, createTestToolContext()))).toEqual({
 			status: 'completed',
 			count: 1,
 		})
@@ -782,7 +680,9 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 
 	it('an omitted behavior completes with native JSON null', async () => {
 		const store = createMemoryWorkflowStore()
-		const tool = createWorkflowTool(simpleDefinition('omitted'), createWorkflowRunner(), { store })
+		const tool = createWorkflowTool(createNestedWorkflow('omitted'), createWorkflowRunner(), {
+			store,
+		})
 		expect(await tool.execute({}, createTestToolContext())).toEqual({
 			status: 'completed',
 			count: 1,
@@ -802,7 +702,7 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			name: 'Unresolved',
 			phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'missing' }] }],
 		}
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			createWorkflowTool(definition, createWorkflowRunner(), { store }).execute(
 				{},
 				createTestToolContext(),
@@ -814,8 +714,8 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	})
 
 	it('a malformed authored blob throws a typed TOOL ToolboxError', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		const error = await rejectionOf(
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		const error = await readToolboxRejection(
 			tool.execute(
 				{
 					id: '',
@@ -856,7 +756,7 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			throwingOwnKeysWorkflowArguments,
 			throwingGetWorkflowArguments,
 		]) {
-			const error = await rejectionOf(tool.execute(args, createTestToolContext()))
+			const error = await readToolboxRejection(tool.execute(args, createTestToolContext()))
 			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 			expect(error instanceof Error ? error.message : '').toBe('malformed workflow definition')
 		}
@@ -865,22 +765,22 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	})
 
 	it('an over-deep call throws a typed DEPTH ToolboxError without running', async () => {
-		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
+		const tool = createWorkflowTool(createNestedWorkflow(), createWorkflowRunner(), {
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
-		const error = await rejectionOf(
-			tool.execute({ ...simpleDefinition('deep') }, createTestToolContext()),
+		const error = await readToolboxRejection(
+			tool.execute({ ...createNestedWorkflow('deep') }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('max depth')
 	})
 
 	it('a cyclic call throws a typed DEPTH ToolboxError', async () => {
-		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner(), {
+		const tool = createWorkflowTool(createNestedWorkflow(), createWorkflowRunner(), {
 			lineage: ['workflow:loop', 'agent:a'],
 		})
-		const error = await rejectionOf(
-			tool.execute({ ...simpleDefinition('loop') }, createTestToolContext()),
+		const error = await readToolboxRejection(
+			tool.execute({ ...createNestedWorkflow('loop') }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(error instanceof Error ? error.message : '').toContain('cycle')
@@ -894,10 +794,10 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	})
 
 	it('the tool runs an ids-OMITTED nested draft end-to-end → completed with the right result count', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			functions: { x: () => 'x', y: () => 'y' },
 		})
-		const summary = readSummary(
+		const summary = readToolboxSummary(
 			await tool.execute(
 				{
 					phases: [{ tasks: [{ behavior: 'x' }] }, { tasks: [{ behavior: 'y' }] }],
@@ -909,10 +809,10 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	})
 
 	it('the tool runs a minimal FLAT steps blob end-to-end → { status: completed, count: N }', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			functions: { compile: () => 'compiled', publish: () => 'published' },
 		})
-		const summary = readSummary(
+		const summary = readToolboxSummary(
 			await tool.execute(
 				{ name: 'build', steps: [{ name: 'compile' }, { name: 'publish' }] },
 				createTestToolContext(),
@@ -922,14 +822,14 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	})
 
 	it('a flat blob that cannot expand throws a typed TOOL ToolboxError', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		const error = await rejectionOf(tool.execute({ steps: [{}] }, createTestToolContext()))
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		const error = await readToolboxRejection(tool.execute({ steps: [{}] }, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
 	it('a top-level tool contextually adapts a raw agent registry', async () => {
 		const agent = createAgent(new ScriptedProvider([{ content: 'tool-agent' }]))
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			agents: { review: agent },
 		})
 		expect(
@@ -944,12 +844,12 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	})
 
 	it('allows depth eight and rejects depth nine from a top-level-tool entry path', async () => {
-		const allowed = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const allowed = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN),
 		})
 		expect(
 			await allowed.execute(
-				{ ...simpleDefinition(`w${MAX_WORKFLOW_CHAIN}`) },
+				{ ...createNestedWorkflow(`w${MAX_WORKFLOW_CHAIN}`) },
 				createTestToolContext(),
 			),
 		).toEqual({
@@ -957,12 +857,12 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			count: 1,
 		})
 
-		const rejected = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const rejected = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			rejected.execute(
-				{ ...simpleDefinition(`w${MAX_WORKFLOW_CHAIN + 1}`) },
+				{ ...createNestedWorkflow(`w${MAX_WORKFLOW_CHAIN + 1}`) },
 				createTestToolContext(),
 			),
 		)
@@ -970,10 +870,10 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 	})
 
 	it('a blob carrying BOTH `steps` and `phases` takes the FLAT branch (expands steps, IGNORES phases)', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			functions: { a: () => 'a', b: () => 'b' },
 		})
-		const summary = readSummary(
+		const summary = readToolboxSummary(
 			await tool.execute(
 				{
 					name: 'precedence',
@@ -993,7 +893,7 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 
 describe('createWorkflowTool — tool-through-manager execution', () => {
 	it('a SUCCESS maps to a SINGLE-LEVEL ToolResult — value IS the plain summary, no nested envelope', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
 		const result = await executeThroughManager(tool)
 		if (!result.success) throw new Error(result.error)
 		expect(result.value).toEqual({ status: 'completed', count: 1 })
@@ -1003,7 +903,7 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 	})
 
 	it('a FAILURE maps to a SINGLE-LEVEL ToolResult — a TOP-LEVEL error, no value', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
 		const result = await executeThroughManager(tool)
@@ -1013,7 +913,7 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 	})
 
 	it('the manager constructs the expected success-discriminated ToolResult shapes directly', async () => {
-		const failing = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const failing = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
 		const failure = await executeThroughManager(failing)
@@ -1024,7 +924,7 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 			error: expect.stringContaining('max depth'),
 		})
 
-		const ok = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
+		const ok = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
 		const success = await executeThroughManager(ok)
 		expect(success).toEqual({
 			id: 'call-1',
@@ -1040,10 +940,12 @@ describe('createWorkflowTool — tool-through-manager execution', () => {
 describe('createWorkflowTool — optional native durable store', () => {
 	it('a successful authored run PERSISTS the final snapshot into the provided store', async () => {
 		const store = createMemoryWorkflowStore()
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), { store })
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
+			store,
+		})
 		expect(await store.get('authored')).toBeUndefined()
 		expect(
-			await tool.execute({ ...simpleDefinition('authored') }, createTestToolContext()),
+			await tool.execute({ ...createNestedWorkflow('authored') }, createTestToolContext()),
 		).toEqual({
 			status: 'completed',
 			count: 1,
@@ -1056,8 +958,10 @@ describe('createWorkflowTool — optional native durable store', () => {
 
 	it('the persisted snapshot round-trips through the strict contract and is restorable', async () => {
 		const store = createMemoryWorkflowStore()
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), { store })
-		await tool.execute({ ...simpleDefinition('restorable') }, createTestToolContext())
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
+			store,
+		})
+		await tool.execute({ ...createNestedWorkflow('restorable') }, createTestToolContext())
 		const persisted = await store.get('restorable')
 		expect(persisted?.phases[0]?.tasks[0]?.status).toBe('completed')
 		expect(persisted === undefined ? undefined : createRestoredWorkflow(persisted).status).toBe(
@@ -1067,7 +971,7 @@ describe('createWorkflowTool — optional native durable store', () => {
 
 	it('repeated flat names deterministically replace the same stored workflow snapshot', async () => {
 		const store = createMemoryWorkflowStore()
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			functions: { one: () => 1, two: () => 2 },
 			store,
 		})
@@ -1081,9 +985,9 @@ describe('createWorkflowTool — optional native durable store', () => {
 	})
 
 	it('an ABSENT store has NO persistence side effects', async () => {
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner())
-		const summary = readSummary(
-			await tool.execute({ ...simpleDefinition('no-store') }, createTestToolContext()),
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		const summary = readToolboxSummary(
+			await tool.execute({ ...createNestedWorkflow('no-store') }, createTestToolContext()),
 		)
 		expect(summary).toEqual({ status: 'completed', count: 1 })
 		// No store was supplied; nothing to assert beyond the run completing without error.
@@ -1091,17 +995,21 @@ describe('createWorkflowTool — optional native durable store', () => {
 
 	it('a depth refusal never reaches native runner persistence', async () => {
 		const store = createMemoryWorkflowStore()
-		const tool = createWorkflowTool(simpleDefinition('wrapped'), createWorkflowRunner(), {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
 			store,
 			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
 		})
-		await rejectionOf(tool.execute({ ...simpleDefinition('unreached') }, createTestToolContext()))
+		await readToolboxRejection(
+			tool.execute({ ...createNestedWorkflow('unreached') }, createTestToolContext()),
+		)
 		expect(await store.get('unreached')).toBeUndefined()
 	})
 
 	it('native persistence records the ordered pending, running, completed subsequence', async () => {
 		const store = new RecordingWorkflowStore()
-		const tool = createWorkflowTool(simpleDefinition('recorded'), createWorkflowRunner(), { store })
+		const tool = createWorkflowTool(createNestedWorkflow('recorded'), createWorkflowRunner(), {
+			store,
+		})
 		await tool.execute({}, createTestToolContext())
 		const statuses = store.snapshots.map((snapshot) => snapshot.phases[0]?.tasks[0]?.status)
 		const pending = statuses.indexOf('pending')
@@ -1114,9 +1022,13 @@ describe('createWorkflowTool — optional native durable store', () => {
 
 	it('an always-rejecting store surfaces durable false and a persistence fault', async () => {
 		const store = new RecordingWorkflowStore(Number.POSITIVE_INFINITY)
-		const result = await createWorkflowTool(simpleDefinition('rejected'), createWorkflowRunner(), {
-			store,
-		}).execute({}, createTestToolContext())
+		const result = await createWorkflowTool(
+			createNestedWorkflow('rejected'),
+			createWorkflowRunner(),
+			{
+				store,
+			},
+		).execute({}, createTestToolContext())
 		expect(result).toMatchObject({
 			durable: false,
 			fault: { message: 'checkpoint refused' },
@@ -1125,9 +1037,13 @@ describe('createWorkflowTool — optional native durable store', () => {
 
 	it('a fail-once store can recover durability while retaining the first fault', async () => {
 		const store = new RecordingWorkflowStore(1)
-		const result = await createWorkflowTool(simpleDefinition('fail-once'), createWorkflowRunner(), {
-			store,
-		}).execute({}, createTestToolContext())
+		const result = await createWorkflowTool(
+			createNestedWorkflow('fail-once'),
+			createWorkflowRunner(),
+			{
+				store,
+			},
+		).execute({}, createTestToolContext())
 		expect(result).toMatchObject({
 			durable: true,
 			fault: { checkpoint: 'initial', message: 'checkpoint refused' },
@@ -1192,7 +1108,7 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 
 	it('rejects a malformed operation with this package`s TOOL ToolboxError', async () => {
 		const tool = createWorkspaceTool()
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			Promise.resolve().then(() => tool.execute({ operation: 'unknown' }, createTestToolContext())),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -1295,11 +1211,13 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
-		const error = await rejectionOf(tool.execute({}, createTestToolContext()))
+		const error = await readToolboxRejection(tool.execute({}, createTestToolContext()))
 		expect(isToolboxError(error)).toBe(true)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 
-		const emptyTask = await rejectionOf(tool.execute({ task: '' }, createTestToolContext()))
+		const emptyTask = await readToolboxRejection(
+			tool.execute({ task: '' }, createTestToolContext()),
+		)
 		expect(isToolboxError(emptyTask) ? emptyTask.code : undefined).toBe('TOOL')
 	})
 
@@ -1318,7 +1236,7 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute({ task: 'x', tools: 'not-an-array' }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -1329,7 +1247,9 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry) // no default provider configured
-		const error = await rejectionOf(tool.execute({ task: 'do it' }, createTestToolContext()))
+		const error = await readToolboxRejection(
+			tool.execute({ task: 'do it' }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 })
@@ -1339,7 +1259,9 @@ describe('createAgentTool — depth / cycle guard', () => {
 		const provider = new ScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', depth: AGENT_TOOL_DEPTH })
-		const error = await rejectionOf(tool.execute({ task: 'do it' }, createTestToolContext()))
+		const error = await readToolboxRejection(
+			tool.execute({ task: 'do it' }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
@@ -1348,7 +1270,9 @@ describe('createAgentTool — depth / cycle guard', () => {
 		const provider = new ScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
 		const tool = createAgentTool(registry, { provider: 'main', ancestry: ['agent:main'] })
-		const error = await rejectionOf(tool.execute({ task: 'do it' }, createTestToolContext()))
+		const error = await readToolboxRejection(
+			tool.execute({ task: 'do it' }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 		expect(provider.started).toBe(0)
 	})
@@ -1405,17 +1329,19 @@ describe('createAgentTool — optional conversation store', () => {
 	it('a successful delegation PERSISTS the sub-agent`s conversation snapshot into the provided store', async () => {
 		const backing = createMemoryConversationStore()
 		const seen = createRecorder<readonly [string]>()
-		const store = {
-			get: (id: string) => backing.get(id),
-			set: async (snapshot: Awaited<ReturnType<typeof backing.get>> & object) => {
-				seen.handler(snapshot.id)
-				await backing.set(snapshot)
-			},
-			delete: (id: string) => backing.delete(id),
-		}
 		const provider = new ScriptedProvider([{ content: 'delegated' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
-		const tool = createAgentTool(registry, { provider: 'main', store })
+		const tool = createAgentTool(registry, {
+			provider: 'main',
+			store: {
+				get: (id: string) => backing.get(id),
+				set: async (snapshot: Awaited<ReturnType<typeof backing.get>> & object) => {
+					seen.handler(snapshot.id)
+					await backing.set(snapshot)
+				},
+				delete: (id: string) => backing.delete(id),
+			},
+		})
 		const result = await tool.execute({ task: 'summarize the notes' }, createTestToolContext())
 		expect(result).toBe('delegated')
 		expect(seen.count).toBe(1)
@@ -1426,17 +1352,19 @@ describe('createAgentTool — optional conversation store', () => {
 	it('two delegations through the SAME store slot persist TWO distinct snapshots', async () => {
 		const backing = createMemoryConversationStore()
 		const seen = createRecorder<readonly [string]>()
-		const store = {
-			get: (id: string) => backing.get(id),
-			set: async (snapshot: Awaited<ReturnType<typeof backing.get>> & object) => {
-				seen.handler(snapshot.id)
-				await backing.set(snapshot)
-			},
-			delete: (id: string) => backing.delete(id),
-		}
 		const provider = new ScriptedProvider([{ content: 'first' }, { content: 'second' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
-		const tool = createAgentTool(registry, { provider: 'main', store })
+		const tool = createAgentTool(registry, {
+			provider: 'main',
+			store: {
+				get: (id: string) => backing.get(id),
+				set: async (snapshot: Awaited<ReturnType<typeof backing.get>> & object) => {
+					seen.handler(snapshot.id)
+					await backing.set(snapshot)
+				},
+				delete: (id: string) => backing.delete(id),
+			},
+		})
 		await tool.execute({ task: 'first task' }, createTestToolContext())
 		await tool.execute({ task: 'second task' }, createTestToolContext())
 		expect(seen.count).toBe(2)
@@ -1452,16 +1380,18 @@ describe('createAgentTool — optional conversation store', () => {
 	})
 
 	it('a store failure surfaces as the tool call`s failure through the manager envelope', async () => {
-		const failingStore = {
-			get: async () => undefined,
-			set: async () => {
-				throw new Error('store unavailable')
-			},
-			delete: async () => undefined,
-		}
 		const provider = new ScriptedProvider([{ content: 'x' }])
 		const registry = createAgentRegistry({ providers: { main: provider } })
-		const tool = createAgentTool(registry, { provider: 'main', store: failingStore })
+		const tool = createAgentTool(registry, {
+			provider: 'main',
+			store: {
+				get: async () => undefined,
+				set: async () => {
+					throw new Error('store unavailable')
+				},
+				delete: async () => undefined,
+			},
+		})
 		const manager = createToolManager()
 		manager.add(tool)
 		const result = await manager.execute({
@@ -1478,7 +1408,7 @@ describe('createAgentTool — optional conversation store', () => {
 
 describe('the workflow/workspace/agent tool factories advertise a `summary` alongside the full `description`', () => {
 	it('createWorkflowTool exposes the exact summary and keeps its full description', () => {
-		const tool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
+		const tool = createWorkflowTool(createNestedWorkflow(), createWorkflowRunner())
 		expect(tool.summary).toBe(WORKFLOW_TOOL_SUMMARY)
 		expect(tool.description).toBe(WORKFLOW_TOOL_DESCRIPTION)
 	})
@@ -1503,16 +1433,20 @@ describe('the workflow/workspace/agent tool factories advertise a `summary` alon
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const manager = createToolManager()
-		const workflowTool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
+		const workflowTool = createWorkflowTool(createNestedWorkflow(), createWorkflowRunner())
 		const workspaceTool = createWorkspaceTool()
 		const agentTool = createAgentTool(registry, { provider: 'main' })
 		manager.add([workflowTool, workspaceTool, agentTool])
 		const definitions = manager.definitions()
-		const byName = (name: string): (typeof definitions)[number] | undefined =>
-			definitions.find((definition) => definition.name === name)
-		expect(byName('workflow')?.description).toBe(WORKFLOW_TOOL_SUMMARY)
-		expect(byName('workspace')?.description).toBe(WORKSPACE_TOOL_SUMMARY)
-		expect(byName('agent')?.description).toBe(AGENT_TOOL_SUMMARY)
+		expect(definitions.find((definition) => definition.name === 'workflow')?.description).toBe(
+			WORKFLOW_TOOL_SUMMARY,
+		)
+		expect(definitions.find((definition) => definition.name === 'workspace')?.description).toBe(
+			WORKSPACE_TOOL_SUMMARY,
+		)
+		expect(definitions.find((definition) => definition.name === 'agent')?.description).toBe(
+			AGENT_TOOL_SUMMARY,
+		)
 		expect(manager.tool('workflow')?.description).toBe(WORKFLOW_TOOL_DESCRIPTION)
 		expect(manager.tool('workspace')?.description).toBe(WORKSPACE_TOOL_DESCRIPTION)
 	})
@@ -1526,7 +1460,7 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const manager = createToolManager()
-		const workflowTool = createWorkflowTool(simpleDefinition(), createWorkflowRunner())
+		const workflowTool = createWorkflowTool(createNestedWorkflow(), createWorkflowRunner())
 		const workspaceTool = createWorkspaceTool()
 		const agentTool = createAgentTool(registry, { provider: 'main' })
 		manager.add([workflowTool, workspaceTool, agentTool])
@@ -1557,7 +1491,7 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 		if (result.success) throw new Error('expected the unknown tool lookup to fail')
 		expect(result.error).toContain('nonexistent')
 
-		const direct = await rejectionOf(
+		const direct = await readToolboxRejection(
 			describeTool.execute({ name: 'nonexistent' }, createTestToolContext()),
 		)
 		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
@@ -1566,9 +1500,11 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 	it('malformed args (missing/empty name) are REJECTED with a typed TOOL ToolboxError', async () => {
 		const manager = createToolManager()
 		const describeTool = createDescribeTool(manager)
-		const missing = await rejectionOf(describeTool.execute({}, createTestToolContext()))
+		const missing = await readToolboxRejection(describeTool.execute({}, createTestToolContext()))
 		expect(isToolboxError(missing) ? missing.code : undefined).toBe('TOOL')
-		const empty = await rejectionOf(describeTool.execute({ name: '' }, createTestToolContext()))
+		const empty = await readToolboxRejection(
+			describeTool.execute({ name: '' }, createTestToolContext()),
+		)
 		expect(isToolboxError(empty) ? empty.code : undefined).toBe('TOOL')
 	})
 })
@@ -1619,7 +1555,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		aAsksB.catch(() => {})
 		await waitForDelay(0)
 
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askFromB.execute(createAskCall('a', 'confirm', 'ok?'), createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEADLOCK')
@@ -1629,7 +1565,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const manager = createTerminalManager()
 		manager.add('agent')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askTool.execute(createAskCall('ghost', 'text', 'name?'), createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -1644,7 +1580,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('reviewer', { timeout: 10, timer: timer.timer })
 		const askTool = createPromptTool({ manager, from: 'agent' })
 
-		const pending = rejectionOf(
+		const pending = readToolboxRejection(
 			askTool.execute(createAskCall('reviewer', 'text', 'name?'), createTestToolContext()),
 		)
 		await waitForDelay(0)
@@ -1772,7 +1708,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const [form] = manager.pending('reviewer')
 		if (form === undefined) throw new Error('expected a parked form')
 
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			answerTool.execute({ operation: 'answer', id: form.id, values: {} }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('ANSWER')
@@ -1792,7 +1728,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		const manager = createTerminalManager()
 		manager.add('reviewer')
 		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			answerTool.execute(
 				{ operation: 'answer', id: 'ghost-id', values: { value: true } },
 				createTestToolContext(),
@@ -1833,7 +1769,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askTool.execute(
 				{
 					to: 'reviewer',
@@ -1856,7 +1792,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askTool.execute(
 				{
 					to: 'reviewer',
@@ -1888,7 +1824,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		await waitForDelay(0)
 
 		expect(manager.pending('reviewer')).toEqual([])
-		const error = await rejectionOf(execution)
+		const error = await readToolboxRejection(execution)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(error instanceof Error ? error.message : '').toBe(
 			"select field 'value' has no enabled choices",
@@ -1896,34 +1832,14 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 	})
 
 	it('a generic non-TARGET/DEADLOCK/EXPIRE TerminalError surfaces as TOOL with the generic asking-failed message', async () => {
-		const emitter: TerminalManagerInterface['emitter'] = {
-			destroyed: false,
-			on: () => {},
-			once: () => {},
-			off: () => {},
-			emit: () => {},
-			count: () => 0,
-			clear: () => {},
-			destroy: () => {},
-		}
-		const stub: TerminalManagerInterface = {
-			emitter,
-			count: 0,
-			terminal: () => undefined,
-			terminals: () => [],
-			add: () => {
-				throw new Error('not implemented')
+		const manager = createTerminalManager()
+		manager.add('b', {
+			timer: () => {
+				throw new TerminalError('DRIVER', 'driver failed')
 			},
-			ask: rejectTerminalAsk,
-			pending: () => [],
-			answer: () => ({ success: false, error: { reason: 'unknown' } }),
-			open: async () => undefined,
-			save: async () => false,
-			remove: () => false,
-			destroy: () => {},
-		}
-		const askTool = createPromptTool({ manager: stub, from: 'a' })
-		const error = await rejectionOf(
+		})
+		const askTool = createPromptTool({ manager, from: 'a' })
+		const error = await readToolboxRejection(
 			askTool.execute(createAskCall('b', 'text', 'name?'), createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -1941,7 +1857,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askTool.execute({ schema: buildFormSchema('text', 'hi') }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -1953,7 +1869,9 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(askTool.execute({ to: 'reviewer' }, createTestToolContext()))
+		const error = await readToolboxRejection(
+			askTool.execute({ to: 'reviewer' }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
@@ -1963,7 +1881,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askTool.execute(
 				{ to: 'reviewer', schema: { fields: 'not-an-array' } },
 				createTestToolContext(),
@@ -1978,7 +1896,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askTool.execute(
 				{
 					to: 'reviewer',
@@ -2035,7 +1953,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askTool.execute(
 				{
 					to: 'reviewer',
@@ -2053,7 +1971,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askTool.execute(
 				{
 					to: 'reviewer',
@@ -2076,7 +1994,7 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askTool.execute(
 				{
 					to: 'reviewer',
@@ -2095,32 +2013,23 @@ describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as type
 // ── pressure: multi-agent round — ten terminals, thirty interleaved asks ────
 
 describe('pressure: multi-agent round — ten terminals, thirty interleaved asks, deadlock, expire', () => {
-	const NAMES = Array.from({ length: 10 }, (_, i) => `t${i}`)
-
-	function buildTerminals(manager: TerminalManagerInterface): void {
-		for (const name of NAMES) manager.add(name)
-	}
-
 	it('30 interleaved asks across a lower→upper bipartite split all resolve with form values', async () => {
 		const manager = createTerminalManager()
 		buildTerminals(manager)
-		const askTools = new Map(NAMES.map((name) => [name, createPromptTool({ manager, from: name })]))
+		const askTools = new Map(
+			TOOLBOX_TERMINALS.map((name) => [name, createPromptTool({ manager, from: name })]),
+		)
 		const answerTools = new Map(
-			NAMES.map((name) => [name, createAnswerTool({ manager, to: name })]),
+			TOOLBOX_TERMINALS.map((name) => [name, createAnswerTool({ manager, to: name })]),
 		)
 
-		const lower = NAMES.slice(0, 5)
-		const upper = NAMES.slice(5, 10)
+		const lower = TOOLBOX_TERMINALS.slice(0, 5)
+		const upper = TOOLBOX_TERMINALS.slice(5, 10)
 		// 30 asks, each strictly lower → upper (bipartite — never a reverse edge, so no cycle can
 		// ever close regardless of how many are held pending simultaneously).
-		type Ask = {
-			readonly from: string
-			readonly to: string
-			readonly control: FieldControl
-			readonly values: FormValues
-		}
-		const asks: Ask[] = []
-		for (let i = 0; i < 30; i++) {
+
+		const asks: ToolboxAsk[] = []
+		for (const i of Array.from({ length: 30 }).keys()) {
 			const from = lower[i % 5]
 			const to = upper[(i + Math.floor(i / 5)) % 5]
 			if (from === undefined || to === undefined) throw new Error('unreachable')
@@ -2198,7 +2107,9 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 	it('a reciprocal ask between two agents surfaces DEADLOCK with the cycle path in context', async () => {
 		const manager = createTerminalManager()
 		buildTerminals(manager)
-		const askTools = new Map(NAMES.map((name) => [name, createPromptTool({ manager, from: name })]))
+		const askTools = new Map(
+			TOOLBOX_TERMINALS.map((name) => [name, createPromptTool({ manager, from: name })]),
+		)
 
 		const askA = askTools.get('t0')
 		const askB = askTools.get('t1')
@@ -2210,7 +2121,7 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		first.catch(() => {})
 		await waitForDelay(0)
 
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			askB.execute(createAskCall('t0', 'confirm', 'ok?'), createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEADLOCK')
@@ -2224,7 +2135,7 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		const manager = createTerminalManager()
 		manager.add('t0')
 		manager.add('t9', { timeout: 10, timer: timer.timer })
-		for (const name of NAMES.slice(1, 9)) manager.add(name)
+		for (const name of TOOLBOX_TERMINALS.slice(1, 9)) manager.add(name)
 		const askFromT0 = createPromptTool({ manager, from: 't0' })
 		const askFromT1 = createPromptTool({ manager, from: 't1' })
 
@@ -2235,7 +2146,7 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 		)
 		other.catch(() => {})
 
-		const expiring = rejectionOf(
+		const expiring = readToolboxRejection(
 			askFromT0.execute(createAskCall('t9', 'text', 'name?'), createTestToolContext()),
 		)
 		await waitForDelay(0)
@@ -2252,48 +2163,16 @@ describe('pressure: multi-agent round — ten terminals, thirty interleaved asks
 
 // Mixed bare-kind and `{type,optional}` column specs accepted by the `'create'` call-args shape,
 // mirroring stores.test.ts's `fullDefinition` fixture.
-function itemsTables(): Readonly<Record<string, unknown>> {
-	return {
-		items: {
-			columns: {
-				id: 'string',
-				name: 'string',
-				price: { primitive: 'number', optional: true },
-				active: 'boolean',
-			},
-		},
-	}
-}
-
-function itemRow(
-	id: string,
-	overrides: Readonly<Record<string, unknown>> = {},
-): Readonly<Record<string, unknown>> {
-	return { id, name: `item-${id}`, price: 10, active: true, ...overrides }
-}
 
 // Builds a LIVE `DatabaseInterface` handle directly (bypassing the tool) — used by the
 // readonly-gate suite where a pre-existing handle is the fixture.
-function buildItemsHandle(): DatabaseInterface {
-	return createDatabase({
-		driver: createMemoryDriver(),
-		tables: {
-			items: {
-				id: stringShape(),
-				name: stringShape(),
-				price: numberShape(),
-				active: booleanShape(),
-			},
-		},
-	})
-}
 
 describe('createDatabaseTool — create', () => {
 	it('happy path: mixed bare-kind and {type,optional} column specs mint a live database', async () => {
 		const tool = createDatabaseTool()
 		expect(tool.name).toBe(DATABASE_TOOL_NAME)
 		const result = await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		expect(result).toEqual({ id: 'shop', tables: ['items'] })
@@ -2302,7 +2181,7 @@ describe('createDatabaseTool — create', () => {
 	it('uses a configured generator for a row whose primary is omitted', async () => {
 		const tool = createDatabaseTool({ generator: () => 'generated' })
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		const added = await tool.execute(
@@ -2331,7 +2210,7 @@ describe('createDatabaseTool — create', () => {
 			{
 				operation: 'create',
 				id: 'shop',
-				tables: itemsTables(),
+				tables: createItemTables(),
 				indexes: { items: [['active'], ['name', 'price']] },
 				version: 2.5,
 			},
@@ -2340,13 +2219,13 @@ describe('createDatabaseTool — create', () => {
 		expect(await store.get('shop')).toEqual({
 			id: 'shop',
 			driver: 'memory',
-			tables: itemsTables(),
+			tables: createItemTables(),
 			indexes: { items: [['active'], ['name', 'price']] },
 			version: 2.5,
 		})
 
 		await tool.execute(
-			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			{ operation: 'add', id: 'shop', table: 'items', row: createItemRow('a') },
 			createTestToolContext(),
 		)
 		if (driver.metadata === undefined) throw new Error('expected MemoryDriver metadata capability')
@@ -2375,15 +2254,15 @@ describe('createDatabaseTool — create', () => {
 		const store = new DatabaseDefinitionStore(backing.table('definitions'))
 		const tool = createDatabaseTool({ store })
 
-		const createError = await rejectionOf(
+		const createError = await readToolboxRejection(
 			tool.execute(
-				{ operation: 'create', id: 'shop', tables: itemsTables() },
+				{ operation: 'create', id: 'shop', tables: createItemTables() },
 				createTestToolContext(),
 			),
 		)
 		expect(isToolboxError(createError) ? createError.code : undefined).toBe('DATABASE')
 
-		const lookupError = await rejectionOf(
+		const lookupError = await readToolboxRejection(
 			tool.execute({ operation: 'tables', id: 'shop' }, createTestToolContext()),
 		)
 		expect(isToolboxError(lookupError) ? lookupError.code : undefined).toBe('TOOL')
@@ -2403,7 +2282,7 @@ describe('createDatabaseTool — tables', () => {
 	it('lists table name/primary/columns for a created database', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		const result = await tool.execute({ operation: 'tables', id: 'shop' }, createTestToolContext())
@@ -2417,11 +2296,11 @@ describe('createDatabaseTool — get', () => {
 	it('single key resolves { row }, an array resolves { rows } with misses left absent', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
-			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			{ operation: 'add', id: 'shop', table: 'items', row: createItemRow('a') },
 			createTestToolContext(),
 		)
 
@@ -2429,7 +2308,7 @@ describe('createDatabaseTool — get', () => {
 			{ operation: 'get', id: 'shop', table: 'items', key: 'a' },
 			createTestToolContext(),
 		)
-		expect(isRecord(single) ? single.row : undefined).toEqual(itemRow('a'))
+		expect(isRecord(single) ? single.row : undefined).toEqual(createItemRow('a'))
 
 		const many = await tool.execute(
 			{
@@ -2441,7 +2320,7 @@ describe('createDatabaseTool — get', () => {
 			createTestToolContext(),
 		)
 		expect(isRecord(many) && Array.isArray(many.rows) ? many.rows : []).toEqual([
-			itemRow('a'),
+			createItemRow('a'),
 			undefined,
 		])
 	})
@@ -2451,7 +2330,7 @@ describe('createDatabaseTool — records (serialized query)', () => {
 	it('conditions/order/limit/offset are honored through the SERIALIZED query form', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
@@ -2459,7 +2338,11 @@ describe('createDatabaseTool — records (serialized query)', () => {
 				operation: 'add',
 				id: 'shop',
 				table: 'items',
-				row: [itemRow('a', { price: 5 }), itemRow('b', { price: 15 }), itemRow('c', { price: 25 })],
+				row: [
+					createItemRow('a', { price: 5 }),
+					createItemRow('b', { price: 15 }),
+					createItemRow('c', { price: 25 }),
+				],
 			},
 			createTestToolContext(),
 		)
@@ -2479,8 +2362,8 @@ describe('createDatabaseTool — records (serialized query)', () => {
 			createTestToolContext(),
 		)
 		expect(isRecord(result) && Array.isArray(result.rows) ? result.rows : []).toEqual([
-			itemRow('b', { price: 15 }),
-			itemRow('a', { price: 5 }),
+			createItemRow('b', { price: 15 }),
+			createItemRow('a', { price: 5 }),
 		])
 		expect(isRecord(result) ? result.count : undefined).toBe(2)
 		expect(isRecord(result) ? result.truncated : undefined).toBe(false)
@@ -2491,7 +2374,7 @@ describe('createDatabaseTool — count', () => {
 	it('counts rows matching a query', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
@@ -2499,7 +2382,7 @@ describe('createDatabaseTool — count', () => {
 				operation: 'add',
 				id: 'shop',
 				table: 'items',
-				row: [itemRow('a'), itemRow('b'), itemRow('c', { active: false })],
+				row: [createItemRow('a'), createItemRow('b'), createItemRow('c', { active: false })],
 			},
 			createTestToolContext(),
 		)
@@ -2520,7 +2403,7 @@ describe('createDatabaseTool — aggregate', () => {
 	it('computes all five aggregate functions over a numeric column', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
@@ -2528,7 +2411,11 @@ describe('createDatabaseTool — aggregate', () => {
 				operation: 'add',
 				id: 'shop',
 				table: 'items',
-				row: [itemRow('a', { price: 5 }), itemRow('b', { price: 15 }), itemRow('c', { price: 25 })],
+				row: [
+					createItemRow('a', { price: 5 }),
+					createItemRow('b', { price: 15 }),
+					createItemRow('c', { price: 25 }),
+				],
 			},
 			createTestToolContext(),
 		)
@@ -2561,7 +2448,7 @@ describe('createDatabaseTool — add', () => {
 	it('single row resolves { key }, an array resolves { keys }', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 
@@ -2570,7 +2457,7 @@ describe('createDatabaseTool — add', () => {
 				operation: 'add',
 				id: 'shop',
 				table: 'items',
-				row: itemRow('a'),
+				row: createItemRow('a'),
 			},
 			createTestToolContext(),
 		)
@@ -2581,7 +2468,7 @@ describe('createDatabaseTool — add', () => {
 				operation: 'add',
 				id: 'shop',
 				table: 'items',
-				row: [itemRow('b'), itemRow('c')],
+				row: [createItemRow('b'), createItemRow('c')],
 			},
 			createTestToolContext(),
 		)
@@ -2591,17 +2478,17 @@ describe('createDatabaseTool — add', () => {
 	it('a duplicate key CONFLICT re-surfaces as a typed DATABASE error with context.code CONFLICT', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
-			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			{ operation: 'add', id: 'shop', table: 'items', row: createItemRow('a') },
 			createTestToolContext(),
 		)
 
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
-				{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+				{ operation: 'add', id: 'shop', table: 'items', row: createItemRow('a') },
 				createTestToolContext(),
 			),
 		)
@@ -2614,7 +2501,7 @@ describe('createDatabaseTool — set (upsert)', () => {
 	it('inserts an absent key and replaces an existing one', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
@@ -2622,7 +2509,7 @@ describe('createDatabaseTool — set (upsert)', () => {
 				operation: 'set',
 				id: 'shop',
 				table: 'items',
-				row: itemRow('a', { price: 1 }),
+				row: createItemRow('a', { price: 1 }),
 			},
 			createTestToolContext(),
 		)
@@ -2631,7 +2518,7 @@ describe('createDatabaseTool — set (upsert)', () => {
 				operation: 'set',
 				id: 'shop',
 				table: 'items',
-				row: itemRow('a', { price: 2 }),
+				row: createItemRow('a', { price: 2 }),
 			},
 			createTestToolContext(),
 		)
@@ -2640,7 +2527,7 @@ describe('createDatabaseTool — set (upsert)', () => {
 			{ operation: 'get', id: 'shop', table: 'items', key: 'a' },
 			createTestToolContext(),
 		)
-		expect(isRecord(result) ? result.row : undefined).toEqual(itemRow('a', { price: 2 }))
+		expect(isRecord(result) ? result.row : undefined).toEqual(createItemRow('a', { price: 2 }))
 	})
 })
 
@@ -2648,7 +2535,7 @@ describe('createDatabaseTool — update', () => {
 	it('single key resolves { updated }, an array resolves { updated: [] }', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
@@ -2656,7 +2543,7 @@ describe('createDatabaseTool — update', () => {
 				operation: 'add',
 				id: 'shop',
 				table: 'items',
-				row: [itemRow('a'), itemRow('b')],
+				row: [createItemRow('a'), createItemRow('b')],
 			},
 			createTestToolContext(),
 		)
@@ -2689,15 +2576,15 @@ describe('createDatabaseTool — update', () => {
 	it('a row that fails re-validation re-surfaces as a typed DATABASE error with context.code VALIDATION', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
-			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			{ operation: 'add', id: 'shop', table: 'items', row: createItemRow('a') },
 			createTestToolContext(),
 		)
 
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
 				{
 					operation: 'update',
@@ -2718,7 +2605,7 @@ describe('createDatabaseTool — remove', () => {
 	it('single key resolves { removed }, an array resolves { removed: [] }', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
@@ -2726,7 +2613,7 @@ describe('createDatabaseTool — remove', () => {
 				operation: 'add',
 				id: 'shop',
 				table: 'items',
-				row: [itemRow('a'), itemRow('b')],
+				row: [createItemRow('a'), createItemRow('b')],
 			},
 			createTestToolContext(),
 		)
@@ -2753,13 +2640,13 @@ describe('createDatabaseTool — destroy', () => {
 	it('drops the database; a subsequent operation throws a typed TOOL "unknown database" error', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		const result = await tool.execute({ operation: 'destroy', id: 'shop' }, createTestToolContext())
 		expect(result).toEqual({ id: 'shop', destroyed: true })
 
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute({ operation: 'tables', id: 'shop' }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -2774,7 +2661,7 @@ describe('createDatabaseTool — destroy', () => {
 describe('createDatabaseTool — error paths', () => {
 	it('an unknown id (no cached handle, no store) throws a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute({ operation: 'tables', id: 'missing' }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
@@ -2782,9 +2669,9 @@ describe('createDatabaseTool — error paths', () => {
 
 	it('an unknown driver name on create throws a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
-				{ operation: 'create', id: 'shop', tables: itemsTables(), driver: 'nope' },
+				{ operation: 'create', id: 'shop', tables: createItemTables(), driver: 'nope' },
 				createTestToolContext(),
 			),
 		)
@@ -2794,12 +2681,12 @@ describe('createDatabaseTool — error paths', () => {
 	it('a duplicate create (same id twice) throws a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
-				{ operation: 'create', id: 'shop', tables: itemsTables() },
+				{ operation: 'create', id: 'shop', tables: createItemTables() },
 				createTestToolContext(),
 			),
 		)
@@ -2808,10 +2695,12 @@ describe('createDatabaseTool — error paths', () => {
 
 	it('malformed args (missing required fields) throw a typed TOOL error', async () => {
 		const tool = createDatabaseTool()
-		const error = await rejectionOf(tool.execute({ operation: 'create' }, createTestToolContext()))
+		const error = await readToolboxRejection(
+			tool.execute({ operation: 'create' }, createTestToolContext()),
+		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 
-		const badOperation = await rejectionOf(
+		const badOperation = await readToolboxRejection(
 			tool.execute({ operation: 'nope', id: 'shop' }, createTestToolContext()),
 		)
 		expect(isToolboxError(badOperation) ? badOperation.code : undefined).toBe('TOOL')
@@ -2820,10 +2709,10 @@ describe('createDatabaseTool — error paths', () => {
 	it('a row that fails validation on add re-surfaces as a typed DATABASE error with context.code VALIDATION', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
 				{
 					operation: 'add',
@@ -2847,9 +2736,9 @@ describe('createDatabaseTool — readonly gates mutations, leaves reads open', (
 		expect(DATABASE_TOOL_MUTATIONS.includes('add')).toBe(true)
 
 		const tool = createDatabaseTool({ readonly: true, databases: { shop: buildItemsHandle() } })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
-				{ operation: 'add', id: 'shop', table: 'items', row: itemRow('b') },
+				{ operation: 'add', id: 'shop', table: 'items', row: createItemRow('b') },
 				createTestToolContext(),
 			),
 		)
@@ -2862,15 +2751,15 @@ describe('createDatabaseTool — readonly gates mutations, leaves reads open', (
 		const tool = createDatabaseTool({ readonly: true, databases: { shop: handle } })
 
 		const mutations: ReadonlyArray<Readonly<Record<string, unknown>>> = [
-			{ operation: 'create', id: 'other', tables: itemsTables() },
-			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('b') },
-			{ operation: 'set', id: 'shop', table: 'items', row: itemRow('a') },
+			{ operation: 'create', id: 'other', tables: createItemTables() },
+			{ operation: 'add', id: 'shop', table: 'items', row: createItemRow('b') },
+			{ operation: 'set', id: 'shop', table: 'items', row: createItemRow('a') },
 			{ operation: 'update', id: 'shop', table: 'items', key: 'a', changes: { price: 2 } },
 			{ operation: 'remove', id: 'shop', table: 'items', key: 'a' },
 			{ operation: 'destroy', id: 'shop' },
 		]
 		for (const call of mutations) {
-			const error = await rejectionOf(tool.execute(call, createTestToolContext()))
+			const error = await readToolboxRejection(tool.execute(call, createTestToolContext()))
 			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 		}
 
@@ -2925,7 +2814,7 @@ describe('createDatabaseTool — truncation & offset paging', () => {
 	it('records over a small limit reports truncated:true, count == limit; offset paging walks the rest', async () => {
 		const tool = createDatabaseTool({ limit: 2 })
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
@@ -2933,35 +2822,39 @@ describe('createDatabaseTool — truncation & offset paging', () => {
 				operation: 'add',
 				id: 'shop',
 				table: 'items',
-				row: [itemRow('a'), itemRow('b'), itemRow('c'), itemRow('d'), itemRow('e')],
+				row: [
+					createItemRow('a'),
+					createItemRow('b'),
+					createItemRow('c'),
+					createItemRow('d'),
+					createItemRow('e'),
+				],
 			},
 			createTestToolContext(),
 		)
 
 		const collected: unknown[] = []
-		let offset = 0
-		for (let page = 0; page < 3; page++) {
+		for (const _ of Array.from({ length: 3 }).keys()) {
 			const result = await tool.execute(
 				{
 					operation: 'records',
 					id: 'shop',
 					table: 'items',
-					query: { order: [{ column: 'id', direction: 'ascending' }], offset },
+					query: { order: [{ column: 'id', direction: 'ascending' }], offset: collected.length },
 				},
 				createTestToolContext(),
 			)
 			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
 			expect(result.count).toBe(result.rows.length)
 			collected.push(...result.rows)
-			offset += result.rows.length
 			if (result.truncated !== true) break
 		}
 		expect(collected).toEqual([
-			itemRow('a'),
-			itemRow('b'),
-			itemRow('c'),
-			itemRow('d'),
-			itemRow('e'),
+			createItemRow('a'),
+			createItemRow('b'),
+			createItemRow('c'),
+			createItemRow('d'),
+			createItemRow('e'),
 		])
 
 		const first = await tool.execute(
@@ -2984,14 +2877,14 @@ describe('createDatabaseTool — lazy re-mint over a shared store', () => {
 		// A shared driver instance (not a fresh one per tool) so the re-minted handle reads the
 		// SAME underlying storage — proving the re-mint itself works, not that it doesn't throw.
 		const sharedDriver = createMemoryDriver()
-		const drivers = { memory: () => sharedDriver }
+		const drivers = createSharedMemoryDrivers(sharedDriver)
 		const toolA = createDatabaseTool({ store, drivers })
 		await toolA.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await toolA.execute(
-			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			{ operation: 'add', id: 'shop', table: 'items', row: createItemRow('a') },
 			createTestToolContext(),
 		)
 
@@ -3001,7 +2894,7 @@ describe('createDatabaseTool — lazy re-mint over a shared store', () => {
 			createTestToolContext(),
 		)
 		expect(isRecord(result) && Array.isArray(result.rows) ? result.rows : []).toEqual([
-			itemRow('a'),
+			createItemRow('a'),
 		])
 
 		await toolB.execute({ operation: 'destroy', id: 'shop' }, createTestToolContext())
@@ -3013,12 +2906,9 @@ describe('createDatabaseTool — timeout option threads without breaking a norma
 	it('rejects negative, fractional, and unsafe timeouts at construction', () => {
 		const invalid: readonly number[] = [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]
 		for (const timeout of invalid) {
-			let error: unknown
-			try {
+			const error = captureError(() => {
 				createDatabaseTool({ timeout })
-			} catch (caught) {
-				error = caught
-			}
+			})
 			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 			expect(isToolboxError(error) ? error.context?.timeout : undefined).toBe(timeout)
 		}
@@ -3027,11 +2917,11 @@ describe('createDatabaseTool — timeout option threads without breaking a norma
 	it('a configured timeout does not interfere with an ordinary create/add/records round trip', async () => {
 		const tool = createDatabaseTool({ timeout: 5_000 })
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 		await tool.execute(
-			{ operation: 'add', id: 'shop', table: 'items', row: itemRow('a') },
+			{ operation: 'add', id: 'shop', table: 'items', row: createItemRow('a') },
 			createTestToolContext(),
 		)
 		const result = await tool.execute(
@@ -3039,7 +2929,7 @@ describe('createDatabaseTool — timeout option threads without breaking a norma
 			createTestToolContext(),
 		)
 		expect(isRecord(result) && Array.isArray(result.rows) ? result.rows : []).toEqual([
-			itemRow('a'),
+			createItemRow('a'),
 		])
 	})
 })
@@ -3048,15 +2938,16 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice
 	it('exact counts survive the round trip', async () => {
 		const tool = createDatabaseTool({ limit: 100 })
 		await tool.execute(
-			{ operation: 'create', id: 'shop', tables: itemsTables() },
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
 			createTestToolContext(),
 		)
 
 		const total = 500
 		const batchSize = 50
-		for (let start = 0; start < total; start += batchSize) {
+		for (const batchIndex of Array.from({ length: total / batchSize }).keys()) {
+			const start = batchIndex * batchSize
 			const batch = Array.from({ length: batchSize }, (_unused, offset) =>
-				itemRow(String(start + offset).padStart(4, '0')),
+				createItemRow(String(start + offset).padStart(4, '0')),
 			)
 			const added = await tool.execute(
 				{ operation: 'add', id: 'shop', table: 'items', row: batch },
@@ -3066,20 +2957,18 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice
 		}
 
 		const collected: unknown[] = []
-		let offset = 0
 		for (;;) {
 			const result = await tool.execute(
 				{
 					operation: 'records',
 					id: 'shop',
 					table: 'items',
-					query: { order: [{ column: 'id', direction: 'ascending' }], offset },
+					query: { order: [{ column: 'id', direction: 'ascending' }], offset: collected.length },
 				},
 				createTestToolContext(),
 			)
 			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
 			collected.push(...result.rows)
-			offset += result.rows.length
 			if (result.truncated !== true) break
 		}
 		expect(collected).toHaveLength(total)
@@ -3119,7 +3008,7 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice
 			},
 			createTestToolContext(),
 		)
-		expect(isRecord(untouchedRow) ? untouchedRow.row : undefined).toEqual(itemRow('0499'))
+		expect(isRecord(untouchedRow) ? untouchedRow.row : undefined).toEqual(createItemRow('0499'))
 
 		const updatedRow = await tool.execute(
 			{
@@ -3131,7 +3020,7 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice
 			createTestToolContext(),
 		)
 		expect(isRecord(updatedRow) ? updatedRow.row : undefined).toEqual(
-			itemRow('0000', { active: false }),
+			createItemRow('0000', { active: false }),
 		)
 
 		const destroyed = await tool.execute(
@@ -3147,56 +3036,6 @@ describe('pressure: createDatabaseTool — 500-row batch add, full paging, slice
 // A shared 4-table relation graph: `accounts` has-many `contacts` and has-through `reps` through
 // the `accountReps` junction; `contacts` belongs-to `account`; `reps` has-through `accounts`
 // through the SAME junction (the inverse side) — enough shapes to exercise belongs/many/through.
-function buildRelationDatabase(): DatabaseInterface {
-	return createDatabase({
-		driver: createMemoryDriver(),
-		tables: {
-			accounts: { id: stringShape(), name: stringShape() },
-			contacts: { id: stringShape(), name: stringShape(), accountId: stringShape() },
-			reps: { id: stringShape(), name: stringShape() },
-			accountReps: { id: stringShape(), accountId: stringShape(), repId: stringShape() },
-		},
-	})
-}
-
-function buildRelationManager(): RelationManagerInterface {
-	return createRelationManager({
-		database: buildRelationDatabase(),
-		relations: {
-			accounts: {
-				contacts: hasMany('accountId'),
-				reps: hasThrough('accountReps', 'accountId', 'repId', 'reps'),
-			},
-			contacts: { account: belongsTo('accountId', 'accounts') },
-			reps: { accounts: hasThrough('accountReps', 'repId', 'accountId', 'accounts') },
-		},
-	})
-}
-
-async function seedAccount(
-	manager: RelationManagerInterface,
-	id: string,
-	name = `account-${id}`,
-): Promise<void> {
-	await manager.model('accounts').table.set({ id, name })
-}
-
-async function seedContact(
-	manager: RelationManagerInterface,
-	id: string,
-	accountId: string,
-	name = `contact-${id}`,
-): Promise<void> {
-	await manager.model('contacts').table.set({ id, name, accountId })
-}
-
-async function seedRep(
-	manager: RelationManagerInterface,
-	id: string,
-	name = `rep-${id}`,
-): Promise<void> {
-	await manager.model('reps').table.set({ id, name })
-}
 
 describe('createRelationTool — manager resolution', () => {
 	it('a single registered manager is used by default when the call omits `manager`', async () => {
@@ -3237,7 +3076,7 @@ describe('createRelationTool — manager resolution', () => {
 	it('an unknown `manager` name throws a typed TOOL error listing the registered manager keys', async () => {
 		const manager = buildRelationManager()
 		const tool = createRelationTool({ managers: { shop: manager } })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
 				{
 					operation: 'load',
@@ -3257,7 +3096,7 @@ describe('createRelationTool — manager resolution', () => {
 		const shop = buildRelationManager()
 		const other = buildRelationManager()
 		const tool = createRelationTool({ managers: { shop, other } })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
 				{ operation: 'load', model: 'accounts', key: 'a1', include: [] },
 				createTestToolContext(),
@@ -3272,7 +3111,7 @@ describe('createRelationTool — model resolution', () => {
 	it('an unknown `model` name throws a typed TOOL error listing the registered model names', async () => {
 		const manager = buildRelationManager()
 		const tool = createRelationTool({ managers: { shop: manager } })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
 				{ operation: 'load', model: 'ghost', key: 'a1', include: [] },
 				createTestToolContext(),
@@ -3399,8 +3238,7 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 		for (const id of ['a1', 'a2', 'a3', 'a4', 'a5']) await seedAccount(manager, id)
 		const tool = createRelationTool({ managers: { shop: manager }, limit: 2 })
 		const collected: unknown[] = []
-		let offset = 0
-		for (let page = 0; page < 3; page++) {
+		for (const _ of Array.from({ length: 3 }).keys()) {
 			const result = await tool.execute(
 				{
 					operation: 'find',
@@ -3408,13 +3246,12 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 					include: [],
 					sort: 'id',
 					direction: 'ascending',
-					offset,
+					offset: collected.length,
 				},
 				createTestToolContext(),
 			)
 			if (!isRecord(result) || !Array.isArray(result.rows)) throw new Error('unreachable')
 			collected.push(...result.rows)
-			offset += result.rows.length
 			if (result.truncated !== true) break
 		}
 		expect(collected.map((row) => (isRecord(row) ? row.id : undefined))).toEqual([
@@ -3519,7 +3356,7 @@ describe('createRelationTool — depth cap', () => {
 		const manager = buildRelationManager()
 		await seedAccount(manager, 'a1')
 		const tool = createRelationTool({ managers: { shop: manager }, depth: 1 })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
 				{
 					operation: 'load',
@@ -3540,7 +3377,7 @@ describe('createRelationTool — error mapping (RelationError → typed RELATION
 		await seedAccount(manager, 'a1')
 		await seedContact(manager, 'c1', 'a1')
 		const tool = createRelationTool({ managers: { shop: manager } })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
 				{
 					operation: 'link',
@@ -3560,7 +3397,7 @@ describe('createRelationTool — error mapping (RelationError → typed RELATION
 		const manager = buildRelationManager()
 		await seedAccount(manager, 'a1')
 		const tool = createRelationTool({ managers: { shop: manager } })
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			tool.execute(
 				{
 					operation: 'link',
@@ -3592,7 +3429,7 @@ describe('pressure: createRelationTool — 200-parent seed, nested load, 50-row 
 	it('nested load resolves across the full set and link/unlink counts stay exact at every step', async () => {
 		const manager = buildRelationManager()
 		const parentCount = 200
-		for (let i = 0; i < parentCount; i++) {
+		for (const i of Array.from({ length: parentCount }).keys()) {
 			const id = `a${String(i).padStart(4, '0')}`
 			await seedAccount(manager, id)
 			await seedContact(manager, `c${String(i).padStart(4, '0')}`, id)
@@ -3626,14 +3463,14 @@ describe('pressure: createRelationTool — 200-parent seed, nested load, 50-row 
 		)
 		for (const id of repIds) await seedRep(manager, id)
 
-		for (let i = 0; i < repIds.length; i++) {
+		for (const [i, target] of repIds.entries()) {
 			await tool.execute(
 				{
 					operation: 'link',
 					model: 'accounts',
 					key: 'hub',
 					relation: 'reps',
-					target: repIds[i],
+					target,
 				},
 				createTestToolContext(),
 			)
@@ -3649,14 +3486,14 @@ describe('pressure: createRelationTool — 200-parent seed, nested load, 50-row 
 			expect(isRecord(result) ? result.count : undefined).toBe(i + 1)
 		}
 
-		for (let i = 0; i < repIds.length; i++) {
+		for (const [i, target] of repIds.entries()) {
 			await tool.execute(
 				{
 					operation: 'unlink',
 					model: 'accounts',
 					key: 'hub',
 					relation: 'reps',
-					target: repIds[i],
+					target,
 				},
 				createTestToolContext(),
 			)
@@ -3753,16 +3590,18 @@ describe('createInferTool', () => {
 		if (result.success) throw new Error('expected empty samples to fail')
 		expect(result.error).toBeDefined()
 
-		const direct = await rejectionOf(tool.execute({ samples: [] }, createTestToolContext()))
+		const direct = await readToolboxRejection(
+			tool.execute({ samples: [] }, createTestToolContext()),
+		)
 		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
 	})
 
 	it('malformed args (missing samples) THROW a typed TOOL ToolboxError', async () => {
 		const tool = createInferTool()
-		const missing = await rejectionOf(tool.execute({}, createTestToolContext()))
+		const missing = await readToolboxRejection(tool.execute({}, createTestToolContext()))
 		expect(isToolboxError(missing) ? missing.code : undefined).toBe('TOOL')
 
-		const wrongType = await rejectionOf(
+		const wrongType = await readToolboxRejection(
 			tool.execute({ samples: 'not-an-array' }, createTestToolContext()),
 		)
 		expect(isToolboxError(wrongType) ? wrongType.code : undefined).toBe('TOOL')
@@ -4019,7 +3858,7 @@ describe('createInferTool', () => {
 		if (result.success) throw new Error('expected malformed candidates to fail')
 		expect(result.error).toBeDefined()
 
-		const direct = await rejectionOf(
+		const direct = await readToolboxRejection(
 			tool.execute({ samples: [{ id: 1 }], candidates: 'nope' }, createTestToolContext()),
 		)
 		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
@@ -4048,14 +3887,14 @@ describe('createEndpointTool', () => {
 	})
 
 	it('validate: false PASSTHROUGH: the handler receives the model-supplied args EXACTLY (same reference), even when they diverge from the inferred schema', async () => {
-		let received: unknown
+		const received = new ToolboxValue<unknown>(undefined)
 		const tool = createEndpointTool(
 			{
 				name: 'echo',
 				description: 'Echoes call args.',
 				samples: [{ id: '1' }],
 				execute: (args) => {
-					received = args
+					received.value = args
 					return null
 				},
 			},
@@ -4063,7 +3902,7 @@ describe('createEndpointTool', () => {
 		)
 		const args = { id: 'unrelated-shape', extra: { nested: true }, list: [1, 2, 3] }
 		await tool.execute(args, createTestToolContext())
-		expect(received).toBe(args)
+		expect(received.value).toBe(args)
 	})
 
 	// Each wrapper body forwards the execution context on its own — the validating one alongside the
@@ -4105,7 +3944,7 @@ describe('createEndpointTool', () => {
 	})
 
 	it('default validation COERCES a scalar to its inferred type before the handler runs', async () => {
-		let received: unknown
+		const received = new ToolboxValue<unknown>(undefined)
 		const tool = createEndpointTool({
 			name: 'lookupUser',
 			description: 'Look up a user by id.',
@@ -4114,12 +3953,12 @@ describe('createEndpointTool', () => {
 				{ id: '2', name: 'b' },
 			],
 			execute: (args) => {
-				received = args
+				received.value = args
 				return args
 			},
 		})
 		await tool.execute({ id: 7, name: 'x' }, createTestToolContext())
-		expect(received).toEqual({ id: '7', name: 'x' })
+		expect(received.value).toEqual({ id: '7', name: 'x' })
 	})
 
 	it('a nonconforming call THROWS a typed TOOL ToolboxError carrying non-empty explain faults', async () => {
@@ -4132,7 +3971,7 @@ describe('createEndpointTool', () => {
 			],
 			execute: (args) => args,
 		})
-		const error = await rejectionOf(
+		const error = await readToolboxRejection(
 			Promise.resolve().then(() =>
 				tool.execute({ id: true, name: 'Ada' }, createTestToolContext()),
 			),
@@ -4219,17 +4058,14 @@ describe('createEndpointTool', () => {
 	})
 
 	it('empty samples THROWS a typed TOOL ToolboxError at construction', () => {
-		let caught: unknown
-		try {
+		const caught = captureError(() => {
 			createEndpointTool({
 				name: 'empty',
 				description: 'No samples.',
 				samples: [],
 				execute: (args) => args,
 			})
-		} catch (error) {
-			caught = error
-		}
+		})
 		expect(isToolboxError(caught)).toBe(true)
 		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
 	})
@@ -4287,14 +4123,14 @@ describe('createEndpointTool', () => {
 	})
 
 	it('non-object root samples (bare strings), validate: false: the handler receives raw args unchecked', async () => {
-		let received: unknown
+		const received = new ToolboxValue<unknown>(undefined)
 		const tool = createEndpointTool(
 			{
 				name: 'text',
 				description: 'Bare string samples.',
 				samples: ['a', 'b', 'c'],
 				execute: (args) => {
-					received = args
+					received.value = args
 					return 'ok'
 				},
 			},
@@ -4302,13 +4138,13 @@ describe('createEndpointTool', () => {
 		)
 		const args = { value: 'hello', unrelated: true }
 		await tool.execute(args, createTestToolContext())
-		expect(received).toEqual(args)
+		expect(received.value).toEqual(args)
 	})
 
 	// ── default validation (v1–v8) ──────────────────────────────────────────
 
 	it('(v1) conforming args parse and reach the handler as a record deep-equal to the sent args', async () => {
-		let received: unknown
+		const received = new ToolboxValue<unknown>(undefined)
 		const tool = createEndpointTool({
 			name: 'lookupUser',
 			description: 'Look up a user by id.',
@@ -4317,14 +4153,14 @@ describe('createEndpointTool', () => {
 				{ id: '2', name: 'Bob' },
 			],
 			execute: (args) => {
-				received = args
+				received.value = args
 				return args
 			},
 		})
 		const args = { id: '1', name: 'Ada' }
 		await tool.execute(args, createTestToolContext())
 		// Normalization yields a parsed COPY, not the same reference — assert deep-equal.
-		expect(received).toEqual(args)
+		expect(received.value).toEqual(args)
 	})
 
 	it('(v2) nonconforming args (wrong property type) reject through the manager error envelope exactly once; construction never throws', async () => {
@@ -4353,112 +4189,98 @@ describe('createEndpointTool', () => {
 		// them rather than rejecting the whole object. So the default-validation endpoint below still
 		// ACCEPTS a call with an extra key, but the handler receives the key stripped; only
 		// `validate: false` passes it through raw.
-		const definition = {
-			name: 'lookupUser',
-			description: 'Look up a user by id.',
-			samples: [{ id: '1', name: 'Ada' }],
-			execute: (args: Readonly<Record<string, unknown>>) => args,
-		}
+		const definition = createLookupEndpointDefinition()
 		const strict = createEndpointTool(definition)
-		let caught: unknown
-		try {
+		const caught = await captureToolboxFailure(async () => {
 			await strict.execute({ id: '1' }, createTestToolContext())
-		} catch (error) {
-			caught = error
-		}
+		})
 		expect(isToolboxError(caught)).toBe(true)
 		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
 
-		let strictReceived: unknown
+		const strictReceived = new ToolboxValue<unknown>(undefined)
 		const strictWithRecorder = createEndpointTool({
 			...definition,
 			execute: (args) => {
-				strictReceived = args
+				strictReceived.value = args
 				return args
 			},
 		})
 		await strictWithRecorder.execute({ id: '1', name: 'Ada', extra: true }, createTestToolContext())
-		expect(strictReceived).toEqual({ id: '1', name: 'Ada' })
+		expect(strictReceived.value).toEqual({ id: '1', name: 'Ada' })
 
-		let received: unknown
+		const received = new ToolboxValue<unknown>(undefined)
 		const lenient = createEndpointTool(
 			{
 				...definition,
 				execute: (args) => {
-					received = args
+					received.value = args
 					return args
 				},
 			},
 			{ validate: false },
 		)
 		await lenient.execute({ id: '1', name: 'Ada', extra: true }, createTestToolContext())
-		expect(received).toEqual({ id: '1', name: 'Ada', extra: true })
+		expect(received.value).toEqual({ id: '1', name: 'Ada', extra: true })
 	})
 
 	it('(v4) enum enforcement: an { enum: true } endpoint over repeated literal samples rejects an out-of-enum value and accepts an in-enum one', async () => {
 		const samples = [{ status: 'open' }, { status: 'open' }, { status: 'closed' }]
-		let received: unknown
+		const received = new ToolboxValue<unknown>(undefined)
 		const tool = createEndpointTool(
 			{
 				name: 'status',
 				description: 'Status endpoint.',
 				samples,
 				execute: (args) => {
-					received = args
+					received.value = args
 					return args
 				},
 			},
 			{ enum: true },
 		)
 		await tool.execute({ status: 'closed' }, createTestToolContext())
-		expect(received).toEqual({ status: 'closed' })
-		let caught: unknown
-		try {
+		expect(received.value).toEqual({ status: 'closed' })
+		const caught = await captureToolboxFailure(async () => {
 			await tool.execute({ status: 'pending' }, createTestToolContext())
-		} catch (error) {
-			caught = error
-		}
+		})
 		expect(isToolboxError(caught)).toBe(true)
 	})
 
 	it('(v5) format is NOT enforced: a { format: true } endpoint over email-shaped samples still accepts a non-email string', async () => {
-		let received: unknown
+		const received = new ToolboxValue<unknown>(undefined)
 		const tool = createEndpointTool(
 			{
 				name: 'notify',
 				description: 'Notify by email.',
 				samples: [{ email: 'ada@example.com' }, { email: 'bob@example.com' }],
 				execute: (args) => {
-					received = args
+					received.value = args
 					return args
 				},
 			},
 			{ format: true },
 		)
 		await tool.execute({ email: 'not-an-email' }, createTestToolContext())
-		expect(received).toEqual({ email: 'not-an-email' })
+		expect(received.value).toEqual({ email: 'not-an-email' })
 	})
 
 	it('(v6) value-wrap enforcement: bare-string samples under default validation accept { value: string } and reject { value: boolean }', async () => {
-		let received: unknown
+		const received = new ToolboxValue<unknown>(undefined)
 		const tool = createEndpointTool({
 			name: 'text',
 			description: 'Bare string samples.',
 			samples: ['a', 'b', 'c'],
 			execute: (args) => {
-				received = args
+				received.value = args
 				return args
 			},
 		})
 		await tool.execute({ value: 'hello' }, createTestToolContext())
-		expect(received).toEqual({ value: 'hello' })
-		let caught: unknown
-		try {
+		expect(received.value).toEqual({ value: 'hello' })
+		const caught = await captureToolboxFailure(async () => {
 			// A boolean does not coerce to a string (unlike a number) — a genuine type mismatch.
 			await tool.execute({ value: true }, createTestToolContext())
-		} catch (error) {
-			caught = error
-		}
+		})
 		expect(isToolboxError(caught)).toBe(true)
 	})
 
@@ -4505,7 +4327,7 @@ describe('createEndpointTool', () => {
 		})
 		const args = { id: '1', name: 'Ada' }
 		const results: unknown[] = []
-		for (let i = 0; i < 200; i++) {
+		for (const _ of Array.from({ length: 200 }).keys()) {
 			results.push(await tool.execute(args, createTestToolContext()))
 		}
 		const first = results[0]

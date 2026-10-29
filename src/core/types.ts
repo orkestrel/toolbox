@@ -468,7 +468,7 @@ export type ColumnPrimitive = 'string' | 'integer' | 'number' | 'boolean'
  */
 export type ColumnSpec =
 	| ColumnPrimitive
-	| Readonly<{ primitive: ColumnPrimitive; optional?: boolean }>
+	| Readonly<{ readonly primitive: ColumnPrimitive; readonly optional?: boolean }>
 
 /**
  * Represents a database's table layout — one entry per table, each a flat map of column name to
@@ -476,7 +476,7 @@ export type ColumnSpec =
  * compiles into an `@orkestrel/database` `TableMap`.
  */
 export type TableSpec = Readonly<
-	Record<string, Readonly<{ columns: Readonly<Record<string, ColumnSpec>> }>>
+	Record<string, Readonly<{ readonly columns: Readonly<Record<string, ColumnSpec>> }>>
 >
 
 /**
@@ -532,13 +532,15 @@ export interface DefinitionStoreInterface {
 export interface DatabaseQueryInput {
 	readonly conditions?: ReadonlyArray<
 		Readonly<{
-			column: string
-			operator: Condition['operator']
-			values: readonly unknown[]
-			connector?: ConditionConnector
+			readonly column: string
+			readonly operator: Condition['operator']
+			readonly values: readonly unknown[]
+			readonly connector?: ConditionConnector
 		}>
 	>
-	readonly order?: ReadonlyArray<Readonly<{ column: string; direction: OrderDirection }>>
+	readonly order?: ReadonlyArray<
+		Readonly<{ readonly column: string; readonly direction: OrderDirection }>
+	>
 	readonly limit?: number
 	readonly offset?: number
 }

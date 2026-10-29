@@ -9,6 +9,7 @@ import type { TestContext } from 'vitest'
 import { isArray, isObject, isString } from '@orkestrel/contract'
 import { spawnSync } from 'node:child_process'
 import {
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -31,7 +32,10 @@ const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 // compiler majors this toolchain supports, and its in-process API is not. It is
 // resolved from the workspace under proof, so a consumer of the packed artifact is
 // checked by the same compiler that workspace's own `check` script runs.
-const TSC = createRequire(join(ROOT, 'package.json')).resolve('typescript/bin/tsc')
+const TSC = join(
+	dirname(createRequire(join(ROOT, 'package.json')).resolve('typescript/package.json')),
+	'bin/tsc',
+)
 // Windows needs a shell to launch a `.cmd`: Node refuses one directly since the
 // batch-argument hardening, and `spawnSync` returns `EINVAL` with a null status
 // rather than an exit code a caller can read. Every following argument is a literal or
@@ -190,13 +194,18 @@ function isNames(value: unknown): value is readonly string[] {
 // package and a target containing a dot, parent, or node_modules segment during
 // package-target resolution. A later module-resolution failure is not the same
 // thing: an array falls through the former and keeps the latter.
+function decodePackageSegment(segment: string): string {
+	try {
+		return decodeURIComponent(segment)
+	} catch {
+		return segment
+	}
+}
+
 function isPackageTarget(target: string): boolean {
 	if (!target.startsWith('./')) return false
 	for (const segment of target.slice(2).split(/[\\/]/u)) {
-		let decoded = segment
-		try {
-			decoded = decodeURIComponent(segment)
-		} catch {}
+		const decoded = decodePackageSegment(segment)
 		const normalized = decoded.toLowerCase()
 		if (normalized === '.' || normalized === '..' || normalized === 'node_modules') return false
 	}
@@ -284,11 +293,16 @@ function matchesFile(path: string): boolean {
 // the containing condition or fallback list unresolved, so the walk continues.
 function targetToDeclaration(target: string, installed: string): string | undefined {
 	if (!isPackageTarget(target)) return undefined
-	let declaration = target
-	if (target.endsWith('.cjs')) declaration = `${target.slice(0, -4)}.d.cts`
-	else if (target.endsWith('.mjs')) declaration = `${target.slice(0, -4)}.d.mts`
-	else if (target.endsWith('.js')) declaration = `${target.slice(0, -3)}.d.ts`
-	else if (!isDeclaration(target)) return undefined
+	const declaration = target.endsWith('.cjs')
+		? `${target.slice(0, -4)}.d.cts`
+		: target.endsWith('.mjs')
+			? `${target.slice(0, -4)}.d.mts`
+			: target.endsWith('.js')
+				? `${target.slice(0, -3)}.d.ts`
+				: isDeclaration(target)
+					? target
+					: undefined
+	if (declaration === undefined) return undefined
 	return matchesFile(join(installed, declaration)) ? declaration : undefined
 }
 
@@ -319,9 +333,25 @@ function resolveDeclaration(
 // The nearest package scope that decides a `.d.ts` declaration's module format. A
 // physical nested manifest starts a scope even when it omits `type` or cannot be
 // parsed. A directory at that spelling is not a manifest, so the walk continues.
+class PackageAncestors implements IterableIterator<string> {
+	#directory: string | undefined
+	constructor(directory: string) {
+		this.#directory = directory
+	}
+	[Symbol.iterator](): IterableIterator<string> {
+		return this
+	}
+	next(): IteratorResult<string> {
+		const directory = this.#directory
+		if (directory === undefined) return { done: true, value: undefined }
+		const parent = dirname(directory)
+		this.#directory = parent === directory ? undefined : parent
+		return { done: false, value: directory }
+	}
+}
+
 function readPackageType(installed: string, target: string): unknown {
-	let directory = dirname(join(installed, target))
-	while (true) {
+	for (const directory of new PackageAncestors(dirname(join(installed, target)))) {
 		const path = join(directory, 'package.json')
 		if (matchesFile(path)) {
 			try {
@@ -332,9 +362,6 @@ function readPackageType(installed: string, target: string): unknown {
 			}
 		}
 		if (directory === installed) return undefined
-		const parent = dirname(directory)
-		if (parent === directory) return undefined
-		directory = parent
 	}
 }
 
@@ -771,6 +798,20 @@ function requireStage(context: TestContext): Stage {
 }
 
 describe('installed package consumer', () => {
+	it('recognizes branded errors across independent installed module copies [requires the registry]', (context) => {
+		const stage = requireStage(context)
+		const destination = join(stage.consumer, 'node_modules', '@orkestrel', 'toolbox-copy')
+		cpSync(stage.installed, destination, { recursive: true })
+		const driver = join(stage.consumer, 'errors.mjs')
+		writeFile(
+			driver,
+			"import assert from 'node:assert/strict'\nimport { createRequire } from 'node:module'\nconst require = createRequire(import.meta.url)\nconst originals = await import('@orkestrel/toolbox')\nconst copied = await import('@orkestrel/toolbox-copy')\nconst entries = [originals, require('@orkestrel/toolbox'), copied, require('@orkestrel/toolbox-copy')]\nassert.equal(new Set(entries.map(entry => entry.ToolboxError)).size, entries.length)\nfor (const source of entries) {\n const error = new source.ToolboxError('TOOL', 'failure', { detail: 1 })\n class Derived extends source.ToolboxError {}\n const subclass = new Derived('DEPTH', 'depth')\n subclass.name = 'Derived'\n const key = Symbol.for('@orkestrel/toolbox.ToolboxError')\n assert.deepEqual(Object.getOwnPropertyDescriptor(error, key), { value: error, enumerable: false, writable: false, configurable: false })\n for (const target of entries) {\n  assert.equal(target.isToolboxError(error), true)\n  assert.equal(target.isToolboxError(subclass), true)\n  const lookalike = Object.assign(new Error('failure'), { code: 'TOOL' })\n  assert.equal(target.isToolboxError(lookalike), false)\n  assert.equal(target.isToolboxError(new Proxy(error, {})), false)\n  const branded = {}\n  Object.defineProperty(branded, key, { value: branded })\n  assert.equal(target.isToolboxError(branded), false)\n  for (const code of ['TOOL', 'DEPTH', 'DEADLOCK', 'EXPIRE', 'ANSWER', 'DATABASE', 'RELATION']) {\n   assert.equal(target.isToolboxError(new source.ToolboxError(code, 'failure')), true)\n  }\n  class Context {}\n  for (const context of [new Context(), () => undefined, [], {}]) {\n   assert.equal(target.isToolboxError(new source.ToolboxError('TOOL', 'failure', context)), true)\n  }\n  for (const context of [null, 7, false, 'invalid']) {\n   assert.equal(target.isToolboxError(new source.ToolboxError('TOOL', 'failure', context)), false)\n  }\n  assert.equal(target.isToolboxError(new source.ToolboxError('INVALID', 'failure')), false)\n }\n}\n",
+		)
+		const result = runNode([driver], stage.consumer)
+		expect(readOutput(result)).toBe('')
+		expect(result.status).toBe(0)
+	})
+
 	it('packs one archive and installs it in isolation [requires the registry]', (context) => {
 		const stage = requireStage(context)
 		expect(stage.archives).toHaveLength(1)

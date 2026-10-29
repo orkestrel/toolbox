@@ -1,5 +1,5 @@
 import type { ToolboxErrorCode } from './types.js'
-import { isInstance } from '@orkestrel/contract'
+import { INTRINSICS, holds, isFunction, isObject } from '@orkestrel/contract'
 
 // Toolbox errors — one error class per domain this package mints its own error for.
 // `@orkestrel/workflow`'s `WorkflowError` and `@orkestrel/workspace`'s `WorkspaceError` already
@@ -45,6 +45,7 @@ export class ToolboxError extends Error {
 		context?: Readonly<Record<string, unknown>>,
 	) {
 		super(message)
+		INTRINSICS.define(this, Symbol.for('@orkestrel/toolbox.ToolboxError'), { value: this })
 		this.name = 'ToolboxError'
 		this.code = code
 		if (context !== undefined) this.context = context
@@ -53,6 +54,10 @@ export class ToolboxError extends Error {
 
 /**
  * Narrows an unknown caught value to a {@link ToolboxError}.
+ *
+ * @remarks
+ * Recognizes the self-brand across package copies and subclasses without requiring a name.
+ * Rejects transparent proxies and validates the code and optional context.
  *
  * @param value - The value to test (typically a `catch` binding)
  * @returns True if `value` is an {@link ToolboxError}; false otherwise
@@ -69,5 +74,26 @@ export class ToolboxError extends Error {
  * ```
  */
 export function isToolboxError(value: unknown): value is ToolboxError {
-	return isInstance(value, ToolboxError)
+	return holds(() => {
+		if (
+			!(
+				value instanceof Error &&
+				INTRINSICS.prototype(value) !== Error.prototype &&
+				INTRINSICS.describe(value, Symbol.for('@orkestrel/toolbox.ToolboxError'))?.value === value
+			)
+		)
+			return false
+		const code = INTRINSICS.reflect.read(value, 'code')
+		const context = INTRINSICS.reflect.read(value, 'context')
+		return (
+			(code === 'TOOL' ||
+				code === 'DEPTH' ||
+				code === 'DEADLOCK' ||
+				code === 'EXPIRE' ||
+				code === 'ANSWER' ||
+				code === 'DATABASE' ||
+				code === 'RELATION') &&
+			(context === undefined || isObject(context) || isFunction(context))
+		)
+	})
 }

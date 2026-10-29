@@ -86,6 +86,7 @@ Pure, side-effect-free, exhaustively unit-tested under AGENTS' export-and-test-r
 | `extendLineage`          | function | Appends one tag to a workflow lineage and returns a frozen copy.                                                                                                                                                                                            |
 | `normalizeLineage`       | function | Returns the canonical workflow lineage — validated, copied, and frozen.                                                                                                                                                                                     |
 | `deriveWorkflowDepth`    | function | Derives the zero-based workflow nesting depth from a valid lineage.                                                                                                                                                                                         |
+| `resolveWorkflowTarget`  | function | Resolves an owned workflow input through the supplied flat or draft contracts.                                                                                                                                                                              |
 | `completeDraft`          | function | Completes a `WorkflowDraft` into a strict `WorkflowDefinition` — synthesizes a missing `id` deterministically and positionally, and defaults a missing `name` to its resolved `id`.                                                                         |
 | `completePhaseDraft`     | function | Completes one `PhaseDraft` into a strict phase definition — the per-phase step of `completeDraft` (phase `index` → `phase-<index>` when its id is omitted).                                                                                                 |
 | `completeTaskDraft`      | function | Completes one `TaskDraft` into a strict task definition — the per-task leaf step of `completeDraft` (task `index` of phase `<phaseId>` → `<phaseId>-task-<index>` when its id is omitted).                                                                  |
@@ -610,7 +611,27 @@ declare const result: Parameters<typeof summarizeWorkflow>[0]
 summarizeWorkflow(result) // { status, count, durable?, fault? }
 ```
 
+Resolve an owned JSON input through the same authoring contracts the workflow tool uses:
+
+```ts
+import { createContract } from '@orkestrel/contract'
+import type { ContractInterface } from '@orkestrel/contract'
+import type { WorkflowSteps } from '@orkestrel/toolbox'
+import {
+	completeDraft,
+	createWorkflowDraftContract,
+	resolveWorkflowTarget,
+	workflowStepsShape,
+} from '@orkestrel/toolbox'
+
+const definition = completeDraft({ phases: [{ tasks: [{}] }] })
+const steps: ContractInterface<WorkflowSteps> = createContract(workflowStepsShape)
+resolveWorkflowTarget({}, definition, steps, createWorkflowDraftContract()) // definition
+```
+
 ### Recovering a typed `ToolboxError`
+
+The guard recognizes the self-brand across installed copies and module formats, including subclasses with a different name. It rejects a transparent proxy and validates the declared code and optional context. Context admits class instances and callable objects.
 
 Catch a thrown failure and narrow it with the package's own guard to read its `code`:
 

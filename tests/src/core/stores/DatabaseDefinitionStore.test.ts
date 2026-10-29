@@ -1,18 +1,6 @@
-import type {
-	ColumnSpec,
-	DatabaseDefinition,
-	DatabaseDefinitionRow,
-	DefinitionStoreInterface,
-} from '@src/core'
-import type { TableInterface } from '@orkestrel/database'
-import {
-	createDatabaseDefinitionStore,
-	DatabaseDefinitionStore,
-	isDatabaseDefinition,
-} from '@src/core'
-import { rawShape, stringShape } from '@orkestrel/contract'
-import { createDatabase, createMemoryDriver } from '@orkestrel/database'
-import { createTestDefinition } from '../../../setup.js'
+import type { ColumnSpec, DatabaseDefinition } from '@src/core'
+import { createDatabaseDefinitionStore, isDatabaseDefinition } from '@src/core'
+import { createTestDefinition, buildDatabaseStoreWithTable } from '../../../setup.js'
 import { describe, expect, it } from 'vitest'
 
 // tests/src/core/stores/DatabaseDefinitionStore.test.ts — mirrors src/core/stores/DatabaseDefinitionStore.ts.
@@ -25,18 +13,6 @@ import { describe, expect, it } from 'vitest'
 // Builds a fresh DatabaseDefinitionStore PLUS a handle to its underlying table, so a test can
 // write junk directly into storage (bypassing the store's own `set`) to prove a malformed
 // stored blob resolves `undefined` rather than throwing.
-function buildDatabaseStoreWithTable(): {
-	readonly store: DefinitionStoreInterface
-	readonly table: TableInterface<DatabaseDefinitionRow>
-} {
-	const columns = { id: stringShape(), definition: rawShape({}) }
-	const database = createDatabase({
-		driver: createMemoryDriver(),
-		tables: { definitions: columns },
-	})
-	const table: TableInterface<DatabaseDefinitionRow> = database.table('definitions')
-	return { store: new DatabaseDefinitionStore(table), table }
-}
 
 describe('DatabaseDefinitionStore — DefinitionStoreInterface conformance', () => {
 	it('set→get round-trips the FULL definition (mixed columns, primary, indexes, and version)', async () => {

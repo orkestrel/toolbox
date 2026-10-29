@@ -28,11 +28,12 @@ describe('ToolboxError', () => {
 	})
 
 	it('is throwable and catchable as a standard Error', () => {
-		const thrown = (): void => {
+		expect(() => {
 			throw new ToolboxError('TOOL', 'boom')
-		}
-		expect(thrown).toThrow('boom')
-		expect(thrown).toThrow(ToolboxError)
+		}).toThrow('boom')
+		expect(() => {
+			throw new ToolboxError('TOOL', 'boom')
+		}).toThrow(ToolboxError)
 	})
 })
 

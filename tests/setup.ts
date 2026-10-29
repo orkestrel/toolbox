@@ -1,3 +1,9 @@
+import { isRecord, booleanShape, numberShape, stringShape, rawShape } from '@orkestrel/contract'
+import type { FieldControl, FormSchema, FormValues } from '@orkestrel/form'
+import type { RelationManagerInterface } from '@orkestrel/relation'
+import { belongsTo, createRelationManager, hasMany, hasThrough } from '@orkestrel/relation'
+import { createToolManager } from '@orkestrel/tool'
+import { WORKFLOW_TOOL_NAME, DatabaseDefinitionStore } from '@src/core'
 import type {
 	AgentInterface,
 	AgentResult,
@@ -6,12 +12,19 @@ import type {
 	ProviderInterface,
 	ProviderResult,
 } from '@orkestrel/agent'
-import type { DatabaseInterface } from '@orkestrel/database'
-import type { DatabaseDefinition } from '@src/core'
-import type { JSONRecord } from '@orkestrel/contract'
-import type { TimerHandler } from '@orkestrel/terminal'
-import type { ToolContext } from '@orkestrel/tool'
+import type { DatabaseInterface, TableInterface, DriverInterface } from '@orkestrel/database'
 import type {
+	createWorkflowTool,
+	DatabaseDefinition,
+	DatabaseDefinitionRow,
+	DefinitionStoreInterface,
+} from '@src/core'
+import type { JSONRecord } from '@orkestrel/contract'
+import type { TimerHandler, TerminalManagerInterface } from '@orkestrel/terminal'
+import type { ToolContext, ToolResult } from '@orkestrel/tool'
+import type {
+	WorkflowDefinition,
+	WorkflowRegistry,
 	TaskControllerInterface,
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
@@ -141,7 +154,7 @@ export function releaseTestTaskControllers(): void {
 
 /** Records checkpoints and rejects a controlled prefix, acting as a protocol-faithful workflow store. */
 export class RecordingWorkflowStore implements WorkflowStoreInterface {
-	readonly #snapshots: WorkflowSnapshot[] = []
+	#snapshots: WorkflowSnapshot[] = []
 	readonly #failures: number
 	#attempts = 0
 
@@ -168,9 +181,7 @@ export class RecordingWorkflowStore implements WorkflowStoreInterface {
 	}
 
 	async delete(id: string): Promise<void> {
-		for (let index = this.#snapshots.length - 1; index >= 0; index -= 1) {
-			if (this.#snapshots[index]?.id === id) this.#snapshots.splice(index, 1)
-		}
+		this.#snapshots = this.#snapshots.filter((snapshot) => snapshot.id !== id)
 	}
 }
 
@@ -259,21 +270,19 @@ export class ScriptedProvider implements ScriptedProviderInterface {
 		if (this.#failure !== undefined) throw this.#failure
 		const turn = this.#turns[Math.min(this.#index, this.#turns.length - 1)] ?? { content: '' }
 		this.#index += 1
-		let streamed = ''
-		for (const delta of [turn.content]) {
-			if (signal.aborted) throw new ProviderAbortError({ content: streamed })
-			streamed += delta
-			if (delta.length > 0) yield { channel: 'content', text: delta }
-		}
-		if (signal.aborted) throw new ProviderAbortError({ content: streamed })
+		const content = turn.content
+		if (signal.aborted) throw new ProviderAbortError({ content: '' })
+		if (content.length > 0) yield { channel: 'content', text: content }
+		if (signal.aborted) throw new ProviderAbortError({ content })
 		return turn
 	}
 
 	async generate(messages: readonly Message[], signal: AbortSignal): Promise<ProviderResult> {
 		const generator = this.stream(messages, signal)
-		let step = await generator.next()
-		while (!step.done) step = await generator.next()
-		return step.value
+		while (true) {
+			const step = await generator.next()
+			if (step.done) return step.value
+		}
 	}
 }
 
@@ -343,4 +352,291 @@ export function createTestTimer(): TestTimerInterface {
 			if (entry !== undefined && !entry.cancelled) entry.callback()
 		},
 	}
+}
+/** Owns a value changed by callbacks within one fixture's lifetime. */
+export class ToolboxValue<T> {
+	#value: T
+	constructor(value: T) {
+		this.#value = value
+	}
+	get value(): T {
+		return this.#value
+	}
+	set value(value: T) {
+		this.#value = value
+	}
+}
+
+export function createNestedWorkflow(id = 'nested'): WorkflowDefinition {
+	return {
+		id,
+		name: id,
+		phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T' }] }],
+	}
+}
+
+export function readToolboxSummary(
+	value: unknown,
+): { readonly status: string; readonly count: number } | undefined {
+	if (!isRecord(value) || typeof value.status !== 'string' || typeof value.count !== 'number') {
+		return undefined
+	}
+	return { status: value.status, count: value.count }
+}
+
+export function buildFormSchema(control: FieldControl, label: string): FormSchema {
+	if (control === 'confirm') {
+		return { fields: [{ control: 'confirm', name: 'value', label }] }
+	}
+	if (control === 'select' || control === 'checkbox') {
+		return {
+			fields: [
+				{
+					control,
+					name: 'value',
+					label,
+					choices: [
+						{ label: 'X', value: 'x' },
+						{ label: 'Y', value: 'y' },
+					],
+				},
+			],
+		}
+	}
+	if (control === 'text') return { fields: [{ control: 'text', name: 'value', label }] }
+	throw new Error(`unsupported test form control '${control}'`)
+}
+
+export function createAskCall(
+	to: string,
+	control: FieldControl,
+	label: string,
+): Readonly<Record<string, unknown>> {
+	return { to, schema: buildFormSchema(control, label) }
+}
+
+export function buildWorkflowLineageFixture(depth: number): readonly string[] {
+	return [
+		'workflow:w0',
+		...Array.from({ length: depth }, (_, index) => [
+			`agent:a${index + 1}`,
+			`workflow:w${index + 1}`,
+		]).flat(),
+	]
+}
+
+export function buildToolLineageFixture(depth: number): readonly string[] {
+	if (depth === 0) return []
+	return [
+		'workflow:w0',
+		...Array.from({ length: depth }, (_, index) =>
+			index + 1 < depth
+				? [`agent:a${index + 1}`, `workflow:w${index + 1}`]
+				: [`agent:a${index + 1}`],
+		).flat(),
+	]
+}
+
+export function createWorkflowProviderCall(id: string, behavior: string): ProviderResult {
+	return {
+		content: '',
+		tools: [
+			{
+				id: `call-${id}`,
+				name: WORKFLOW_TOOL_NAME,
+				arguments: {
+					id,
+					name: id,
+					bail: true,
+					phases: [
+						{
+							id: 'p',
+							name: 'P',
+							tasks: [{ id: 't', name: 'T', behavior }],
+						},
+					],
+				},
+			},
+		],
+	}
+}
+
+export async function readToolboxRejection(promise: Promise<unknown> | unknown): Promise<unknown> {
+	try {
+		await promise
+		return undefined
+	} catch (error) {
+		return error
+	}
+}
+
+export function executeThroughManager(
+	tool: ReturnType<typeof createWorkflowTool>,
+	args: Readonly<Record<string, unknown>> = { ...createNestedWorkflow('via-mgr') },
+): Promise<ToolResult> {
+	const manager = createToolManager()
+	manager.add(tool)
+	return manager.execute({ id: 'call-1', name: tool.name, arguments: args })
+}
+
+export function createItemTables(): Readonly<Record<string, unknown>> {
+	return {
+		items: {
+			columns: {
+				id: 'string',
+				name: 'string',
+				price: { primitive: 'number', optional: true },
+				active: 'boolean',
+			},
+		},
+	}
+}
+
+export function createItemRow(
+	id: string,
+	overrides: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> {
+	return { id, name: `item-${id}`, price: 10, active: true, ...overrides }
+}
+
+export function buildItemsHandle(): DatabaseInterface {
+	return createDatabase({
+		driver: createMemoryDriver(),
+		tables: {
+			items: {
+				id: stringShape(),
+				name: stringShape(),
+				price: numberShape(),
+				active: booleanShape(),
+			},
+		},
+	})
+}
+
+export function buildRelationDatabase(): DatabaseInterface {
+	return createDatabase({
+		driver: createMemoryDriver(),
+		tables: {
+			accounts: { id: stringShape(), name: stringShape() },
+			contacts: { id: stringShape(), name: stringShape(), accountId: stringShape() },
+			reps: { id: stringShape(), name: stringShape() },
+			accountReps: { id: stringShape(), accountId: stringShape(), repId: stringShape() },
+		},
+	})
+}
+
+export function buildRelationManager(): RelationManagerInterface {
+	return createRelationManager({
+		database: buildRelationDatabase(),
+		relations: {
+			accounts: {
+				contacts: hasMany('accountId'),
+				reps: hasThrough('accountReps', 'accountId', 'repId', 'reps'),
+			},
+			contacts: { account: belongsTo('accountId', 'accounts') },
+			reps: { accounts: hasThrough('accountReps', 'repId', 'accountId', 'accounts') },
+		},
+	})
+}
+
+export async function seedAccount(
+	manager: RelationManagerInterface,
+	id: string,
+	name = `account-${id}`,
+): Promise<void> {
+	await manager.model('accounts').table.set({ id, name })
+}
+
+export async function seedContact(
+	manager: RelationManagerInterface,
+	id: string,
+	accountId: string,
+	name = `contact-${id}`,
+): Promise<void> {
+	await manager.model('contacts').table.set({ id, name, accountId })
+}
+
+export async function seedRep(
+	manager: RelationManagerInterface,
+	id: string,
+	name = `rep-${id}`,
+): Promise<void> {
+	await manager.model('reps').table.set({ id, name })
+}
+
+export const revokedWorkflowArguments = Proxy.revocable<Record<string, unknown>>({}, {})
+revokedWorkflowArguments.revoke()
+
+export const throwingOwnKeysWorkflowArguments = new Proxy<Record<string, unknown>>(
+	{},
+	{
+		ownKeys() {
+			throw new Error('hostile ownKeys')
+		},
+	},
+)
+
+export const throwingGetWorkflowArguments = new Proxy<Record<string, unknown>>(
+	{ steps: undefined },
+	{
+		get() {
+			throw new Error('hostile get')
+		},
+	},
+)
+
+/** Creates the mutable registry whose construction snapshot the workflow tests inspect. */
+export function createOpaqueLeafRegistry(): WorkflowRegistry {
+	return { leaf: () => 'leaf' }
+}
+/** Keeps a shared real driver available to separately minted database handles. */
+export function createSharedMemoryDrivers(
+	driver: DriverInterface,
+): Readonly<Record<string, () => DriverInterface>> {
+	return { memory: () => driver }
+}
+/** Creates the reusable endpoint declaration used by strict and lenient parsing cases. */
+export function createLookupEndpointDefinition() {
+	return {
+		name: 'lookupUser',
+		description: 'Look up a user by id.',
+		samples: [{ id: '1', name: 'Ada' }],
+		execute: (args: Readonly<Record<string, unknown>>) => args,
+	}
+}
+/** Reads the rejection of an operation, including a synchronous throw at invocation. */
+export async function captureToolboxFailure(action: () => unknown): Promise<unknown> {
+	try {
+		await action()
+		return undefined
+	} catch (error) {
+		return error
+	}
+}
+
+export const TOOLBOX_TERMINALS = Array.from({ length: 10 }, (_, i) => `t${i}`)
+
+/** Registers the terminal population used by the interleaved prompt proofs. */
+export function buildTerminals(manager: TerminalManagerInterface): void {
+	for (const name of TOOLBOX_TERMINALS) manager.add(name)
+}
+
+export type ToolboxAsk = {
+	readonly from: string
+	readonly to: string
+	readonly control: FieldControl
+	readonly values: FormValues
+}
+
+export function buildDatabaseStoreWithTable(): {
+	readonly store: DefinitionStoreInterface
+	readonly table: TableInterface<DatabaseDefinitionRow>
+} {
+	const columns = { id: stringShape(), definition: rawShape({}) }
+	const database = createDatabase({
+		driver: createMemoryDriver(),
+		tables: { definitions: columns },
+	})
+	const table: TableInterface<DatabaseDefinitionRow> = database.table('definitions')
+	return { store: new DatabaseDefinitionStore(table), table }
 }

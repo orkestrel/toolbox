@@ -112,13 +112,8 @@ export class TerminalBridge {
 		if (name === undefined || this.#manager.terminal(name) === undefined) {
 			return new Response(null, { status: 404 })
 		}
-		let bytes: Uint8Array
-		try {
-			bytes = await collectRequestBody(request, Math.max(1, this.#limit))
-		} catch (error) {
-			if (isInstance(error, ContentTooLargeError)) return new Response(null, { status: 413 })
-			throw error
-		}
+		const bytes = await this.#readBody(request)
+		if (bytes instanceof Response) return bytes
 		if (bytes.byteLength > 0 && bytes.byteLength > this.#limit) {
 			return new Response(null, { status: 413 })
 		}
@@ -135,5 +130,14 @@ export class TerminalBridge {
 		if (result.success) return Response.json(result)
 		if (result.error.reason === 'target') return Response.json(result, { status: 404 })
 		return Response.json(result, { status: 422 })
+	}
+
+	async #readBody(request: Request): Promise<Uint8Array | Response> {
+		try {
+			return await collectRequestBody(request, Math.max(1, this.#limit))
+		} catch (error) {
+			if (isInstance(error, ContentTooLargeError)) return new Response(null, { status: 413 })
+			throw error
+		}
 	}
 }

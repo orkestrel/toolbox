@@ -63,12 +63,10 @@ describe('DatabaseResolver', () => {
 	it('throws a typed tool error for an unknown database', async () => {
 		const resolver = new DatabaseResolver(new Map(), { memory: createMemoryDriver })
 
-		let caught: unknown
-		try {
-			await resolver.resolve('missing')
-		} catch (error) {
-			caught = error
-		}
+		const caught = await resolver.resolve('missing').then(
+			() => undefined,
+			(error: unknown) => error,
+		)
 		expect(isToolboxError(caught)).toBe(true)
 		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
 	})

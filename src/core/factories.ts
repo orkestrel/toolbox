@@ -97,10 +97,9 @@ import {
 import { ToolboxError, isToolboxError } from './errors.js'
 import {
 	clampQuery,
-	completeDraft,
+	resolveWorkflowTarget,
 	deriveWorkflowDepth,
 	expandInclude,
-	expandSteps,
 	extendLineage,
 	inferDatabaseCode,
 	inferRelationCode,
@@ -496,16 +495,7 @@ export function createWorkflowTool(
 			// `args`): empty ⇒ the wrapped definition; a `steps` array ⇒ the flat form, parsed and
 			// expanded; otherwise the nested draft form, parsed and completed. A parse failure leaves
 			// `target` undefined ⇒ the strict gate that follows throws `TOOL`.
-			let target: WorkflowDefinition | undefined
-			if (Object.keys(owned).length === 0) {
-				target = definition
-			} else if (isArray(owned.steps)) {
-				const flat = steps.parse(owned)
-				target = flat === undefined ? undefined : expandSteps(flat)
-			} else {
-				const parsed = draft.parse(owned)
-				target = parsed === undefined ? undefined : completeDraft(parsed)
-			}
+			const target = resolveWorkflowTarget(owned, definition, steps, draft)
 			// The soundness gate: whatever authoring form produced `target`, it must satisfy the
 			// strict canonical contract before it runs — the leniency never reaches the runner.
 			if (target === undefined || !strict.is(target)) {
