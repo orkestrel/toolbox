@@ -32,7 +32,7 @@ import type {
 } from './types.js'
 import type { DatabaseInterface, DriverInterface, TableInterface } from '@orkestrel/database'
 import { agentResultToJSON } from '@orkestrel/agent'
-import { createWorkspaceManager, isText, rangeOf } from '@orkestrel/workspace'
+import { createWorkspaceManager, isTextContent, rangeOf } from '@orkestrel/workspace'
 import { createTool } from '@orkestrel/tool'
 import {
 	attempt,
@@ -625,7 +625,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 						state: file.state,
 						size: file.size,
 						lines: file.lines,
-						kind: isText(file.content) ? 'text' : 'binary',
+						kind: isTextContent(file.content) ? 'text' : 'binary',
 					}))
 				case 'has':
 					return active?.has(op.path) ?? false

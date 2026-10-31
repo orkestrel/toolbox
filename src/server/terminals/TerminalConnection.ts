@@ -5,7 +5,7 @@ import type {
 	TimerHandler,
 	WireEvent,
 } from '@orkestrel/terminal'
-import type { StreamInterface } from '@orkestrel/server'
+import type { SSEStreamInterface } from '@orkestrel/server'
 import { HEADER_TOKEN, serializeExpire, serializePending } from '@orkestrel/terminal'
 
 /**
@@ -18,7 +18,7 @@ export class TerminalConnection {
 	readonly #manager: TerminalManagerInterface
 	readonly #name: string
 	readonly #request: Request
-	readonly #stream: StreamInterface
+	readonly #stream: SSEStreamInterface
 	readonly #accepts: (presented: string | undefined) => boolean
 	readonly #timer: TimerHandler
 	readonly #keepalive: number
@@ -44,7 +44,7 @@ export class TerminalConnection {
 		manager: TerminalManagerInterface,
 		name: string,
 		request: Request,
-		stream: StreamInterface,
+		stream: SSEStreamInterface,
 		accepts: (presented: string | undefined) => boolean,
 		timer: TimerHandler,
 		keepalive: number,
