@@ -68,6 +68,7 @@ import {
 	buildRelationManager,
 	seedAccount,
 	seedContact,
+	buildWorkspaceSeed,
 	seedRep,
 	revokedWorkflowArguments,
 	throwingOwnKeysWorkflowArguments,
@@ -1183,6 +1184,19 @@ describe('createWorkspaceTool — explicit manager (drives the caller`s manager 
 		const reader = createWorkspaceManager({ store })
 		const opened = await reader.open('w')
 		expect(opened?.read('a.ts')).toBe('via-manager')
+	})
+})
+
+describe('createWorkspaceTool — list projects each file with its text or binary kind', () => {
+	it('reports `text` for a text file and `binary` for a file isTextContent refuses', async () => {
+		const manager = createWorkspaceManager()
+		manager.add({ seed: buildWorkspaceSeed() })
+		const tool = createWorkspaceTool({ manager })
+		const listed = await tool.execute({ operation: 'list' }, createTestToolContext())
+		expect(listed).toEqual([
+			{ path: 'notes/orchard.md', state: 'created', size: 31, lines: 2, kind: 'text' },
+			{ path: 'images/orchard.png', state: 'modified', size: 8, lines: 0, kind: 'binary' },
+		])
 	})
 })
 

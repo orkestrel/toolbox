@@ -32,6 +32,8 @@ import type {
 import { createAgent, ProviderAbortError } from '@orkestrel/agent'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { createWorkflowRunner } from '@orkestrel/workflow'
+import type { FileInterface } from '@orkestrel/workspace'
+import { createBinaryContent, createFile, createTextContent } from '@orkestrel/workspace'
 import { waitForDelay } from '@orkestrel/test'
 
 /**
@@ -639,4 +641,19 @@ export function buildDatabaseStoreWithTable(): {
 	})
 	const table: TableInterface<DatabaseDefinitionRow> = database.table('definitions')
 	return { store: new DatabaseDefinitionStore(table), table }
+}
+
+/** Seeds a workspace with one text file and one binary PNG file for the `list` projection proofs. */
+export function buildWorkspaceSeed(): readonly FileInterface[] {
+	return [
+		createFile({
+			path: 'notes/orchard.md',
+			content: createTextContent('# Orchard log\nApples picked: 40', 'markdown'),
+		}),
+		createFile({
+			path: 'images/orchard.png',
+			content: createBinaryContent('iVBORw0KGgo=', 'image/png'),
+			state: 'modified',
+		}),
+	]
 }
