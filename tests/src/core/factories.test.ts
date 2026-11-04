@@ -97,6 +97,38 @@ import {
 
 afterEach(releaseTestTaskControllers)
 
+describe('union Tool doors', () => {
+	it.each([
+		{ tool: createWorkspaceTool(), operation: 'read' },
+		{
+			tool: createAnswerTool({ manager: createTerminalManager(), to: 'reviewer' }),
+			operation: 'answer',
+		},
+		{ tool: createDatabaseTool(), operation: 'create' },
+		{ tool: createRelationTool({ managers: {} }), operation: 'find' },
+	])(
+		'$tool.name reads each top-level argument once before refusing',
+		async ({ tool, operation }) => {
+			const reads = createRecorder<readonly []>()
+			const error = await readToolboxRejection(
+				Promise.resolve().then(() =>
+					tool.execute(
+						{
+							get operation() {
+								reads.handler()
+								return operation
+							},
+						},
+						createTestToolContext(),
+					),
+				),
+			)
+			expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+			expect(reads.calls).toHaveLength(1)
+		},
+	)
+})
+
 // tests/src/core/factories.test.ts — mirrors src/core/factories.ts with real
 // handlers, stores, workflow runners, agents, and scripted protocol providers throughout.
 
@@ -1333,13 +1365,34 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 		)
 		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
 		expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
-			{ reason: 'type', path: ['operation'], expected: 'literal', received: '"unknown"' },
+			{
+				reason: 'variant',
+				path: [],
+				variants: 13,
+				key: 'operation',
+				expected: [
+					'read',
+					'list',
+					'has',
+					'search',
+					'replace',
+					'write',
+					'splice',
+					'prepend',
+					'append',
+					'move',
+					'remove',
+					'workspaces',
+					'switch',
+				],
+			},
 		])
 		const text = error instanceof Error ? error.message : ''
-		expect(text).toContain('received "unknown"')
-		for (const operation of ['read', 'splice', 'workspaces', 'switch']) {
+		expect(text).toContain('variant; the value matches none')
+		for (const operation of ['read', 'splice', 'workspaces']) {
 			expect(text).toContain(`"${operation}"`)
 		}
+		expect(text).toContain('and 1 more')
 	})
 
 	it('a missing operation refuses with every candidate', async () => {
@@ -1348,9 +1401,29 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 			Promise.resolve().then(() => tool.execute({}, createTestToolContext())),
 		)
 		expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
-			{ reason: 'missing', path: ['operation'], expected: 'literal' },
+			{
+				reason: 'variant',
+				path: [],
+				variants: 13,
+				key: 'operation',
+				expected: [
+					'read',
+					'list',
+					'has',
+					'search',
+					'replace',
+					'write',
+					'splice',
+					'prepend',
+					'append',
+					'move',
+					'remove',
+					'workspaces',
+					'switch',
+				],
+			},
 		])
-		expect(error instanceof Error ? error.message : '').toContain('operation: missing')
+		expect(error instanceof Error ? error.message : '').toContain('variant; the value matches none')
 	})
 
 	it('a known operation refuses with its own faults and the keys it takes', async () => {
@@ -1362,7 +1435,7 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 			{ reason: 'missing', path: ['path'] },
 		])
 		const text = missing instanceof Error ? missing.message : ''
-		expect(text).toContain('operation "read" takes path')
+		expect(text).toContain('expected string')
 		expect(text).toContain('path: missing')
 
 		const extra = await readToolboxRejection(
@@ -1373,23 +1446,27 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 		expect(isToolError(extra) ? extra.context?.faults : undefined).toEqual([
 			{ reason: 'extra', path: ['depth'] },
 		])
-		expect(extra instanceof Error ? extra.message : '').toContain(
-			'operation "list" takes no other key',
-		)
+		expect(extra instanceof Error ? extra.message : '').toContain('depth: extra')
 	})
 
-	it('a union repairs nothing: a numeric string limit refuses, naming the operation`s own key', async () => {
+	it('a union repairs a lossless numeric string limit', async () => {
+		const tool = createWorkspaceTool()
+		expect(
+			await tool.execute({ operation: 'search', query: 'x', limit: '5' }, createTestToolContext()),
+		).toEqual([])
+	})
+
+	it('a union refuses a nonnumeric limit, naming the operation`s own key', async () => {
 		const tool = createWorkspaceTool()
 		const error = await readToolboxRejection(
 			Promise.resolve().then(() =>
-				tool.execute({ operation: 'search', query: 'x', limit: '5' }, createTestToolContext()),
+				tool.execute({ operation: 'search', query: 'x', limit: 'many' }, createTestToolContext()),
 			),
 		)
 		expect(isToolError(error) ? error.context?.faults : undefined).toMatchObject([
 			{ reason: 'type', path: ['limit'] },
 		])
 		const text = error instanceof Error ? error.message : ''
-		expect(text).toContain('takes query; optional: regex, sensitive, limit')
 		expect(text).toContain('limit: type')
 	})
 
@@ -1406,7 +1483,7 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
 		const message = error instanceof Error ? error.message : ''
 		expect(message.length).toBeLessThanOrEqual(2048)
-		expect(message).toContain('operation "read" takes path')
+		expect(message).toContain('more faults')
 	})
 
 	it('an untrusted operation stays bounded in the refusal', async () => {
@@ -3247,7 +3324,7 @@ describe('createDatabaseTool — error paths', () => {
 	it('malformed args name the operation`s own faults and keys, and an unknown operation lists every candidate', async () => {
 		const tool = createDatabaseTool()
 		const error = await readToolboxRejection(
-			tool.execute({ operation: 'create' }, createTestToolContext()),
+			Promise.resolve().then(() => tool.execute({ operation: 'create' }, createTestToolContext())),
 		)
 		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
 		expect(isToolError(error) ? error.context?.faults : undefined).toMatchObject([
@@ -3255,13 +3332,13 @@ describe('createDatabaseTool — error paths', () => {
 			{ reason: 'missing', path: ['tables'] },
 		])
 		const text = error instanceof Error ? error.message : ''
-		expect(text).toContain(
-			'operation "create" takes id, tables; optional: driver, primary, indexes, version',
-		)
+		expect(text).toContain('id: missing; expected string')
 		expect(text).toContain('tables: missing')
 
 		const badOperation = await readToolboxRejection(
-			tool.execute({ operation: 'nope', id: 'shop' }, createTestToolContext()),
+			Promise.resolve().then(() =>
+				tool.execute({ operation: 'nope', id: 'shop' }, createTestToolContext()),
+			),
 		)
 		expect(isToolError(badOperation) ? badOperation.code : undefined).toBe('ARGUMENTS')
 		const candidates = badOperation instanceof Error ? badOperation.message : ''
@@ -3792,6 +3869,33 @@ describe('createRelationTool — load', () => {
 })
 
 describe('createRelationTool — find (sort / direction / offset, truncation & paging)', () => {
+	it('find repairs a lossless limit and refuses a lossy or nonnumeric limit at the Tool door', async () => {
+		const manager = buildRelationManager()
+		for (const id of ['a1', 'a2', 'a3', 'a4', 'a5', 'a6']) await seedAccount(manager, id)
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const result = await tool.execute(
+			{ operation: 'find', model: 'accounts', include: [], limit: '5' },
+			createTestToolContext(),
+		)
+		expect(isRecord(result) ? result.count : undefined).toBe(5)
+		expect(isRecord(result) ? result.truncated : undefined).toBe(true)
+		for (const limit of ['many', '0x10']) {
+			const error = await readToolboxRejection(
+				Promise.resolve().then(() =>
+					tool.execute(
+						{ operation: 'find', model: 'accounts', include: [], limit },
+						createTestToolContext(),
+					),
+				),
+			)
+			expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+			expect(isToolError(error) ? error.context?.faults : undefined).toMatchObject([
+				{ reason: 'type', path: ['limit'] },
+			])
+			expect(error instanceof Error ? error.message : '').toContain('limit: type')
+		}
+	})
+
 	it('sort/direction/offset are honored', async () => {
 		const manager = buildRelationManager()
 		await seedAccount(manager, 'a1', 'Alpha')

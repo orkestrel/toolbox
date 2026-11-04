@@ -576,28 +576,24 @@ describe('buildArgumentRefusal', () => {
 	it('names the required and optional keys of the operation the call selects', () => {
 		const error = buildArgumentRefusal(schema, { operation: 'read' }, [])
 		expect(error.code).toBe('ARGUMENTS')
-		expect(error.message).toContain('operation "read" takes path; optional: limit')
+		expect(error.message).toContain('path: missing; expected string')
 		expect(error.context?.faults).toMatchObject([{ reason: 'missing', path: ['path'] }])
 	})
 
 	it('says an operation with no fields takes no other key', () => {
 		const error = buildArgumentRefusal(schema, { operation: 'list', depth: 1 }, [])
-		expect(error.message).toContain('operation "list" takes no other key')
 		expect(error.message).toContain('depth: extra')
 	})
 
-	it('lists every candidate for an unknown or a missing operation, and for a value that is no record', () => {
-		const unknown = buildArgumentRefusal(schema, { operation: 'nope' }, [])
-		expect(unknown.message).toBe('operation: received "nope"; send one of "read", "list"')
-		expect(unknown.context?.faults).toEqual([
-			{ reason: 'type', path: ['operation'], expected: 'literal', received: '"nope"' },
-		])
-		for (const value of [{}, 'read', null]) {
-			const missing = buildArgumentRefusal(schema, value, [])
-			expect(missing.message).toBe('operation: missing; send one of "read", "list"')
-			expect(missing.context?.faults).toEqual([
-				{ reason: 'missing', path: ['operation'], expected: 'literal' },
-			])
+	it('keeps the alternatives for an unknown or missing operation and a non-record', () => {
+		for (const value of [{ operation: 'nope' }, {}, 'read', null]) {
+			const error = buildArgumentRefusal(schema, value, [])
+			expect(error.message).toContain('variant')
+			expect(error.message).toContain('"read"')
+			expect(error.message).toContain('"list"')
+			expect(error.context?.faults).toEqual(
+				expect.arrayContaining([expect.objectContaining({ reason: 'variant', path: [] })]),
+			)
 		}
 	})
 

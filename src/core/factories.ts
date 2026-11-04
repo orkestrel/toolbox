@@ -582,10 +582,10 @@ export function createWorkflowTool(
  * pure-read op (read / list / has / search) against no active workspace returns the empty result
  * (`null` / `[]` / `false`), never creating one and never throwing.
  *
- * The handler conforms to the universal tool-handler contract: the tool is built `strict: false`
- * because its root is a union, and {@link import('./helpers.js').requireToolCall} refuses malformed
- * args with a `ToolError` carrying code `ARGUMENTS` that names the operation's own faults or every
- * operation it can take. The handler then `switch`es on `op.operation` and returns the plain result
+ * The Tool door enforces the operation union through `contract`, repairing lossless scalar leaves
+ * and refusing malformed args with a `ToolError` carrying code `ARGUMENTS`. A selected operation
+ * reports its own faults; an unknown operation reports a bounded summary of alternatives.
+ * The handler then `switch`es on `op.operation` and returns the plain result
  * — letting a `WorkspaceError` raised by the live workspace (`MISSING` / `MODALITY` / `PATTERN` /
  * `RANGE`) propagate uncaught. `read` returns `null` for a path that holds no text, because JSON
  * tells that from an empty file. The range edit is the flat `'splice'` op: its flat caret integers are
@@ -611,13 +611,11 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 		options?.manager ??
 		createWorkspaceManager(options?.store === undefined ? undefined : { store: options.store })
 	const contract: ContractInterface<WorkspaceOperation> = createContract(workspaceToolShape)
-	const parameters = schemaToParameters(contract.schema)
 	return createTool({
 		name: options?.name ?? WORKSPACE_TOOL_NAME,
 		description: options?.description ?? WORKSPACE_TOOL_DESCRIPTION,
 		summary: WORKSPACE_TOOL_SUMMARY,
-		...(parameters === undefined ? {} : { parameters }),
-		strict: false,
+		contract: workspaceToolShape,
 		execute(args) {
 			const op = requireToolCall(contract, args)
 			// Registry ops act on the manager, not a workspace — handle them first.
@@ -992,8 +990,7 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
  * addressed to {@link import('./types.js').AnswerToolOptions.to}, or answers one of them by id.
  *
  * @remarks
- * The universal tool-handler contract: the tool is built `strict: false` because its root is a union,
- * and {@link import('./helpers.js').requireToolCall} holds the call args to
+ * The universal tool-handler contract: the Tool door holds the call args to
  * {@link import('./shapers.js').answerToolShape} (discriminated by `operation`), refusing malformed
  * args with a `ToolError` carrying code `ARGUMENTS`. `'pending'`
  * returns a compact list (`{ id, from, schema }`) of every form addressed to `to`.
@@ -1026,13 +1023,11 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
  */
 export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 	const contract = createContract(answerToolShape)
-	const parameters = schemaToParameters(contract.schema)
 	return createTool({
 		name: options.name ?? ANSWER_TOOL_NAME,
 		description: options.description ?? ANSWER_TOOL_DESCRIPTION,
 		summary: ANSWER_TOOL_SUMMARY,
-		...(parameters === undefined ? {} : { parameters }),
-		strict: false,
+		contract: answerToolShape,
 		async execute(args) {
 			const call = requireToolCall(contract, args)
 			if (call.operation === 'pending') {
@@ -1132,8 +1127,7 @@ export function createDatabaseDefinitionStore(
  * {@link createWorkspaceTool}'s single-tool-many-operations shape).
  *
  * @remarks
- * The universal tool-handler contract: the tool is built `strict: false` because its root is a union,
- * and {@link import('./helpers.js').requireToolCall} holds the call args to
+ * The universal tool-handler contract: the Tool door holds the call args to
  * {@link import('./shapers.js').databaseToolShape}, refusing malformed args with a `ToolError`
  * carrying code `ARGUMENTS`. The handler dispatches to the matching operation and
  * returns a plain result on success. A row a `'get'` misses is an explicit `null`. A `limit` that is
@@ -1202,7 +1196,6 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 		})
 	}
 	const contract = createContract(databaseToolShape)
-	const parameters = schemaToParameters(contract.schema)
 	const handles = new Map<string, DatabaseInterface>(Object.entries(options.databases ?? {}))
 	const drivers = options.drivers ?? { memory: createMemoryDriver }
 	const generator = options.generator
@@ -1217,8 +1210,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 		name: options.name ?? DATABASE_TOOL_NAME,
 		description: options.description ?? DATABASE_TOOL_DESCRIPTION,
 		summary: DATABASE_TOOL_SUMMARY,
-		...(parameters === undefined ? {} : { parameters }),
-		strict: false,
+		contract: databaseToolShape,
 		async execute(args) {
 			const call = requireToolCall(contract, args)
 			if (options.readonly === true && DATABASE_TOOL_MUTATIONS.includes(call.operation)) {
@@ -1393,8 +1385,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * single-tool-many-operations shape).
  *
  * @remarks
- * The universal tool-handler contract: the tool is built `strict: false` because its root is a union,
- * and {@link import('./helpers.js').requireToolCall} holds the call args to
+ * The universal tool-handler contract: the Tool door holds the call args to
  * {@link import('./shapers.js').relationToolShape}, refusing malformed args with a `ToolError`
  * carrying code `ARGUMENTS`. A `limit` or `depth` that is not a positive safe integer throws `TOOL` at
  * construction, and a row `'load'` misses is an explicit `null`. The handler resolves the addressed
@@ -1443,15 +1434,13 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  */
 export function createRelationTool(options: RelationToolOptions): ToolInterface {
 	const contract = createContract(relationToolShape)
-	const parameters = schemaToParameters(contract.schema)
 	const depth = resolveBound(options.depth, RELATION_TOOL_DEPTH, 'relation depth')
 	const cap = resolveBound(options.limit, RELATION_TOOL_LIMIT, 'relation limit')
 	return createTool({
 		name: options.name ?? RELATION_TOOL_NAME,
 		description: options.description ?? RELATION_TOOL_DESCRIPTION,
 		summary: RELATION_TOOL_SUMMARY,
-		...(parameters === undefined ? {} : { parameters }),
-		strict: false,
+		contract: relationToolShape,
 		async execute(args) {
 			const call = requireToolCall(contract, args)
 			try {

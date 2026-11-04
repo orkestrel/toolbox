@@ -231,11 +231,11 @@ await new GuideCommand({
 				),
 			)
 			expect(buildArgumentRefusal(schema, { operation: 'read' }, []).message).toBe(
-				'operation "read" takes path; correct each line and send it again:\npath: missing; expected string',
+				'path: missing; expected string',
 			)
-			expect(buildArgumentRefusal(schema, { operation: 'nope' }, []).message).toBe(
-				'operation: received "nope"; send one of "read", "list"',
-			)
+			expect(
+				buildArgumentRefusal(schema, { operation: 'nope' }, []).context?.faults?.[0]?.reason,
+			).toBe('variant')
 			expect(resolveBound(undefined, 100, 'database limit')).toBe(100)
 			expect(resolveBound(25, 100, 'database limit')).toBe(25)
 			const manager = createWorkspaceManager()

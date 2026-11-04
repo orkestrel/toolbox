@@ -20,14 +20,7 @@ import { isTerminalError } from '@orkestrel/terminal'
 import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
 import type { AuditFault, ContractInterface, JSONRecord, JSONSchema } from '@orkestrel/contract'
-import {
-	attempt,
-	createContract,
-	isObject,
-	isRecord,
-	preview,
-	schemaToShape,
-} from '@orkestrel/contract'
+import { attempt, createContract, isObject, preview, schemaToShape } from '@orkestrel/contract'
 import { isPositiveSafeInteger } from '@orkestrel/agent'
 import {
 	describeFaults,
@@ -600,11 +593,10 @@ export function limitRefusal(text: string): string {
  * Reads a call's arguments through a compiled contract, or refuses them with what to send.
  *
  * @remarks
- * Runs the Tool door's own steps from `@orkestrel/tool`: `scanFaults`, then `parse`. A tool with an
- * object root takes this door through `createTool`'s `contract` and calls this helper only to type
- * what it received. A tool whose root is an `operation` union, and the workflow tool with its several
- * authoring forms, take it here under `strict: false`, because {@link buildArgumentRefusal} can name
- * the operation's own faults where the Tool door names only the union.
+ * Runs the Tool door's own steps from `@orkestrel/tool`: `scanFaults`, then `parse`.
+ * Tools with object and union roots enforce `createTool`'s `contract` and use this helper to type
+ * the parsed arguments. The workflow tool uses this door under `strict: false` because it accepts
+ * several authoring forms while advertising the flat form.
  *
  * @param contract - The compiled contract of the arguments
  * @param value - The arguments the call sent
@@ -640,14 +632,11 @@ export function requireToolCall<T>(contract: ContractInterface<T>, value: unknow
 }
 
 /**
- * Builds the error that refuses a call's arguments, naming the operation's own faults when the
- * schema's root is a union of `operation` forms.
+ * Builds an argument refusal from the supplied faults, auditing the schema when no faults were supplied.
  *
  * @remarks
- * `scanFaults` reports one `variant` fault for a union, and `describeFaults` then names no key. Each
- * form of an `operation` union declares its literal, so the call's `operation` selects one form to
- * audit. An operation no form declares refuses with every candidate. A coercible leaf reports as a
- * `type` fault here, because a union does not repair. Any other schema reports the faults as given.
+ * Uses the contract's union reporting: a selected arm names its own faults, and a value selecting
+ * no arm receives a bounded summary of alternatives. Supplied faults remain unchanged.
  *
  * @param schema - The compiled schema the arguments are held to
  * @param value - The arguments the call sent
@@ -666,7 +655,7 @@ export function requireToolCall<T>(contract: ContractInterface<T>, value: unknow
  * 	),
  * )
  * buildArgumentRefusal(schema, { operation: 'read' }, []).message
- * // 'operation "read" takes path; correct each line and send it again:\npath: missing; expected string'
+ * // 'path: missing; expected string'
  * ```
  */
 export function buildArgumentRefusal(
@@ -674,44 +663,8 @@ export function buildArgumentRefusal(
 	value: unknown,
 	faults: readonly AuditFault[],
 ): ToolError {
-	const forms = schema.anyOf ?? []
-	const names = forms.flatMap((form) => form.properties?.operation?.enum ?? [])
-	if (names.length === 0) {
-		return new ToolError('ARGUMENTS', describeFaults(faults, schema), { faults })
-	}
-	const operation: unknown = isRecord(value) ? value.operation : undefined
-	const form = forms.find((candidate) =>
-		candidate.properties?.operation?.enum?.some((name) => name === operation),
-	)
-	if (form === undefined) {
-		const absent = !isRecord(value) || !Object.hasOwn(value, 'operation')
-		const fault: AuditFault = absent
-			? { reason: 'missing', path: ['operation'], expected: 'literal' }
-			: { reason: 'type', path: ['operation'], expected: 'literal', received: preview(operation) }
-		return new ToolError(
-			'ARGUMENTS',
-			`operation: ${absent ? 'missing' : `received ${preview(operation)}`}; send one of ${names.map((name) => preview(name)).join(', ')}`,
-			{ faults: [fault] },
-		)
-	}
-	const audited = createContract(schemaToShape(form)).audit(value)
-	const listed = audited.length > 0 ? audited : faults
-	const keys = Object.keys(form.properties ?? {}).filter((key) => key !== 'operation')
-	const required = keys.filter((key) => form.required?.includes(key) === true)
-	const optional = keys.filter((key) => !required.includes(key))
-	const takes = [
-		required.length === 0 && optional.length === 0 ? 'no other key' : renderList(required),
-		...(optional.length === 0 ? [] : [`optional: ${renderList(optional)}`]),
-	]
-		.filter((part) => part !== '')
-		.join('; ')
-	return new ToolError(
-		'ARGUMENTS',
-		limitRefusal(
-			`operation ${preview(operation)} takes ${takes}; correct each line and send it again:\n${describeFaults(listed, form)}`,
-		),
-		{ faults: listed },
-	)
+	const listed = faults.length === 0 ? createContract(schemaToShape(schema)).audit(value) : faults
+	return new ToolError('ARGUMENTS', describeFaults(listed, schema), { faults: listed })
 }
 
 /**
