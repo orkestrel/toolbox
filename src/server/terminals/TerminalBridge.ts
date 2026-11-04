@@ -6,7 +6,6 @@ import type {
 	TerminalRoutesOptions,
 	TerminalToken,
 } from '../types.js'
-import { isPositiveSafeInteger } from '@orkestrel/agent'
 import { defaultTimer, HEADER_TOKEN } from '@orkestrel/terminal'
 import { isFieldValue, isFormValues } from '@orkestrel/form'
 import {
@@ -25,7 +24,7 @@ import {
 	DEFAULT_BODY_LIMIT,
 } from '@orkestrel/server'
 import { describeFaults } from '@orkestrel/tool'
-import { ToolboxError } from '@src/core'
+import { resolveBound, ToolboxError } from '@src/core'
 import { TERMINAL_KEEPALIVE_MS, TERMINAL_ROUTES_PATH } from '../constants.js'
 import { terminalAnswerShape } from '../shapers.js'
 import { TerminalConnection } from './TerminalConnection.js'
@@ -73,19 +72,12 @@ export class TerminalBridge {
 				`terminal keepalive must be a positive finite number of milliseconds; received ${preview(keepalive)}; omit it for the default ${String(TERMINAL_KEEPALIVE_MS)}`,
 			)
 		}
-		const limit = options.limit ?? DEFAULT_BODY_LIMIT
-		if (!isPositiveSafeInteger(limit)) {
-			throw new ToolboxError(
-				'TOOL',
-				`terminal body limit must be a positive safe integer of bytes; received ${preview(limit)}; omit it for the default ${String(DEFAULT_BODY_LIMIT)}`,
-			)
-		}
 		this.#manager = manager
 		this.#path = options.path ?? TERMINAL_ROUTES_PATH
 		this.#token = token
 		this.#keepalive = keepalive
 		this.#timer = options.timer ?? defaultTimer
-		this.#limit = limit
+		this.#limit = resolveBound(options.limit, DEFAULT_BODY_LIMIT, 'terminal body limit')
 		this.#answer = createContract(terminalAnswerShape)
 		this.#accepts = this.#valid.bind(this)
 		this.#get = this.#handleGet.bind(this)
