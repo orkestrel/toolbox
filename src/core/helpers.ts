@@ -20,17 +20,19 @@ import { isTerminalError } from '@orkestrel/terminal'
 import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
 import type { AuditFault, ContractInterface, JSONRecord, JSONSchema } from '@orkestrel/contract'
-import { attempt, createContract, isObject, preview, schemaToShape } from '@orkestrel/contract'
-import { isPositiveSafeInteger } from '@orkestrel/agent'
 import {
+	admitValue,
+	createContract,
 	describeFaults,
 	extractPath,
-	isToolError,
-	REFUSAL_TEXT_LIMIT,
+	FAULT_TEXT_LIMIT,
+	isObject,
+	preview,
 	renderList,
-	scanFaults,
-	ToolError,
-} from '@orkestrel/tool'
+	schemaToShape,
+} from '@orkestrel/contract'
+import { isPositiveSafeInteger } from '@orkestrel/agent'
+import { ToolError } from '@orkestrel/tool'
 import { ToolboxError } from './errors.js'
 import { isWorkflowLineage } from './validators.js'
 
@@ -564,7 +566,7 @@ export function renderCandidates(names: readonly string[]): string {
 }
 
 /**
- * Caps the complete text of a refusal at `REFUSAL_TEXT_LIMIT` characters, saying where it stopped.
+ * Caps the complete text of a refusal at `FAULT_TEXT_LIMIT` characters, saying where it stopped.
  *
  * @remarks
  * A refusal goes back to a model whose context window can be small. Use this where a message joins
@@ -582,9 +584,9 @@ export function renderCandidates(names: readonly string[]): string {
  * ```
  */
 export function limitRefusal(text: string): string {
-	if (text.length <= REFUSAL_TEXT_LIMIT) return text
+	if (text.length <= FAULT_TEXT_LIMIT) return text
 	const closing = '… the message stops here; correct what it names and call again'
-	return `${text.slice(0, REFUSAL_TEXT_LIMIT - closing.length).toWellFormed()}${closing}`
+	return `${text.slice(0, FAULT_TEXT_LIMIT - closing.length).toWellFormed()}${closing}`
 }
 
 // === Tool-call doors
@@ -593,14 +595,14 @@ export function limitRefusal(text: string): string {
  * Reads a call's arguments through a compiled contract, or refuses them with what to send.
  *
  * @remarks
- * Runs the Tool door's own steps from `@orkestrel/tool`: `scanFaults`, then `parse`.
+ * Uses the contract admission door and translates refusals to tool errors.
  * Tools with object and union roots enforce `createTool`'s `contract` and use this helper to type
  * the parsed arguments. The workflow tool uses this door under `strict: false` because it accepts
  * several authoring forms while advertising the flat form.
  *
  * @param contract - The compiled contract of the arguments
  * @param value - The arguments the call sent
- * @returns What `parse` returns: a fresh null-prototype record at each declared object
+ * @returns The admitted value, which may retain input identity under a union
  * @throws {import('@orkestrel/tool').ToolError} Thrown with code `ARGUMENTS`, carrying `context.faults` when the arguments could be read
  *
  * @example
@@ -614,21 +616,18 @@ export function limitRefusal(text: string): string {
  * ```
  */
 export function requireToolCall<T>(contract: ContractInterface<T>, value: unknown): T {
-	const read = attempt((): T | ToolError => {
-		const faults = scanFaults(contract, value)
-		const parsed = faults.length === 0 ? contract.parse(value) : undefined
-		return parsed === undefined ? buildArgumentRefusal(contract.schema, value, faults) : parsed
-	})
+	const read = admitValue(contract, value)
 	if (!read.success) {
+		if (read.error.cause === undefined)
+			throw buildArgumentRefusal(contract.schema, value, read.error.faults)
 		throw new ToolError(
 			'ARGUMENTS',
 			'Arguments could not be read; send one JSON object of plain values',
 			undefined,
-			{ cause: read.error },
+			{ cause: read.error.cause },
 		)
 	}
-	if (isToolError(read.value)) throw read.value
-	return read.value
+	return read.value.value
 }
 
 /**
@@ -640,7 +639,7 @@ export function requireToolCall<T>(contract: ContractInterface<T>, value: unknow
  *
  * @param schema - The compiled schema the arguments are held to
  * @param value - The arguments the call sent
- * @param faults - The faults `scanFaults` reported
+ * @param faults - The faults admission reported
  * @returns The `ToolError` to throw, with code `ARGUMENTS` and the faults in `context.faults`
  *
  * @example

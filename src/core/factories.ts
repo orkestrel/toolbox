@@ -33,12 +33,13 @@ import type {
 import type { DatabaseInterface, DriverInterface, TableInterface } from '@orkestrel/database'
 import { agentResultToJSON } from '@orkestrel/agent'
 import { createWorkspaceManager, isTextContent, rangeOf } from '@orkestrel/workspace'
-import { createTool, describeFaults, renderList, ToolError } from '@orkestrel/tool'
+import { createTool, ToolError } from '@orkestrel/tool'
 import {
 	arrayOf,
 	attempt,
 	cloneJSONRecord,
 	createContract,
+	describeFaults,
 	isArray,
 	isError,
 	isFunction,
@@ -48,6 +49,7 @@ import {
 	parseJSONValue,
 	preview,
 	rawShape,
+	renderList,
 	samplesToSchema,
 	schemaToObject,
 	schemaToParameters,

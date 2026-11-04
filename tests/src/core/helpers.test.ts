@@ -1,6 +1,7 @@
 import type { AuditFault, ContractInterface } from '@orkestrel/contract'
 import {
 	createContract,
+	FAULT_TEXT_LIMIT,
 	integerShape,
 	literalShape,
 	numberShape,
@@ -10,7 +11,7 @@ import {
 	unionShape,
 } from '@orkestrel/contract'
 import { captureError } from '@orkestrel/test'
-import { isToolError, REFUSAL_TEXT_LIMIT } from '@orkestrel/tool'
+import { isToolError } from '@orkestrel/tool'
 import { createWorkspaceManager } from '@orkestrel/workspace'
 import type { QueryInput } from '@orkestrel/database'
 import type { WorkflowDraft, WorkflowSteps } from '@src/core'
@@ -602,7 +603,7 @@ describe('buildArgumentRefusal', () => {
 			Array.from({ length: 200 }, (_, index) => [`key-${index}`, index]),
 		)
 		const error = buildArgumentRefusal(schema, { operation: 'read', path: 'a', ...extras }, [])
-		expect(error.message.length).toBeLessThanOrEqual(REFUSAL_TEXT_LIMIT)
+		expect(error.message.length).toBeLessThanOrEqual(FAULT_TEXT_LIMIT)
 	})
 
 	it('keeps the union`s faults when the selected form finds none', () => {
@@ -664,21 +665,21 @@ describe('renderCandidates', () => {
 
 describe('limitRefusal', () => {
 	it('returns text at the limit unchanged', () => {
-		const text = 'x'.repeat(REFUSAL_TEXT_LIMIT)
+		const text = 'x'.repeat(FAULT_TEXT_LIMIT)
 		expect(limitRefusal(text)).toBe(text)
 		expect(limitRefusal('short')).toBe('short')
 	})
 
 	it('cuts text past the limit to the limit, and says that it stopped', () => {
-		const cut = limitRefusal('x'.repeat(REFUSAL_TEXT_LIMIT + 1))
-		expect(cut.length).toBe(REFUSAL_TEXT_LIMIT)
+		const cut = limitRefusal('x'.repeat(FAULT_TEXT_LIMIT + 1))
+		expect(cut.length).toBe(FAULT_TEXT_LIMIT)
 		expect(cut).toContain('the message stops here')
 	})
 
 	it('leaves no lone surrogate where the cut lands inside a pair', () => {
 		for (const offset of [0, 1]) {
-			const cut = limitRefusal(`${'x'.repeat(offset)}${'😀'.repeat(REFUSAL_TEXT_LIMIT)}`)
-			expect(cut.length).toBe(REFUSAL_TEXT_LIMIT)
+			const cut = limitRefusal(`${'x'.repeat(offset)}${'😀'.repeat(FAULT_TEXT_LIMIT)}`)
+			expect(cut.length).toBe(FAULT_TEXT_LIMIT)
 			expect(cut.isWellFormed()).toBe(true)
 		}
 	})

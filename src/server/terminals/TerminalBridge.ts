@@ -23,7 +23,7 @@ import {
 	createStream,
 	DEFAULT_BODY_LIMIT,
 } from '@orkestrel/server'
-import { describeFaults } from '@orkestrel/tool'
+import { describeFaults } from '@orkestrel/contract'
 import { limitRefusal, resolveBound, ToolboxError } from '@src/core'
 import { TERMINAL_KEEPALIVE_MS, TERMINAL_ROUTES_PATH } from '../constants.js'
 import { terminalAnswerShape } from '../shapers.js'
