@@ -1,3 +1,18 @@
+import { createContract } from '@orkestrel/contract'
+import {
+	columnPrimitiveShape,
+	columnSpecShape,
+	tableSpecShape,
+	primaryShape,
+	indexesShape,
+	definitionContract,
+	isColumnPrimitive,
+	isColumnSpec,
+	isTableSpec,
+	isPrimaryMap,
+	isIndexMap,
+	isDatabaseDefinition,
+} from '@src/core'
 import { isRecord, booleanShape, numberShape, stringShape, rawShape } from '@orkestrel/contract'
 import type { FieldControl, FormSchema, FormValues } from '@orkestrel/form'
 import type { RelationManagerInterface } from '@orkestrel/relation'
@@ -775,4 +790,55 @@ export function buildWorkspaceSeed(): readonly FileInterface[] {
 			state: 'modified',
 		}),
 	]
+}
+
+/** Builds structural guard implication cases. */
+export function buildToolboxContractCases() {
+	return [
+		{
+			name: 'column primitive',
+			wire: createContract(columnPrimitiveShape),
+			guard: isColumnPrimitive,
+			positive: 'string',
+			negative: 'date',
+		},
+		{
+			name: 'column spec',
+			wire: createContract(columnSpecShape),
+			guard: isColumnSpec,
+			positive: { primitive: 'integer', optional: true },
+			negative: { primitive: 'date' },
+		},
+		{
+			name: 'table spec',
+			wire: createContract(tableSpecShape),
+			guard: isTableSpec,
+			positive: { users: { columns: { id: 'integer' } } },
+			negative: { users: {} },
+		},
+		{
+			name: 'primary',
+			wire: createContract(primaryShape),
+			guard: isPrimaryMap,
+			positive: { users: 'id' },
+			negative: { users: '' },
+		},
+		{
+			name: 'indexes',
+			wire: createContract(indexesShape),
+			guard: isIndexMap,
+			positive: { users: [['id']] },
+			negative: { users: [[]] },
+		},
+		{
+			name: 'definition',
+			wire: definitionContract,
+			guard: isDatabaseDefinition,
+			positive: { id: 'shop', driver: 'memory', tables: {} },
+			negative: { id: '', driver: 'memory', tables: {} },
+		},
+	].map((row) => ({
+		...row,
+		direction: (value: unknown) => !row.wire.is(value) || row.guard(value),
+	}))
 }
