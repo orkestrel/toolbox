@@ -155,6 +155,32 @@ describe('DatabaseDefinitionStore — malformed stored blob', () => {
 		expect(isToolboxError(error) ? error.context?.faults : undefined).toEqual([
 			{ reason: 'type', path: ['id'], expected: 'literal', received: '"other"' },
 		])
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain('names id "other"')
+		expect(text).toContain('must be "shop"')
+		expect(text).toContain('store.delete("shop")')
+		expect(text).not.toContain('declared shape')
+	})
+
+	it('a mismatched row with a long id stays bounded and encodes it', async () => {
+		const { store, table } = buildDatabaseStoreWithTable()
+		await table.set({ id: 'shop', definition: createTestDefinition(`${'o'.repeat(5000)}\nfake`) })
+		const error = await captureToolboxFailure(() => store.get('shop'))
+		const text = error instanceof Error ? error.message : ''
+		expect(text.length).toBeLessThanOrEqual(2048)
+		expect(text).not.toContain('\nfake')
+	})
+
+	it('a refused set with many undeclared keys stays capped', async () => {
+		const { store } = buildDatabaseStoreWithTable()
+		const extras = Object.fromEntries(
+			Array.from({ length: 200 }, (_, index) => [`key-${index}`, index]),
+		)
+		const error = await captureToolboxFailure(() =>
+			Reflect.apply(store.set, store, [{ ...createTestDefinition(), ...extras }]),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+		expect((error instanceof Error ? error.message : '').length).toBeLessThanOrEqual(2048)
 	})
 
 	it('only a missing row reads undefined', async () => {

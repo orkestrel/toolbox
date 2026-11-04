@@ -10,7 +10,7 @@ import {
 	unionShape,
 } from '@orkestrel/contract'
 import { captureError } from '@orkestrel/test'
-import { isToolError } from '@orkestrel/tool'
+import { isToolError, REFUSAL_TEXT_LIMIT } from '@orkestrel/tool'
 import { createWorkspaceManager } from '@orkestrel/workspace'
 import type { QueryInput } from '@orkestrel/database'
 import type { WorkflowDraft, WorkflowSteps } from '@src/core'
@@ -24,7 +24,10 @@ import {
 	tagAgent,
 	ToolboxError,
 	buildArgumentRefusal,
+	describeDefinitionMismatch,
 	describeDefinitionRefusal,
+	limitRefusal,
+	renderCandidates,
 	requireActiveWorkspace,
 	requireToolCall,
 	resolveBound,
@@ -598,6 +601,14 @@ describe('buildArgumentRefusal', () => {
 		}
 	})
 
+	it('caps the complete text, where a long head meets a full report', () => {
+		const extras = Object.fromEntries(
+			Array.from({ length: 200 }, (_, index) => [`key-${index}`, index]),
+		)
+		const error = buildArgumentRefusal(schema, { operation: 'read', path: 'a', ...extras }, [])
+		expect(error.message.length).toBeLessThanOrEqual(REFUSAL_TEXT_LIMIT)
+	})
+
 	it('keeps the union`s faults when the selected form finds none', () => {
 		const faults: readonly AuditFault[] = [{ reason: 'variant', path: [], variants: 2 }]
 		const error = buildArgumentRefusal(schema, { operation: 'list' }, faults)
@@ -636,6 +647,59 @@ describe('requireActiveWorkspace', () => {
 		expect(manager.count).toBe(0)
 		const workspace = manager.add()
 		expect(requireActiveWorkspace(manager, 'remove')).toBe(workspace)
+	})
+})
+
+describe('renderCandidates', () => {
+	it('encodes each candidate and bounds the count', () => {
+		expect(renderCandidates(['a', 'b'])).toBe('"a", "b"')
+		expect(renderCandidates([])).toBe('')
+		expect(renderCandidates(['line\nbreak'])).toBe('"line\\nbreak"')
+		const many = renderCandidates(Array.from({ length: 20 }, (_, index) => `n${index}`))
+		expect(many).toContain('"n11"')
+		expect(many).not.toContain('"n12"')
+		expect(many).toContain('and 8 more')
+	})
+
+	it('caps a long candidate', () => {
+		expect(renderCandidates(['x'.repeat(5000)]).length).toBeLessThan(100)
+	})
+})
+
+describe('limitRefusal', () => {
+	it('returns text at the limit unchanged', () => {
+		const text = 'x'.repeat(REFUSAL_TEXT_LIMIT)
+		expect(limitRefusal(text)).toBe(text)
+		expect(limitRefusal('short')).toBe('short')
+	})
+
+	it('cuts text past the limit to the limit, and says that it stopped', () => {
+		const cut = limitRefusal('x'.repeat(REFUSAL_TEXT_LIMIT + 1))
+		expect(cut.length).toBe(REFUSAL_TEXT_LIMIT)
+		expect(cut).toContain('the message stops here')
+	})
+
+	it('leaves no lone surrogate where the cut lands inside a pair', () => {
+		for (const offset of [0, 1]) {
+			const cut = limitRefusal(`${'x'.repeat(offset)}${'😀'.repeat(REFUSAL_TEXT_LIMIT)}`)
+			expect(cut.length).toBe(REFUSAL_TEXT_LIMIT)
+			expect(cut.isWellFormed()).toBe(true)
+		}
+	})
+})
+
+describe('describeDefinitionMismatch', () => {
+	it('names the id the row holds, the id it must hold, and the remedy', () => {
+		const text = describeDefinitionMismatch('shop', 'other')
+		expect(text).toBe(
+			'database "shop" holds a definition that names id "other"; its id must be "shop"; read the row through your own table and set its id to "shop", or delete it with store.delete("shop")',
+		)
+	})
+
+	it('encodes and bounds both ids', () => {
+		const text = describeDefinitionMismatch('a'.repeat(5000), `${'b'.repeat(5000)}\nfake`)
+		expect(text.length).toBeLessThanOrEqual(2048)
+		expect(text).not.toContain('\nfake')
 	})
 })
 

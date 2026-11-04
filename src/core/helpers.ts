@@ -33,6 +33,7 @@ import {
 	describeFaults,
 	extractPath,
 	isToolError,
+	REFUSAL_TEXT_LIMIT,
 	renderList,
 	scanFaults,
 	ToolError,
@@ -383,7 +384,7 @@ export function resolveRelationManager(
 		if (manager === undefined) {
 			throw new ToolboxError(
 				'TOOL',
-				`unknown relation manager ${preview(name)}; send manager as one of ${renderList(Object.keys(managers))}`,
+				`unknown relation manager ${preview(name)}; send manager as one of ${renderCandidates(Object.keys(managers))}`,
 				{ manager: name, managers: Object.keys(managers) },
 			)
 		}
@@ -397,7 +398,7 @@ export function resolveRelationManager(
 	}
 	throw new ToolboxError(
 		'TOOL',
-		`no relation manager resolved for the call; send manager as one of ${renderList(names)}`,
+		`no relation manager resolved for the call; send manager as one of ${renderCandidates(names)}`,
 		{ managers: names },
 	)
 }
@@ -418,7 +419,7 @@ export function resolveRelationModel(
 	if (!manager.has(name)) {
 		throw new ToolboxError(
 			'TOOL',
-			`unknown model ${preview(name)}; send model as one of ${renderList(manager.names())}`,
+			`unknown model ${preview(name)}; send model as one of ${renderCandidates(manager.names())}`,
 			{ model: name, models: manager.names() },
 		)
 	}
@@ -549,6 +550,50 @@ export function resolveWorkflowTarget(
 		: expandSteps(requireToolCall(steps, owned))
 }
 
+// === Refusal text
+
+/**
+ * Renders the candidates a refusal offers, each encoded and length-capped and at most
+ * `REFUSAL_LIST_LIMIT` of them named, so a long or multiline name cannot fake or balloon the message.
+ *
+ * @param names - The candidates to offer
+ * @returns The encoded candidates joined with `, `, empty when there are none
+ *
+ * @example
+ * ```ts
+ * import { renderCandidates } from '@src/core'
+ *
+ * renderCandidates(['read', 'list']) // '"read", "list"'
+ * ```
+ */
+export function renderCandidates(names: readonly string[]): string {
+	return renderList(names.map((name) => preview(name)))
+}
+
+/**
+ * Caps the complete text of a refusal at `REFUSAL_TEXT_LIMIT` characters, saying where it stopped.
+ *
+ * @remarks
+ * A refusal goes back to a model whose context window can be small. Use this where a message joins
+ * parts this package cannot bound one by one: a head beside a report, or an upstream error's text.
+ *
+ * @param text - The refusal text
+ * @returns The text unchanged when it fits, otherwise cut to the limit and well formed
+ *
+ * @example
+ * ```ts
+ * import { limitRefusal } from '@src/core'
+ *
+ * limitRefusal('send steps') // 'send steps'
+ * limitRefusal('x'.repeat(5000)).length // 2048
+ * ```
+ */
+export function limitRefusal(text: string): string {
+	if (text.length <= REFUSAL_TEXT_LIMIT) return text
+	const closing = '… the message stops here; correct what it names and call again'
+	return `${text.slice(0, REFUSAL_TEXT_LIMIT - closing.length).toWellFormed()}${closing}`
+}
+
 // === Tool-call doors
 
 /**
@@ -662,7 +707,9 @@ export function buildArgumentRefusal(
 		.join('; ')
 	return new ToolError(
 		'ARGUMENTS',
-		`operation ${preview(operation)} takes ${takes}; correct each line and send it again:\n${describeFaults(listed, form)}`,
+		limitRefusal(
+			`operation ${preview(operation)} takes ${takes}; correct each line and send it again:\n${describeFaults(listed, form)}`,
+		),
 		{ faults: listed },
 	)
 }
@@ -725,6 +772,26 @@ export function requireActiveWorkspace(
 		`operation ${preview(operation)} needs an active workspace and none is; call "write" to create one, or "workspaces" then "switch"`,
 		{ operation },
 	)
+}
+
+/**
+ * Describes a stored definition that names another id, naming the id it holds and the id it must hold.
+ *
+ * @param id - The database id the row is stored under
+ * @param held - The id the stored definition names
+ * @returns The refusal message
+ *
+ * @example
+ * ```ts
+ * import { describeDefinitionMismatch } from '@src/core'
+ *
+ * describeDefinitionMismatch('shop', 'other')
+ * // 'database "shop" holds a definition that names id "other"; its id must be "shop"; ...'
+ * ```
+ */
+export function describeDefinitionMismatch(id: string, held: string): string {
+	const required = preview(id)
+	return `database ${required} holds a definition that names id ${preview(held)}; its id must be ${required}; read the row through your own table and set its id to ${required}, or delete it with store.delete(${required})`
 }
 
 /**

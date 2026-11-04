@@ -1,3 +1,4 @@
+import { isRecord } from '@orkestrel/contract'
 import { createForm } from '@orkestrel/form'
 import { DEFAULT_BODY_LIMIT } from '@orkestrel/server'
 import { HEADER_TOKEN } from '@orkestrel/terminal'
@@ -108,6 +109,29 @@ describe('TerminalBridge — the POST body door', () => {
 		expect(manager.pending('assistant')).toHaveLength(1)
 		manager.answer('assistant', form.id, { value: 'Ada' })
 		await expect(asked).resolves.toEqual({ value: 'Ada' })
+	})
+
+	it('a refusal with many undeclared keys stays capped at about 2 KB', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const post = findTerminalRoute(createTerminalRoutes(manager, { token: () => true }), 'POST')
+		const extras = Object.fromEntries(
+			Array.from({ length: 300 }, (_, index) => [`key-${index}`, index]),
+		)
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id: 'x', values: {}, ...extras }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(422)
+		const body: unknown = await response.json()
+		const error = isRecord(body) ? body.error : undefined
+		const message = isRecord(error) ? error.message : undefined
+		expect(
+			typeof message === 'string' ? message.length : Number.POSITIVE_INFINITY,
+		).toBeLessThanOrEqual(2048)
 	})
 
 	it('a wire body is held to the shape as sent: a number id refuses instead of repairing', async () => {

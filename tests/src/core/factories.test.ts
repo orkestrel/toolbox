@@ -57,6 +57,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { captureError, createRecorder, waitForAbort, waitForDelay } from '@orkestrel/test'
 import {
 	buildDatabaseStoreWithTable,
+	buildRelationDatabase,
 	createNestedWorkflow,
 	createOpenAuthority,
 	readToolboxSummary,
@@ -680,6 +681,69 @@ describe('workflow/agent recursion through real providers and runners', () => {
 			{ functions },
 		)
 		expect(JSON.stringify(provider.calls[1]?.messages)).toContain('is already an ancestor')
+	})
+})
+
+describe('a bound workflow tool runs under the agent authority', () => {
+	it('an agent with no authority denies the call, so the nested run never starts', async () => {
+		const store = createMemoryWorkflowStore()
+		const entered = createRecorder<readonly []>()
+		const provider = new ScriptedProvider([
+			createWorkflowProviderCall('child', 'leaf'),
+			{ content: 'handled denial' },
+		])
+		const runner = createWorkflowRunner()
+		const functions = createWorkflowFunctions(runner, {
+			functions: {
+				leaf: () => {
+					entered.handler()
+					return 'leaf'
+				},
+			},
+			agents: { a: createAgent(provider) },
+			store,
+		})
+		await runner.execute(
+			{
+				id: 'root',
+				name: 'Root',
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'a' }] }],
+			},
+			{ functions },
+		)
+		expect(entered.calls).toHaveLength(0)
+		expect(await store.get('child')).toBeUndefined()
+		expect(provider.started).toBe(2)
+	})
+
+	it('the same call runs under an authority that allows it', async () => {
+		const store = createMemoryWorkflowStore()
+		const entered = createRecorder<readonly []>()
+		const provider = new ScriptedProvider([
+			createWorkflowProviderCall('child', 'leaf'),
+			{ content: 'done' },
+		])
+		const runner = createWorkflowRunner()
+		const functions = createWorkflowFunctions(runner, {
+			functions: {
+				leaf: () => {
+					entered.handler()
+					return 'leaf'
+				},
+			},
+			agents: { a: createAgent(provider, { authority: createOpenAuthority() }) },
+			store,
+		})
+		await runner.execute(
+			{
+				id: 'root',
+				name: 'Root',
+				phases: [{ id: 'p', name: 'P', tasks: [{ id: 't', name: 'T', behavior: 'a' }] }],
+			},
+			{ functions },
+		)
+		expect(entered.calls).toHaveLength(1)
+		expect((await store.get('child'))?.status).toBe('completed')
 	})
 })
 
@@ -1341,8 +1405,8 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 		)
 		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
 		const message = error instanceof Error ? error.message : ''
-		expect(message.length).toBeLessThanOrEqual(2300)
-		expect(message).toContain('more faults')
+		expect(message.length).toBeLessThanOrEqual(2048)
+		expect(message).toContain('operation "read" takes path')
 	})
 
 	it('an untrusted operation stays bounded in the refusal', async () => {
@@ -1619,8 +1683,24 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 			tool.execute({ task: 'x', tools: ['search'] }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(error instanceof Error ? error.message : '').toContain('call again without tools')
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain('send tools: []')
+		expect(text).toContain('have the host set authority')
 		expect(provider.started).toBe(0)
+	})
+
+	it('default tools with no authority refuse a call that omits tools, and the remedy in the text works', async () => {
+		const provider = new ScriptedProvider([{ content: 'delegated' }])
+		const registry = createAgentRegistry({ providers: { main: provider } })
+		const tool = createAgentTool(registry, { provider: 'main', tools: ['read'] })
+		const error = await readToolboxRejection(tool.execute({ task: 'x' }, createTestToolContext()))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		const text = error instanceof Error ? error.message : ''
+		expect(text).not.toContain('without tools')
+		expect(text).toContain('send tools: []')
+		expect(provider.started).toBe(0)
+		expect(await tool.execute({ task: 'x', tools: [] }, createTestToolContext())).toBe('delegated')
+		expect(provider.started).toBe(1)
 	})
 
 	it('the configured authority decides the delegated tool calls, and the model cannot send its own', async () => {
@@ -1922,7 +2002,7 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 			describeTool.execute({ name: 'x'.repeat(20_000) }, createTestToolContext()),
 		)
 		const text = error instanceof Error ? error.message : ''
-		expect(text).toContain(`${INFER_TOOL_NAME}, ${DESCRIBE_TOOL_NAME}`)
+		expect(text).toContain(`"${INFER_TOOL_NAME}", "${DESCRIBE_TOOL_NAME}"`)
 		expect(text.length).toBeLessThanOrEqual(2048)
 	})
 
@@ -3199,7 +3279,7 @@ describe('createDatabaseTool — error paths', () => {
 			),
 		)
 		expect(error instanceof Error ? error.message : '').toContain(
-			'unknown driver "nope"; send driver as one of memory',
+			'unknown driver "nope"; send driver as one of "memory"',
 		)
 	})
 
@@ -4929,9 +5009,14 @@ describe('a refusal a model reads names what to send', () => {
 		const unknownTerminal = await readToolboxRejection(
 			askTool.execute(createAskCall('ghost', 'confirm', 'ok?'), createTestToolContext()),
 		)
-		expect(unknownTerminal instanceof Error ? unknownTerminal.message : '').toContain(
-			'unknown terminal "ghost"; send to as the name of one of the 2 mounted terminals',
+		expect(unknownTerminal instanceof Error ? unknownTerminal.message : '').toBe(
+			'unknown terminal "ghost"; send to as one of "agent", "reviewer"',
 		)
+		expect(isToolboxError(unknownTerminal) ? unknownTerminal.context : undefined).toMatchObject({
+			to: 'ghost',
+			known: ['agent', 'reviewer'],
+			count: 2,
+		})
 
 		const unknownForm = await readToolboxRejection(
 			answerTool.execute(
@@ -4971,6 +5056,121 @@ describe('a refusal a model reads names what to send', () => {
 		await asked
 	})
 
+	it('the unknown-terminal candidates stay bounded, and an empty manager says so', async () => {
+		const crowded = createTerminalManager()
+		crowded.add('agent')
+		for (const index of Array.from({ length: 30 }).keys()) {
+			crowded.add(`${'terminal-'.repeat(400)}${index}`)
+		}
+		const refused = await readToolboxRejection(
+			createPromptTool({ manager: crowded, from: 'agent' }).execute(
+				createAskCall('x'.repeat(5000), 'confirm', 'ok?'),
+				createTestToolContext(),
+			),
+		)
+		const text = refused instanceof Error ? refused.message : ''
+		expect(text.length).toBeLessThanOrEqual(2048)
+		expect(text).toContain('"agent"')
+		expect(text).toContain('more')
+
+		const empty = await readToolboxRejection(
+			createPromptTool({ manager: createTerminalManager(), from: 'agent' }).execute(
+				createAskCall('ghost', 'confirm', 'ok?'),
+				createTestToolContext(),
+			),
+		)
+		expect(empty instanceof Error ? empty.message : '').toBe(
+			'unknown terminal "ghost"; no mounted terminal name is available',
+		)
+	})
+
+	it('a long registered tool name is encoded and capped in the describe refusal', async () => {
+		const manager = createToolManager()
+		const long = `${'n'.repeat(3000)}\nfake line`
+		manager.add(createTool({ name: long, execute: () => 'x' }))
+		for (const index of Array.from({ length: 20 }).keys()) {
+			manager.add(createTool({ name: `${'m'.repeat(3000)}${index}`, execute: () => 'x' }))
+		}
+		const error = await readToolboxRejection(
+			createDescribeTool(manager).execute({ name: 'ghost' }, createTestToolContext()),
+		)
+		const text = error instanceof Error ? error.message : ''
+		expect(text.length).toBeLessThanOrEqual(2048)
+		expect(text).not.toContain('\nfake line')
+		expect(text).toContain('send name as one of "')
+		expect(text).toContain('more')
+	})
+
+	it('upstream text a tool translates is capped: a long table, key, and relation name', async () => {
+		const database = createDatabaseTool()
+		await database.execute(
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
+			createTestToolContext(),
+		)
+		const table = await readToolboxRejection(
+			database.execute(
+				{ operation: 'get', id: 'shop', table: 'x'.repeat(5000), key: 'a' },
+				createTestToolContext(),
+			),
+		)
+		expect(isToolboxError(table) ? table.code : undefined).toBe('DATABASE')
+		expect((table instanceof Error ? table.message : '').length).toBeLessThanOrEqual(2048)
+
+		const row = createItemRow('k'.repeat(5000))
+		await database.execute(
+			{ operation: 'add', id: 'shop', table: 'items', row },
+			createTestToolContext(),
+		)
+		const duplicate = await readToolboxRejection(
+			database.execute(
+				{ operation: 'add', id: 'shop', table: 'items', row },
+				createTestToolContext(),
+			),
+		)
+		expect(isToolboxError(duplicate) ? duplicate.code : undefined).toBe('DATABASE')
+		expect((duplicate instanceof Error ? duplicate.message : '').length).toBeLessThanOrEqual(2048)
+
+		const relation = await readToolboxRejection(
+			createRelationTool({ managers: { shop: buildRelationManager() } }).execute(
+				{ operation: 'links', model: 'accounts', key: 'a1', relation: 'x'.repeat(5000) },
+				createTestToolContext(),
+			),
+		)
+		expect(isToolboxError(relation) ? relation.code : undefined).toBe('RELATION')
+		expect((relation instanceof Error ? relation.message : '').length).toBeLessThanOrEqual(2048)
+
+		const closed = buildRelationDatabase('d'.repeat(5000))
+		const tool = createRelationTool({ managers: { shop: buildRelationManager(closed) } })
+		await closed.close()
+		const underneath = await readToolboxRejection(
+			tool.execute(
+				{ operation: 'links', model: 'accounts', key: 'a1', relation: 'reps' },
+				createTestToolContext(),
+			),
+		)
+		expect(isToolboxError(underneath) ? underneath.code : undefined).toBe('DATABASE')
+		expect((underneath instanceof Error ? underneath.message : '').length).toBeLessThanOrEqual(2048)
+	})
+
+	it('a wrapped definition with many undeclared keys stays capped at the strict gate', async () => {
+		// The key length sets how close the report's last kept line lands to the report's own limit.
+		for (const padding of Array.from({ length: 60 }, (_, index) => 'k'.repeat(index))) {
+			const definition = Object.fromEntries([
+				['id', 'wrapped'],
+				['name', 'wrapped'],
+				['phases', []],
+				...Array.from({ length: 200 }, (_, index) => [`${padding}-${index}`, index]),
+			])
+			const tool = Reflect.apply(createWorkflowTool, undefined, [
+				definition,
+				createWorkflowRunner(),
+			])
+			const error = await readToolboxRejection(tool.execute({}, createTestToolContext()))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect((error instanceof Error ? error.message : '').length).toBeLessThanOrEqual(2048)
+		}
+	})
+
 	it('the relation tool lists the managers and models, and states what an include path holds', async () => {
 		const tool = createRelationTool({ managers: { shop: buildRelationManager() } })
 		const manager = await readToolboxRejection(
@@ -4980,13 +5180,13 @@ describe('a refusal a model reads names what to send', () => {
 			),
 		)
 		expect(manager instanceof Error ? manager.message : '').toContain(
-			'unknown relation manager "ghost"; send manager as one of shop',
+			'unknown relation manager "ghost"; send manager as one of "shop"',
 		)
 		const model = await readToolboxRejection(
 			tool.execute({ operation: 'load', model: 'ghost', key: 'a1' }, createTestToolContext()),
 		)
 		expect(model instanceof Error ? model.message : '').toContain(
-			'unknown model "ghost"; send model as one of accounts',
+			'unknown model "ghost"; send model as one of "accounts"',
 		)
 		const include = await readToolboxRejection(
 			tool.execute(
@@ -5007,7 +5207,7 @@ describe('a refusal a model reads names what to send', () => {
 			),
 		)
 		expect(unresolved instanceof Error ? unresolved.message : '').toContain(
-			'send manager as one of one, two',
+			'send manager as one of "one", "two"',
 		)
 	})
 

@@ -631,9 +631,10 @@ export function buildItemsHandle(): DatabaseInterface {
 	})
 }
 
-export function buildRelationDatabase(): DatabaseInterface {
+export function buildRelationDatabase(name?: string): DatabaseInterface {
 	return createDatabase({
 		driver: createMemoryDriver(),
+		...(name === undefined ? {} : { name }),
 		tables: {
 			accounts: { id: stringShape(), name: stringShape() },
 			contacts: { id: stringShape(), name: stringShape(), accountId: stringShape() },
@@ -643,9 +644,11 @@ export function buildRelationDatabase(): DatabaseInterface {
 	})
 }
 
-export function buildRelationManager(): RelationManagerInterface {
+export function buildRelationManager(
+	database: DatabaseInterface = buildRelationDatabase(),
+): RelationManagerInterface {
 	return createRelationManager({
-		database: buildRelationDatabase(),
+		database,
 		relations: {
 			accounts: {
 				contacts: hasMany('accountId'),

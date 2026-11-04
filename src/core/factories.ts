@@ -35,6 +35,7 @@ import { agentResultToJSON } from '@orkestrel/agent'
 import { createWorkspaceManager, isTextContent, rangeOf } from '@orkestrel/workspace'
 import { createTool, describeFaults, renderList, ToolError } from '@orkestrel/tool'
 import {
+	arrayOf,
 	attempt,
 	cloneJSONRecord,
 	createContract,
@@ -106,8 +107,10 @@ import {
 	inferDatabaseCode,
 	inferRelationCode,
 	inferTerminalCode,
+	limitRefusal,
 	normalizeLineage,
 	normalizeQuery,
+	renderCandidates,
 	requireActiveWorkspace,
 	requireToolCall,
 	resolveBound,
@@ -516,7 +519,9 @@ export function createWorkflowTool(
 				const faults = strict.audit(target)
 				throw new ToolboxError(
 					'TOOL',
-					`workflow ${preview(definition.id)} cannot run; send steps to author another one, or correct it:\n${describeFaults(faults, strict.schema)}`,
+					limitRefusal(
+						`workflow ${preview(definition.id)} cannot run; send steps to author another one, or correct it:\n${describeFaults(faults, strict.schema)}`,
+					),
 					{ workflow: definition.id, faults },
 				)
 			}
@@ -792,7 +797,7 @@ export function createAgentTool(
 			if (tools !== undefined && tools.length > 0 && options?.authority === undefined) {
 				throw new ToolboxError(
 					'TOOL',
-					'this agent tool has no authority to decide tool calls, so its sub-agent can load no tools; call again without tools',
+					'this agent tool has no authority to decide tool calls, so its sub-agent can load no tools; send tools: [] to delegate with none, or have the host set authority on this tool',
 					{ provider, tools: [...tools] },
 				)
 			}
@@ -862,7 +867,7 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
 				const names = tools.tools().map((registered) => registered.name)
 				throw new ToolboxError(
 					'TOOL',
-					`unknown tool ${preview(call.name)}; send name as one of ${renderList(names)}`,
+					`unknown tool ${preview(call.name)}; send name as one of ${renderCandidates(names)}`,
 					{ name: call.name, names },
 				)
 			}
@@ -886,7 +891,7 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
  * `TerminalError('DEADLOCK')`, re-surfaced as a typed `DEADLOCK`
  * {@link import('./errors.js').ToolboxError}; an expired form re-surfaces as `EXPIRE`; an
  * unknown `to` (or any other `TerminalError`) re-surfaces as `TOOL`, naming the unknown terminal
- * and how many brokers the manager holds (`manager.count`). A schema `parseForm` refuses — an
+ * and the mounted terminals the manager's refusal lists, encoded and bounded. A schema `parseForm` refuses — an
  * unknown control, a duplicate field name, a `'select'` or `'checkbox'` field without usable
  * `choices` — throws a typed `TOOL` error up front, so a malformed schema never parks as a form
  * nobody can answer.
@@ -965,10 +970,13 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 					)
 				}
 				if (isTerminalError(error) && error.code === 'TARGET') {
+					// The manager publishes no list of names, so its refusal's context is where they read.
+					const listed = error.context?.known
+					const known = arrayOf(isString)(listed) ? listed : []
 					throw new ToolboxError(
 						'TOOL',
-						`unknown terminal ${preview(call.to)}; send to as the name of one of the ${String(options.manager.count)} mounted terminals`,
-						{ to: call.to, count: options.manager.count },
+						`unknown terminal ${preview(call.to)}; ${known.length === 0 ? 'no mounted terminal name is available' : `send to as one of ${renderCandidates(known)}`}`,
+						{ to: call.to, known, count: options.manager.count },
 					)
 				}
 				throw new ToolboxError('TOOL', `asking ${preview(call.to)} failed; ask again`, {
@@ -1240,7 +1248,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						if (factory === undefined) {
 							throw new ToolboxError(
 								'TOOL',
-								`unknown driver ${preview(name)}; send driver as one of ${renderList(Object.keys(drivers))}`,
+								`unknown driver ${preview(name)}; send driver as one of ${renderCandidates(Object.keys(drivers))}`,
 								{ id: call.id, driver: name },
 							)
 						}
@@ -1362,12 +1370,16 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 				if (isToolboxError(error)) throw error
 				const code = inferDatabaseCode(error)
 				if (code === undefined) throw error
-				throw new ToolboxError('DATABASE', isError(error) ? error.message : String(error), {
-					code,
-					operation: call.operation,
-					id: call.id,
-					...('table' in call ? { table: call.table } : {}),
-				})
+				throw new ToolboxError(
+					'DATABASE',
+					limitRefusal(isError(error) ? error.message : String(error)),
+					{
+						code,
+						operation: call.operation,
+						id: call.id,
+						...('table' in call ? { table: call.table } : {}),
+					},
+				)
 			}
 		},
 	})
@@ -1488,19 +1500,27 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 				if (isToolboxError(error)) throw error
 				const relation = inferRelationCode(error)
 				if (relation !== undefined) {
-					throw new ToolboxError('RELATION', isError(error) ? error.message : String(error), {
-						code: relation,
-						operation: call.operation,
-						model: call.model,
-						...('relation' in call ? { relation: call.relation } : {}),
-					})
+					throw new ToolboxError(
+						'RELATION',
+						limitRefusal(isError(error) ? error.message : String(error)),
+						{
+							code: relation,
+							operation: call.operation,
+							model: call.model,
+							...('relation' in call ? { relation: call.relation } : {}),
+						},
+					)
 				}
 				const database = inferDatabaseCode(error)
 				if (database === undefined) throw error
-				throw new ToolboxError('DATABASE', isError(error) ? error.message : String(error), {
-					code: database,
-					operation: call.operation,
-				})
+				throw new ToolboxError(
+					'DATABASE',
+					limitRefusal(isError(error) ? error.message : String(error)),
+					{
+						code: database,
+						operation: call.operation,
+					},
+				)
 			}
 		},
 	})

@@ -24,7 +24,7 @@ import {
 	DEFAULT_BODY_LIMIT,
 } from '@orkestrel/server'
 import { describeFaults } from '@orkestrel/tool'
-import { resolveBound, ToolboxError } from '@src/core'
+import { limitRefusal, resolveBound, ToolboxError } from '@src/core'
 import { TERMINAL_KEEPALIVE_MS, TERMINAL_ROUTES_PATH } from '../constants.js'
 import { terminalAnswerShape } from '../shapers.js'
 import { TerminalConnection } from './TerminalConnection.js'
@@ -162,7 +162,9 @@ export class TerminalBridge {
 
 	// A malformed body answers in the manager's result envelope, so a client reads one body shape.
 	#refuse(faults: readonly AuditFault[]): Response {
-		const message = `an answer body is { id, values }, where values maps each field name to a string, a finite number, a boolean, or a list of strings; correct each line and send it again:\n${describeFaults(faults, this.#answer.schema)}`
+		const message = limitRefusal(
+			`an answer body is { id, values }, where values maps each field name to a string, a finite number, a boolean, or a list of strings; correct each line and send it again:\n${describeFaults(faults, this.#answer.schema)}`,
+		)
 		return Response.json(
 			{ success: false, error: { reason: 'malformed', message, faults } },
 			{ status: 422 },

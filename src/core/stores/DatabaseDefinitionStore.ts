@@ -9,7 +9,7 @@ import { preview } from '@orkestrel/contract'
 import { describeFaults } from '@orkestrel/tool'
 import { definitionContract } from '../contracts.js'
 import { ToolboxError } from '../errors.js'
-import { describeDefinitionRefusal } from '../helpers.js'
+import { describeDefinitionMismatch, describeDefinitionRefusal, limitRefusal } from '../helpers.js'
 import { isDatabaseDefinition } from '../validators.js'
 
 /**
@@ -92,7 +92,10 @@ export class DatabaseDefinitionStore implements DefinitionStoreInterface {
 			const faults: readonly AuditFault[] = [
 				{ reason: 'type', path: ['id'], expected: 'literal', received: preview(definition.id) },
 			]
-			throw new ToolboxError('DATABASE', describeDefinitionRefusal(id, faults), { id, faults })
+			throw new ToolboxError('DATABASE', describeDefinitionMismatch(id, definition.id), {
+				id,
+				faults,
+			})
 		}
 		return definition
 	}
@@ -110,7 +113,9 @@ export class DatabaseDefinitionStore implements DefinitionStoreInterface {
 			const faults = definitionContract.audit(unchecked)
 			throw new ToolboxError(
 				'DATABASE',
-				`a definition store writes only a complete definition; correct each line and call set again:\n${describeFaults(faults, definitionContract.schema)}`,
+				limitRefusal(
+					`a definition store writes only a complete definition; correct each line and call set again:\n${describeFaults(faults, definitionContract.schema)}`,
+				),
 				{ faults },
 			)
 		}

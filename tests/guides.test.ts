@@ -64,6 +64,7 @@ await new GuideCommand({
 		createEndpointTool,
 		createWorkflowDraftContract,
 		deriveWorkflowDepth,
+		describeDefinitionMismatch,
 		describeDefinitionRefusal,
 		expandInclude,
 		extendLineage,
@@ -72,7 +73,9 @@ await new GuideCommand({
 		isPrimaryMap,
 		isTableSpec,
 		isWorkflowLineage,
+		limitRefusal,
 		normalizeLineage,
+		renderCandidates,
 		requireActiveWorkspace,
 		requireToolCall,
 		resolveBound,
@@ -241,6 +244,11 @@ await new GuideCommand({
 			expect(describeDefinitionRefusal('shop', [{ reason: 'extra', path: ['keys'] }])).toContain(
 				'database "shop" holds a definition this version refuses (extra key "keys" at the root;',
 			)
+			expect(describeDefinitionMismatch('shop', 'other')).toContain(
+				'database "shop" holds a definition that names id "other"; its id must be "shop";',
+			)
+			expect(renderCandidates(['read', 'list'])).toBe('"read", "list"')
+			expect(limitRefusal('x'.repeat(5000)).length).toBe(2048)
 		})
 
 		it('the endpoint-bridge fence returns the row its comment claims', async () => {
