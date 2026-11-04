@@ -1061,7 +1061,7 @@ export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 			if (!result.success) {
 				const detail =
 					result.error.reason === 'rejected'
-						? `; correct these fields and answer again: ${renderList(result.error.errors.map((fault) => `${preview(fault.field)} ${fault.message}`))}`
+						? `; correct these fields and answer again: ${renderList(result.error.errors.map((fault) => `${preview(fault.field)}: ${preview(fault.message)}`))}`
 						: '; call { "operation": "pending" } for the ids you can answer'
 				throw new ToolboxError(
 					'ANSWER',

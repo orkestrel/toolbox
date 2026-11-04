@@ -5041,7 +5041,16 @@ describe('a refusal a model reads names what to send', () => {
 		expect(isToolboxError(rejected) ? rejected.code : undefined).toBe('ANSWER')
 		const text = rejected instanceof Error ? rejected.message : ''
 		expect(text).toContain('correct these fields and answer again')
-		expect(text).toContain('"value" This field is required')
+		expect(text).toContain('"value": "This field is required"')
+
+		const undeclared = await readToolboxRejection(
+			answerTool.execute(
+				{ operation: 'answer', id: form.id, values: { ['x'.repeat(5000)]: 'a' } },
+				createTestToolContext(),
+			),
+		)
+		expect(isToolboxError(undeclared) ? undeclared.code : undefined).toBe('ANSWER')
+		expect((undeclared instanceof Error ? undeclared.message : '').length).toBeLessThanOrEqual(2048)
 
 		const malformed = await readToolboxRejection(
 			answerTool.execute(
