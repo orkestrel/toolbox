@@ -1283,7 +1283,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						const many = isArray(call.key)
 						const keys = isArray(call.key) ? call.key : [call.key]
 						const rows = (await table.get(keys)).map((row) => row ?? null)
-						return many ? { rows } : { row: rows[0] ?? null }
+						return many ? { rows } : { row: rows[0] }
 					}
 					case 'records': {
 						const handle = await resolver.resolve(call.id)
