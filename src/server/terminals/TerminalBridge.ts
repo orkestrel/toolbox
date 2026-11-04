@@ -1,3 +1,4 @@
+import type { AuditFault, ContractInterface, Infer } from '@orkestrel/contract'
 import type { TerminalManagerInterface, TimerHandler } from '@orkestrel/terminal'
 import type {
 	TerminalRoute,
@@ -5,14 +6,17 @@ import type {
 	TerminalRoutesOptions,
 	TerminalToken,
 } from '../types.js'
+import { isPositiveSafeInteger } from '@orkestrel/agent'
 import { defaultTimer, HEADER_TOKEN } from '@orkestrel/terminal'
-import { isFormValues } from '@orkestrel/form'
+import { isFieldValue, isFormValues } from '@orkestrel/form'
 import {
+	createContract,
 	isFiniteNumber,
+	isFunction,
 	isInstance,
 	isNonEmptyString,
-	isRecord,
 	parseJSON,
+	preview,
 } from '@orkestrel/contract'
 import {
 	collectRequestBody,
@@ -20,7 +24,10 @@ import {
 	createStream,
 	DEFAULT_BODY_LIMIT,
 } from '@orkestrel/server'
+import { describeFaults } from '@orkestrel/tool'
+import { ToolboxError } from '@src/core'
 import { TERMINAL_KEEPALIVE_MS, TERMINAL_ROUTES_PATH } from '../constants.js'
+import { terminalAnswerShape } from '../shapers.js'
 import { TerminalConnection } from './TerminalConnection.js'
 
 /**
@@ -33,10 +40,11 @@ import { TerminalConnection } from './TerminalConnection.js'
 export class TerminalBridge {
 	readonly #manager: TerminalManagerInterface
 	readonly #path: string
-	readonly #token: TerminalToken | undefined
+	readonly #token: TerminalToken
 	readonly #keepalive: number
 	readonly #timer: TimerHandler
 	readonly #limit: number
+	readonly #answer: ContractInterface<Infer<typeof terminalAnswerShape>>
 	readonly #accepts: (presented: string | undefined) => boolean
 	readonly #get: TerminalRoute['handler']
 	readonly #post: TerminalRoute['handler']
@@ -45,19 +53,40 @@ export class TerminalBridge {
 	 * Creates a terminal bridge.
 	 *
 	 * @param manager - Terminal manager bridged onto HTTP
-	 * @param options - Shared route, authorization, keepalive, timer, and body-limit options
+	 * @param options - Required token, plus shared route, keepalive, timer, and body-limit options
+	 * @throws {ToolboxError} Thrown with code `TOOL` for a missing or malformed `token`, a `keepalive`
+	 *   that is not a positive finite number, or a `limit` that is not a positive safe integer
 	 */
-	constructor(manager: TerminalManagerInterface, options?: TerminalRoutesOptions) {
+	constructor(manager: TerminalManagerInterface, options: TerminalRoutesOptions) {
+		// An untyped caller can omit the options, which is the same refusal as omitting the token.
+		const token = options?.token
+		if (!isNonEmptyString(token) && !isFunction(token)) {
+			throw new ToolboxError(
+				'TOOL',
+				`terminal routes need a token; received ${preview(token)}; pass token: 'SECRET' to compare the ${HEADER_TOKEN} header, a function to decide each value, or token: () => true to leave the routes open`,
+			)
+		}
+		const keepalive = options.keepalive ?? TERMINAL_KEEPALIVE_MS
+		if (!isFiniteNumber(keepalive) || keepalive <= 0) {
+			throw new ToolboxError(
+				'TOOL',
+				`terminal keepalive must be a positive finite number of milliseconds; received ${preview(keepalive)}; omit it for the default ${String(TERMINAL_KEEPALIVE_MS)}`,
+			)
+		}
+		const limit = options.limit ?? DEFAULT_BODY_LIMIT
+		if (!isPositiveSafeInteger(limit)) {
+			throw new ToolboxError(
+				'TOOL',
+				`terminal body limit must be a positive safe integer of bytes; received ${preview(limit)}; omit it for the default ${String(DEFAULT_BODY_LIMIT)}`,
+			)
+		}
 		this.#manager = manager
-		this.#path = options?.path ?? TERMINAL_ROUTES_PATH
-		this.#token = options?.token
-		this.#keepalive = options?.keepalive ?? TERMINAL_KEEPALIVE_MS
-		this.#timer = options?.timer ?? defaultTimer
-		const limit = options?.limit
-		this.#limit =
-			limit === undefined || !isFiniteNumber(limit)
-				? DEFAULT_BODY_LIMIT
-				: Math.max(0, Math.floor(limit))
+		this.#path = options.path ?? TERMINAL_ROUTES_PATH
+		this.#token = token
+		this.#keepalive = keepalive
+		this.#timer = options.timer ?? defaultTimer
+		this.#limit = limit
+		this.#answer = createContract(terminalAnswerShape)
 		this.#accepts = this.#valid.bind(this)
 		this.#get = this.#handleGet.bind(this)
 		this.#post = this.#handlePost.bind(this)
@@ -76,7 +105,6 @@ export class TerminalBridge {
 	}
 
 	#valid(presented: string | undefined): boolean {
-		if (this.#token === undefined) return true
 		try {
 			return typeof this.#token === 'function' ? this.#token(presented) : presented === this.#token
 		} catch {
@@ -114,27 +142,44 @@ export class TerminalBridge {
 		}
 		const bytes = await this.#readBody(request)
 		if (bytes instanceof Response) return bytes
-		if (bytes.byteLength > 0 && bytes.byteLength > this.#limit) {
-			return new Response(null, { status: 413 })
-		}
 
 		const body = parseJSON(new TextDecoder().decode(bytes))
 		if (body === undefined) {
 			return new Response(null, { status: 400 })
 		}
-		if (!isRecord(body) || !isNonEmptyString(body.id) || !isFormValues(body.values)) {
-			return new Response(null, { status: 422 })
+		if (!this.#answer.is(body)) return this.#refuse(this.#answer.audit(body))
+		const { id, values } = body
+		if (!isFormValues(values)) {
+			return this.#refuse(
+				Object.entries(values)
+					.filter(([, value]) => !isFieldValue(value))
+					.map(([key, value]) => ({
+						reason: 'type',
+						path: ['values', key],
+						expected: 'union',
+						received: preview(value),
+					})),
+			)
 		}
 
-		const result = this.#manager.answer(name, body.id, body.values)
+		const result = this.#manager.answer(name, id, values)
 		if (result.success) return Response.json(result)
 		if (result.error.reason === 'target') return Response.json(result, { status: 404 })
 		return Response.json(result, { status: 422 })
 	}
 
+	// A malformed body answers in the manager's result envelope, so a client reads one body shape.
+	#refuse(faults: readonly AuditFault[]): Response {
+		const message = `an answer body is { id, values }, where values maps each field name to a string, a finite number, a boolean, or a list of strings; correct each line and send it again:\n${describeFaults(faults, this.#answer.schema)}`
+		return Response.json(
+			{ success: false, error: { reason: 'malformed', message, faults } },
+			{ status: 422 },
+		)
+	}
+
 	async #readBody(request: Request): Promise<Uint8Array | Response> {
 		try {
-			return await collectRequestBody(request, Math.max(1, this.#limit))
+			return await collectRequestBody(request, this.#limit)
 		} catch (error) {
 			if (isInstance(error, ContentTooLargeError)) return new Response(null, { status: 413 })
 			throw error

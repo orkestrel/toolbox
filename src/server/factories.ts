@@ -10,13 +10,18 @@ import { TerminalBridge } from './terminals/TerminalBridge.js'
  * streams, the same POST url answers, the same `{ id, values }` request body, the same JSON answer
  * `Result` response body, and the same `x-orkestrel-token` header.
  *
- * Both routes share the configured `:name` path and optional token gate. The GET route replays
+ * Both routes share the configured `:name` path and the required token gate. The GET route replays
  * pending prompts, forwards live pending/expire events, and owns abort/keepalive teardown. The
- * POST route bounds the request body before parsing and maps answer outcomes to HTTP statuses.
+ * POST route bounds the request body before parsing, refuses a body outside
+ * {@link import('./shapers.js').terminalAnswerShape} with its faults, and maps answer outcomes to
+ * HTTP statuses.
  *
  * @param manager - The terminal manager whose endpoints are bridged
- * @param options - Route path, token, keepalive, timer, and body-limit options
+ * @param options - The required token, plus route path, keepalive, timer, and body-limit options
  * @returns The GET route followed by the POST route
+ * @throws {import('@src/core').ToolboxError} Thrown with code `TOOL` for a missing or malformed
+ *   `token`, a `keepalive` that is not a positive finite number, or a `limit` that is not a positive
+ *   safe integer; `token: () => true` is the explicit open
  *
  * @example
  * ```ts
@@ -30,7 +35,7 @@ import { TerminalBridge } from './terminals/TerminalBridge.js'
  */
 export function createTerminalRoutes(
 	manager: TerminalManagerInterface,
-	options?: TerminalRoutesOptions,
+	options: TerminalRoutesOptions,
 ): readonly TerminalRoute[] {
 	return new TerminalBridge(manager, options).routes()
 }

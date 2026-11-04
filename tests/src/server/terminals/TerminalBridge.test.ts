@@ -2,8 +2,9 @@ import { createForm } from '@orkestrel/form'
 import { DEFAULT_BODY_LIMIT } from '@orkestrel/server'
 import { HEADER_TOKEN } from '@orkestrel/terminal'
 import { createTerminalManager } from '@orkestrel/terminal'
+import { isToolboxError } from '@src/core'
 import { createTerminalRoutes } from '@src/server'
-import { createTestTimer, ToolboxValue } from '../../../setup.js'
+import { captureToolboxFailure, createTestTimer, ToolboxValue } from '../../../setup.js'
 import {
 	readAvailable,
 	findTerminalRoute,
@@ -18,10 +19,136 @@ import { describe, expect, it } from 'vitest'
 // coverage (AGENTS' no-mocks rule); an injected, controllable `TimerHandler` drives the SSE
 // keepalive without wall-clock timing.
 
+describe('TerminalBridge — construction refuses what would leave the routes open or unbounded', () => {
+	it('refuses construction with no token, naming the explicit open', async () => {
+		const manager = createTerminalManager()
+		for (const args of [[manager], [manager, {}], [manager, { token: undefined }]]) {
+			const error = await captureToolboxFailure(() =>
+				Reflect.apply(createTerminalRoutes, undefined, args),
+			)
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			const text = error instanceof Error ? error.message : ''
+			expect(text).toContain('terminal routes need a token')
+			expect(text).toContain('token: () => true')
+			expect(text).toContain(HEADER_TOKEN)
+		}
+	})
+
+	it('refuses a token that is neither a nonempty string nor a function', async () => {
+		const manager = createTerminalManager()
+		for (const token of ['', 5, null, {}, true]) {
+			const error = await captureToolboxFailure(() =>
+				Reflect.apply(createTerminalRoutes, undefined, [manager, { token }]),
+			)
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		}
+	})
+
+	it('the explicit open admits a request with no token header', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const get = findTerminalRoute(createTerminalRoutes(manager, { token: () => true }), 'GET')
+		const controller = new AbortController()
+		const response = await get.handler(
+			new Request('http://x/terminals/assistant', { signal: controller.signal }),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(200)
+		controller.abort()
+		await readAvailable(response)
+	})
+
+	it('refuses a limit that is not a positive safe integer, and admits the floor of 1', async () => {
+		const manager = createTerminalManager()
+		for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+			const error = await captureToolboxFailure(() =>
+				createTerminalRoutes(manager, { token: () => true, limit }),
+			)
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(error instanceof Error ? error.message : '').toContain('positive safe integer')
+		}
+		expect(createTerminalRoutes(manager, { token: () => true, limit: 1 })).toHaveLength(2)
+	})
+
+	it('refuses a keepalive that is not a positive finite number, and admits a fraction', async () => {
+		const manager = createTerminalManager()
+		for (const keepalive of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+			const error = await captureToolboxFailure(() =>
+				createTerminalRoutes(manager, { token: () => true, keepalive }),
+			)
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(error instanceof Error ? error.message : '').toContain('positive finite number')
+		}
+		expect(createTerminalRoutes(manager, { token: () => true, keepalive: 0.5 })).toHaveLength(2)
+	})
+})
+
+describe('TerminalBridge — the POST body door', () => {
+	it('an undeclared key refuses 422 with an extra fault, and the form stays parked', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const post = findTerminalRoute(createTerminalRoutes(manager, { token: () => true }), 'POST')
+		const asked = manager.ask('human', 'assistant', createTerminalTextForm('name?'))
+		const [form] = manager.pending('assistant')
+		if (form === undefined) throw new Error('expected a parked form')
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id: form.id, values: { value: 'Ada' }, reply: true }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(422)
+		const body: unknown = await response.json()
+		expect(body).toMatchObject({
+			success: false,
+			error: { reason: 'malformed', faults: [{ reason: 'extra', path: ['reply'] }] },
+		})
+		expect(JSON.stringify(body)).toContain('reply: extra')
+		expect(manager.pending('assistant')).toHaveLength(1)
+		manager.answer('assistant', form.id, { value: 'Ada' })
+		await expect(asked).resolves.toEqual({ value: 'Ada' })
+	})
+
+	it('a wire body is held to the shape as sent: a number id refuses instead of repairing', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const post = findTerminalRoute(createTerminalRoutes(manager, { token: () => true }), 'POST')
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id: 1, values: { value: 'Ada' } }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(422)
+		expect(await response.json()).toMatchObject({
+			error: { reason: 'malformed', faults: [{ reason: 'type', path: ['id'] }] },
+		})
+	})
+
+	it('values the form package refuses are named in the refusal', async () => {
+		const manager = createTerminalManager()
+		manager.add('assistant')
+		const post = findTerminalRoute(createTerminalRoutes(manager, { token: () => true }), 'POST')
+		const response = await post.handler(
+			new Request('http://x/terminals/assistant', {
+				method: 'POST',
+				body: JSON.stringify({ id: 'x', values: { value: { nested: 1 } } }),
+			}),
+			{ params: { name: 'assistant' } },
+		)
+		expect(response.status).toBe(422)
+		const body: unknown = await response.json()
+		expect(body).toMatchObject({ error: { reason: 'malformed' } })
+		expect(JSON.stringify(body)).toContain('field name')
+	})
+})
+
 describe('TerminalBridge — the token gate and the bound GET / POST handlers', () => {
 	it('returns 404 when a route context omits the name parameter', async () => {
 		const manager = createTerminalManager()
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const request = new Request('http://x/terminals')
 		for (const route of routes) {
 			const response = await route.handler(request, { params: {} })
@@ -31,7 +158,7 @@ describe('TerminalBridge — the token gate and the bound GET / POST handlers', 
 
 	it('GET 404s on an unknown endpoint name', async () => {
 		const manager = createTerminalManager()
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const get = findTerminalRoute(routes, 'GET')
 		const response = await get.handler(new Request('http://x/terminals/ghost'), {
 			params: { name: 'ghost' },
@@ -59,7 +186,11 @@ describe('TerminalBridge — the token gate and the bound GET / POST handlers', 
 		const timer = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant', { timeout: 5, timer: timer.timer })
-		const routes = createTerminalRoutes(manager, { timer: timer.timer, keepalive: 1000 })
+		const routes = createTerminalRoutes(manager, {
+			token: () => true,
+			timer: timer.timer,
+			keepalive: 1000,
+		})
 		const get = findTerminalRoute(routes, 'GET')
 
 		// Park a prompt BEFORE opening the stream so it is replayed.
@@ -103,7 +234,7 @@ describe('TerminalBridge — the token gate and the bound GET / POST handlers', 
 	it('POST 200s and resolves the parked ask on a valid answer', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 
 		const asked = manager.ask('human', 'assistant', createTerminalTextForm('name?'))
@@ -125,7 +256,7 @@ describe('TerminalBridge — the token gate and the bound GET / POST handlers', 
 	it('POST 422 preserves rejected form errors in the response body', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const asked = manager.ask(
 			'human',
@@ -159,7 +290,7 @@ describe('TerminalBridge — the token gate and the bound GET / POST handlers', 
 	it('POST 422s on a malformed body', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const response = await post.handler(
 			new Request('http://x/terminals/assistant', {
@@ -174,7 +305,7 @@ describe('TerminalBridge — the token gate and the bound GET / POST handlers', 
 	it('POST 400s on invalid JSON', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const response = await post.handler(
 			new Request('http://x/terminals/assistant', { method: 'POST', body: 'not json' }),
@@ -185,7 +316,7 @@ describe('TerminalBridge — the token gate and the bound GET / POST handlers', 
 
 	it('POST 404s on an unknown endpoint name', async () => {
 		const manager = createTerminalManager()
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const response = await post.handler(
 			new Request('http://x/terminals/ghost', {
@@ -428,7 +559,11 @@ describe('pressure: mount churn — 50 sequential GET connect→abort cycles, no
 		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const routes = createTerminalRoutes(manager, {
+			token: () => true,
+			timer: churn.timer,
+			keepalive: 1000,
+		})
 		const get = findTerminalRoute(routes, 'GET')
 
 		for (const _ of Array.from({ length: 50 }).keys()) {
@@ -453,7 +588,11 @@ describe('pressure: mount churn — 50 sequential GET connect→abort cycles, no
 		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const routes = createTerminalRoutes(manager, {
+			token: () => true,
+			timer: churn.timer,
+			keepalive: 1000,
+		})
 		const get = findTerminalRoute(routes, 'GET')
 
 		const baselinePending = manager.emitter.count('pending')
@@ -478,7 +617,11 @@ describe('pressure: mount churn — 50 sequential GET connect→abort cycles, no
 		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const routes = createTerminalRoutes(manager, {
+			token: () => true,
+			timer: churn.timer,
+			keepalive: 1000,
+		})
 		const get = findTerminalRoute(routes, 'GET')
 
 		// Churn 50 connect→abort cycles on the SAME endpoint before opening the fresh stream.
@@ -522,7 +665,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 	it('malformed JSON body 400s, manager state untouched', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const before = manager.pending('assistant')
 		const response = await post.handler(
@@ -536,7 +679,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 	it('valid JSON but an empty object fails form-values payload — 422, manager state untouched', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const asked = manager.ask('human', 'assistant', createTerminalTextForm('name?'))
 		asked.catch(() => {})
@@ -552,7 +695,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 	it('{ id: 1 } (id not a string) fails form-values payload — 422, manager state untouched', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const asked = manager.ask('human', 'assistant', createTerminalTextForm('name?'))
 		asked.catch(() => {})
@@ -571,7 +714,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 	it("{ id: 'x' } (missing values key) fails form-values payload — 422, manager state untouched", async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const asked = manager.ask('human', 'assistant', createTerminalTextForm('name?'))
 		asked.catch(() => {})
@@ -589,7 +732,7 @@ describe('pressure: POST fuzz — malformed bodies, invalid payload shapes, wron
 
 	it('unknown endpoint 404s regardless of body validity', async () => {
 		const manager = createTerminalManager()
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const response = await post.handler(
 			new Request('http://x/terminals/ghost', {
@@ -659,7 +802,7 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 	it('a body over the injected `limit` 413s before `manager.answer` runs', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager, { limit: 16 })
+		const routes = createTerminalRoutes(manager, { token: () => true, limit: 16 })
 		const post = findTerminalRoute(routes, 'POST')
 
 		const asked = manager.ask('human', 'assistant', createTerminalTextForm('name?'))
@@ -677,10 +820,10 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 		expect(manager.pending('assistant')).toEqual(before)
 	})
 
-	it('a non-finite limit defaults instead of bypassing the byte cap', async () => {
+	it('an omitted limit applies the default byte cap', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager, { limit: Number.NaN })
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 		const init = {
 			method: 'POST',
@@ -698,7 +841,7 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 	it('a small `Content-Length` header lying about a big streamed body is still capped (limit ignores the header)', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager, { limit: 16 })
+		const routes = createTerminalRoutes(manager, { token: () => true, limit: 16 })
 		const post = findTerminalRoute(routes, 'POST')
 
 		const asked = manager.ask('human', 'assistant', createTerminalTextForm('name?'))
@@ -721,7 +864,7 @@ describe('pressure: bounded POST body — over-limit rejected 413, manager untou
 	it('a body AT the limit is still parsed normally (boundary is exclusive-over, not inclusive)', async () => {
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		const post = findTerminalRoute(routes, 'POST')
 
 		const asked = manager.ask('human', 'assistant', createTerminalTextForm('name?'))
@@ -748,7 +891,11 @@ describe('self-heal: consumer-side stream close (no signal abort) tears down on 
 		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const routes = createTerminalRoutes(manager, {
+			token: () => true,
+			timer: churn.timer,
+			keepalive: 1000,
+		})
 		const get = findTerminalRoute(routes, 'GET')
 
 		const baselinePending = manager.emitter.count('pending')
@@ -784,7 +931,11 @@ describe('self-heal: consumer-side stream close (no signal abort) tears down on 
 		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const routes = createTerminalRoutes(manager, {
+			token: () => true,
+			timer: churn.timer,
+			keepalive: 1000,
+		})
 		const get = findTerminalRoute(routes, 'GET')
 
 		const baselinePending = manager.emitter.count('pending')
@@ -810,7 +961,11 @@ describe('self-heal: consumer-side stream close (no signal abort) tears down on 
 		const churn = createTestTimer()
 		const manager = createTerminalManager()
 		manager.add('assistant')
-		const routes = createTerminalRoutes(manager, { timer: churn.timer, keepalive: 1000 })
+		const routes = createTerminalRoutes(manager, {
+			token: () => true,
+			timer: churn.timer,
+			keepalive: 1000,
+		})
 		const get = findTerminalRoute(routes, 'GET')
 
 		const baselinePending = manager.emitter.count('pending')

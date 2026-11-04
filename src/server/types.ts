@@ -32,10 +32,10 @@ export interface TerminalRoute {
 }
 
 /**
- * Represents the `token` gate {@link TerminalRoutesOptions} may configure — a plain string compared
+ * Represents the `token` gate {@link TerminalRoutesOptions} requires — a plain string compared
  * for equality against the `x-orkestrel-token` header, or a validator function the consumer fully
  * controls, enabling the expiry and rotation a fixed string cannot express (a JWT `exp` check, a
- * revocation-list lookup, anything time-varying). `undefined` disables the auth check entirely.
+ * revocation-list lookup, anything time-varying). The explicit open is the validator `() => true`.
  */
 export type TerminalToken = string | ((value: string | undefined) => boolean)
 
@@ -52,22 +52,25 @@ export type TerminalToken = string | ((value: string | undefined) => boolean)
  *   Validated at GET connect, on every POST, and re-validated on every keepalive tick of a live
  *   SSE stream — a stream whose presented token stops validating (rotated, expired, revoked) is
  *   torn down (the abort/self-heal teardown path, no `shutdown` frame) rather than left open
- *   forever; the client reconnects and re-authenticates. Omitted ⇒ no auth check. Because
+ *   forever; the client reconnects and re-authenticates. Required: omitting it, or passing an empty
+ *   string or a value that is neither a string nor a function, throws at construction, so routes
+ *   never open by accident; `token: () => true` is the explicit open. Because
  *   re-validation only happens on the keepalive tick, the revocation window equals the keepalive
  *   interval — a token rejected/expired between ticks keeps streaming until the next one. A
  *   validator function that throws is treated as rejection (fail-closed) at every call site.
- * - `keepalive` — the SSE comment-ping interval in milliseconds; defaults to
- *   {@link import('./constants.js').TERMINAL_KEEPALIVE_MS}.
+ * - `keepalive` — the SSE comment-ping interval in milliseconds, a positive finite number; defaults
+ *   to {@link import('./constants.js').TERMINAL_KEEPALIVE_MS}. Any other value throws at construction.
  * - `timer` — the injected {@link TimerHandler} driving the keepalive interval (default the host
  *   `setTimeout`/`clearTimeout`), so a test drives the keepalive deterministically.
  * - `limit` — the maximum POST answer body size in bytes, streamed and enforced before JSON
  *   parsing (ignoring any `Content-Length` header, so a lying header can never bypass the cap);
- *   a body exceeding it is rejected `413` and `manager.answer` is never called. Defaults to
- *   `@orkestrel/server`'s own `DEFAULT_BODY_LIMIT` (1 MiB).
+ *   a body exceeding it is rejected `413` and `manager.answer` is never called. A positive safe
+ *   integer; any other value throws at construction. Defaults to `@orkestrel/server`'s own
+ *   `DEFAULT_BODY_LIMIT` (1 MiB).
  */
 export interface TerminalRoutesOptions {
 	readonly path?: string
-	readonly token?: TerminalToken
+	readonly token: TerminalToken
 	readonly keepalive?: number
 	readonly timer?: TimerHandler
 	readonly limit?: number

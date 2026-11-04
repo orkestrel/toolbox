@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 describe('createTerminalRoutes', () => {
 	it('returns exactly two routes, GET and POST, on the same path', () => {
 		const manager = createTerminalManager()
-		const routes = createTerminalRoutes(manager)
+		const routes = createTerminalRoutes(manager, { token: () => true })
 		expect(routes).toHaveLength(2)
 		expect(routes.map((r) => r.method).sort()).toEqual(['GET', 'POST'])
 		expect(new Set(routes.map((r) => r.path)).size).toBe(1)
