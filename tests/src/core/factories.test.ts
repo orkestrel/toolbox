@@ -1329,6 +1329,22 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 		expect(text).toContain('limit: type')
 	})
 
+	it('a known operation carrying many undeclared keys stays within about 2 KB and says how many it left out', async () => {
+		const tool = createWorkspaceTool()
+		const extras = Object.fromEntries(
+			Array.from({ length: 200 }, (_, index) => [`key-${index}`, index]),
+		)
+		const error = await readToolboxRejection(
+			Promise.resolve().then(() =>
+				tool.execute({ operation: 'read', path: 'a.txt', ...extras }, createTestToolContext()),
+			),
+		)
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		const message = error instanceof Error ? error.message : ''
+		expect(message.length).toBeLessThanOrEqual(2300)
+		expect(message).toContain('more faults')
+	})
+
 	it('an untrusted operation stays bounded in the refusal', async () => {
 		const tool = createWorkspaceTool()
 		const error = await readToolboxRejection(
