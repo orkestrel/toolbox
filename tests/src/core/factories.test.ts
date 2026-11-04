@@ -2737,7 +2737,7 @@ describe('createDatabaseTool — tables', () => {
 })
 
 describe('createDatabaseTool — get', () => {
-	it('single key resolves { row }, an array resolves { rows } with misses left absent', async () => {
+	it('single key resolves { row }, an array resolves { rows }, and a miss is an explicit null in either', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
 			{ operation: 'create', id: 'shop', tables: createItemTables() },
@@ -3681,7 +3681,7 @@ describe('createRelationTool — load', () => {
 		expect(isRecord(account) ? account.id : undefined).toBe('a1')
 	})
 
-	it('array keys resolve positionally, a miss at an index left undefined there', async () => {
+	it('array keys resolve positionally, a miss at an index an explicit null there', async () => {
 		const manager = buildRelationManager()
 		await seedAccount(manager, 'a1', 'Acme')
 		const tool = createRelationTool({ managers: { shop: manager } })
@@ -3747,7 +3747,7 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 		expect(isRecord(result) ? result.count : undefined).toBe(2)
 	})
 
-	it('a negative `limit` option floors the effective limit at 0 for find and links', async () => {
+	it('a limit that is not a positive safe integer throws at construction, so a negative one cannot reach a slice', async () => {
 		const managers = { shop: buildRelationManager() }
 		for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
 			const error = captureError(() => createRelationTool({ managers, limit }))
