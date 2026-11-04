@@ -1,7 +1,7 @@
 import type { DatabaseInterface } from '@orkestrel/database'
 import { createMemoryDriver } from '@orkestrel/database'
 import { createMemoryDefinitionStore, DatabaseResolver, isToolboxError } from '@src/core'
-import { createTestDatabase } from '../../../setup.js'
+import { buildDatabaseStoreWithTable, createTestDatabase } from '../../../setup.js'
 import { describe, expect, it } from 'vitest'
 
 describe('DatabaseResolver', () => {
@@ -69,5 +69,41 @@ describe('DatabaseResolver', () => {
 		)
 		expect(isToolboxError(caught)).toBe(true)
 		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
+		expect(caught instanceof Error ? caught.message : '').toContain('"operation": "create"')
+	})
+
+	it('a stored row the store refuses stops the resolve instead of reading as an unknown database', async () => {
+		const { store, table } = buildDatabaseStoreWithTable()
+		await table.set({ id: 'shop', definition: { totally: 'not a definition' } })
+		const resolver = new DatabaseResolver(
+			new Map(),
+			{ memory: createMemoryDriver },
+			undefined,
+			store,
+		)
+		const caught = await resolver.resolve('shop').then(
+			() => undefined,
+			(error: unknown) => error,
+		)
+		expect(isToolboxError(caught) ? caught.code : undefined).toBe('DATABASE')
+	})
+
+	it('a stored definition naming an unregistered driver lists the registered ones', async () => {
+		const { store } = buildDatabaseStoreWithTable()
+		await store.set({ id: 'shop', driver: 'sqlite', tables: {} })
+		const resolver = new DatabaseResolver(
+			new Map(),
+			{ memory: createMemoryDriver },
+			undefined,
+			store,
+		)
+		const caught = await resolver.resolve('shop').then(
+			() => undefined,
+			(error: unknown) => error,
+		)
+		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
+		const text = caught instanceof Error ? caught.message : ''
+		expect(text).toContain('"sqlite"')
+		expect(text).toContain('memory')
 	})
 })

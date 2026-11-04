@@ -1,6 +1,8 @@
 import type { DatabaseInterface, DriverInterface, KeyFunction } from '@orkestrel/database'
 import type { DefinitionStoreInterface } from '../types.js'
+import { preview } from '@orkestrel/contract'
 import { createDatabase } from '@orkestrel/database'
+import { renderList } from '@orkestrel/tool'
 import { ToolboxError } from '../errors.js'
 import { expandTables } from '../compilers.js'
 
@@ -98,10 +100,11 @@ export class DatabaseResolver {
 			if (definition !== undefined) {
 				const factory = this.#drivers[definition.driver]
 				if (factory === undefined) {
-					throw new ToolboxError('TOOL', `unknown driver '${definition.driver}'`, {
-						id,
-						driver: definition.driver,
-					})
+					throw new ToolboxError(
+						'TOOL',
+						`database ${preview(id)} names unknown driver ${preview(definition.driver)}; register it in the tool's drivers, one of ${renderList(Object.keys(this.#drivers))}`,
+						{ id, driver: definition.driver },
+					)
 				}
 				const handle = createDatabase({
 					driver: factory(),
@@ -116,6 +119,10 @@ export class DatabaseResolver {
 				return handle
 			}
 		}
-		throw new ToolboxError('TOOL', `unknown database '${id}'`, { id })
+		throw new ToolboxError(
+			'TOOL',
+			`unknown database ${preview(id)}; define it first with { "operation": "create", "id", "tables" }`,
+			{ id },
+		)
 	}
 }

@@ -3,7 +3,13 @@ import type {
 	DatabaseDefinitionRow,
 	DefinitionStoreInterface,
 } from '../types.js'
+import type { AuditFault } from '@orkestrel/contract'
 import type { TableInterface } from '@orkestrel/database'
+import { preview } from '@orkestrel/contract'
+import { describeFaults } from '@orkestrel/tool'
+import { definitionContract } from '../contracts.js'
+import { ToolboxError } from '../errors.js'
+import { describeDefinitionRefusal } from '../helpers.js'
 import { isDatabaseDefinition } from '../validators.js'
 
 /**
@@ -27,12 +33,15 @@ import { isDatabaseDefinition } from '../validators.js'
  * and keeps the row type flat (`definition` reads back as `unknown`).
  *
  * - **`set(definition)` upserts under the definition's own `id`** (no separate id param) — it
- *   writes the row `{ id: definition.id, definition }`.
+ *   writes the row `{ id: definition.id, definition }`, and first refuses what `get` would refuse,
+ *   so no row is written that `get` cannot read.
  * - **`get(id)` resolves the stored definition for an id**, narrowing the opaque JSON column back
  *   to a {@link DatabaseDefinition} ({@link import('../validators.js').isDatabaseDefinition} — the
- *   boundary narrow for an untrusted storage read), or `undefined` if none is stored
- *   or the stored blob is malformed.
- * - **`delete(id)` drops a definition by id**; an absent id is a no-op (no throw).
+ *   boundary narrow for an untrusted storage read), or `undefined` if no row is stored. A present
+ *   row whose blob is malformed or names another id throws, because reading it as absent would let
+ *   a later `set` overwrite it.
+ * - **`delete(id)` drops a definition by id** without reading it, the remedy for a refused row; an
+ *   absent id is a no-op (no throw).
  *
  * The public surface is exactly `get` / `set` / `delete` — no extra members (the method
  * bijection with {@link DefinitionStoreInterface}).
@@ -65,16 +74,27 @@ export class DatabaseDefinitionStore implements DefinitionStoreInterface {
 	 * {@link DatabaseDefinition}.
 	 *
 	 * @param id - The database id to read
-	 * @returns The stored {@link DatabaseDefinition}, or `undefined` when none is stored or the
-	 *   stored blob is malformed
+	 * @returns The stored {@link DatabaseDefinition}, or `undefined` when no row is stored
+	 * @throws {ToolboxError} Thrown with code `DATABASE` when the row's blob is malformed or names another id, with the faults under `context.faults`
 	 */
 	async get(id: string): Promise<DatabaseDefinition | undefined> {
 		const row = await this.#table.get(id)
 		if (row === undefined) return undefined
 		// The definition crosses back as an untrusted storage read (a structured clone / a JSON
-		// row), so narrow the opaque JSON column with the boundary guard rather than a cast; a
-		// malformed blob resolves `undefined`, never a broken definition.
-		return isDatabaseDefinition(row.definition) ? row.definition : undefined
+		// row), so narrow the opaque JSON column with the boundary guard rather than a cast;
+		// `audit` runs only after the guard refused, to fill the faults.
+		const definition = row.definition
+		if (!isDatabaseDefinition(definition)) {
+			const faults = definitionContract.audit(definition)
+			throw new ToolboxError('DATABASE', describeDefinitionRefusal(id, faults), { id, faults })
+		}
+		if (definition.id !== id) {
+			const faults: readonly AuditFault[] = [
+				{ reason: 'type', path: ['id'], expected: 'literal', received: preview(definition.id) },
+			]
+			throw new ToolboxError('DATABASE', describeDefinitionRefusal(id, faults), { id, faults })
+		}
+		return definition
 	}
 
 	/**
@@ -82,8 +102,18 @@ export class DatabaseDefinitionStore implements DefinitionStoreInterface {
 	 *
 	 * @param definition - The config to persist; its own `id` is the row key (no separate id param)
 	 * @returns A promise settling after the row is written
+	 * @throws {ToolboxError} Thrown with code `DATABASE` before any write when the definition fails the guard `get` reads, with the faults under `context.faults`
 	 */
 	async set(definition: DatabaseDefinition): Promise<void> {
+		if (!isDatabaseDefinition(definition)) {
+			const unchecked: unknown = definition
+			const faults = definitionContract.audit(unchecked)
+			throw new ToolboxError(
+				'DATABASE',
+				`a definition store writes only a complete definition; correct each line and call set again:\n${describeFaults(faults, definitionContract.schema)}`,
+				{ faults },
+			)
+		}
 		await this.#table.set({ id: definition.id, definition })
 	}
 

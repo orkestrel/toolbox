@@ -7,6 +7,7 @@ import type {
 	RelationManagerInterface,
 } from '@orkestrel/relation'
 import type { QueryInput } from '@orkestrel/database'
+import type { WorkspaceInterface, WorkspaceManagerInterface } from '@orkestrel/workspace'
 import type {
 	ToolboxErrorCode,
 	ClampedQuery,
@@ -18,8 +19,24 @@ import type { PhaseDraft, TaskDraft, WorkflowDraft, WorkflowSteps } from './type
 import { isTerminalError } from '@orkestrel/terminal'
 import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
-import type { ContractInterface, JSONRecord } from '@orkestrel/contract'
-import { isArray, isObject } from '@orkestrel/contract'
+import type { AuditFault, ContractInterface, JSONRecord, JSONSchema } from '@orkestrel/contract'
+import {
+	attempt,
+	createContract,
+	isObject,
+	isRecord,
+	preview,
+	schemaToShape,
+} from '@orkestrel/contract'
+import { isPositiveSafeInteger } from '@orkestrel/agent'
+import {
+	describeFaults,
+	extractPath,
+	isToolError,
+	renderList,
+	scanFaults,
+	ToolError,
+} from '@orkestrel/tool'
 import { ToolboxError } from './errors.js'
 import { isWorkflowLineage } from './validators.js'
 
@@ -309,7 +326,11 @@ export function expandInclude(paths: readonly string[] | undefined, depth: numbe
 	return Iterator.from(paths ?? []).reduce<Include>((include, path) => {
 		const segments = path.split('.')
 		if (segments.length > depth || segments.some((segment) => segment.length === 0)) {
-			throw new ToolboxError('TOOL', `malformed include path '${path}'`, { path, depth })
+			throw new ToolboxError(
+				'TOOL',
+				`malformed include path ${preview(path)}; send dot-separated relation names with no empty segment and at most ${String(depth)} segments`,
+				{ path, depth },
+			)
 		}
 		const ancestors: Include[] = [include]
 		const last = segments.length - 1
@@ -360,10 +381,11 @@ export function resolveRelationManager(
 	if (name !== undefined) {
 		const manager = managers[name]
 		if (manager === undefined) {
-			throw new ToolboxError('TOOL', `unknown relation manager '${name}'`, {
-				manager: name,
-				managers: Object.keys(managers),
-			})
+			throw new ToolboxError(
+				'TOOL',
+				`unknown relation manager ${preview(name)}; send manager as one of ${renderList(Object.keys(managers))}`,
+				{ manager: name, managers: Object.keys(managers) },
+			)
 		}
 		return manager
 	}
@@ -373,9 +395,11 @@ export function resolveRelationManager(
 		const manager = managers[single]
 		if (manager !== undefined) return manager
 	}
-	throw new ToolboxError('TOOL', 'no relation manager resolved for the call', {
-		managers: names,
-	})
+	throw new ToolboxError(
+		'TOOL',
+		`no relation manager resolved for the call; send manager as one of ${renderList(names)}`,
+		{ managers: names },
+	)
 }
 
 /**
@@ -392,10 +416,11 @@ export function resolveRelationModel(
 	name: string,
 ): ModelInterface {
 	if (!manager.has(name)) {
-		throw new ToolboxError('TOOL', `unknown model '${name}'`, {
-			model: name,
-			models: manager.names(),
-		})
+		throw new ToolboxError(
+			'TOOL',
+			`unknown model ${preview(name)}; send model as one of ${renderList(manager.names())}`,
+			{ model: name, models: manager.names() },
+		)
 	}
 	return manager.model(name)
 }
@@ -485,8 +510,23 @@ export function clampQuery(query: QueryInput | undefined, cap: number): ClampedQ
 	const limit = resolveLimit(query?.limit, cap)
 	return { query: { ...query, limit: limit + 1 }, limit }
 }
+
 /**
- * Resolves an owned workflow input through the supplied flat or draft contracts.
+ * Resolves an owned workflow input through the supplied flat or draft contracts, or refuses it with
+ * what to send.
+ *
+ * @remarks
+ * Empty input is the wrapped definition. A `phases` key with no `steps` key takes the draft form,
+ * and everything else takes the advertised flat form, so a blob carrying both keys refuses `phases`
+ * as undeclared rather than ignoring it, and a blob carrying neither is told to send `steps`.
+ *
+ * @param owned - The call's owned JSON arguments
+ * @param definition - The wrapped definition empty input runs
+ * @param steps - The compiled flat form
+ * @param draft - The compiled draft form
+ * @returns The definition the input resolves to
+ * @throws {import('@orkestrel/tool').ToolError} Thrown with code `ARGUMENTS` when the chosen form refuses the input, carrying `context.faults`
+ *
  * @example
  * ```ts
  * import { createContract } from '@orkestrel/contract'
@@ -502,12 +542,217 @@ export function resolveWorkflowTarget(
 	definition: WorkflowDefinition,
 	steps: ContractInterface<WorkflowSteps>,
 	draft: ContractInterface<WorkflowDraft>,
-): WorkflowDefinition | undefined {
+): WorkflowDefinition {
 	if (Object.keys(owned).length === 0) return definition
-	if (isArray(owned.steps)) {
-		const flat = steps.parse(owned)
-		return flat === undefined ? undefined : expandSteps(flat)
+	return Object.hasOwn(owned, 'phases') && !Object.hasOwn(owned, 'steps')
+		? completeDraft(requireToolCall(draft, owned))
+		: expandSteps(requireToolCall(steps, owned))
+}
+
+// === Tool-call doors
+
+/**
+ * Reads a call's arguments through a compiled contract, or refuses them with what to send.
+ *
+ * @remarks
+ * Runs the Tool door's own steps from `@orkestrel/tool`: `scanFaults`, then `parse`. A tool with an
+ * object root takes this door through `createTool`'s `contract` and calls this helper only to type
+ * what it received. A tool whose root is an `operation` union, and the workflow tool with its several
+ * authoring forms, take it here under `strict: false`, because {@link buildArgumentRefusal} can name
+ * the operation's own faults where the Tool door names only the union.
+ *
+ * @param contract - The compiled contract of the arguments
+ * @param value - The arguments the call sent
+ * @returns What `parse` returns: a fresh null-prototype record at each declared object
+ * @throws {import('@orkestrel/tool').ToolError} Thrown with code `ARGUMENTS`, carrying `context.faults` when the arguments could be read
+ *
+ * @example
+ * ```ts
+ * import { createContract, numberShape, objectShape } from '@orkestrel/contract'
+ * import { requireToolCall } from '@src/core'
+ *
+ * const contract = createContract(objectShape({ amount: numberShape() }))
+ * requireToolCall(contract, { amount: '3' }) // { amount: 3 }
+ * requireToolCall(contract, { amount: 3, extra: 1 }) // throws ToolError ('ARGUMENTS')
+ * ```
+ */
+export function requireToolCall<T>(contract: ContractInterface<T>, value: unknown): T {
+	const read = attempt((): T | ToolError => {
+		const faults = scanFaults(contract, value)
+		const parsed = faults.length === 0 ? contract.parse(value) : undefined
+		return parsed === undefined ? buildArgumentRefusal(contract.schema, value, faults) : parsed
+	})
+	if (!read.success) {
+		throw new ToolError(
+			'ARGUMENTS',
+			'Arguments could not be read; send one JSON object of plain values',
+			undefined,
+			{ cause: read.error },
+		)
 	}
-	const parsed = draft.parse(owned)
-	return parsed === undefined ? undefined : completeDraft(parsed)
+	if (isToolError(read.value)) throw read.value
+	return read.value
+}
+
+/**
+ * Builds the error that refuses a call's arguments, naming the operation's own faults when the
+ * schema's root is a union of `operation` forms.
+ *
+ * @remarks
+ * `scanFaults` reports one `variant` fault for a union, and `describeFaults` then names no key. Each
+ * form of an `operation` union declares its literal, so the call's `operation` selects one form to
+ * audit. An operation no form declares refuses with every candidate. A coercible leaf reports as a
+ * `type` fault here, because a union does not repair. Any other schema reports the faults as given.
+ *
+ * @param schema - The compiled schema the arguments are held to
+ * @param value - The arguments the call sent
+ * @param faults - The faults `scanFaults` reported
+ * @returns The `ToolError` to throw, with code `ARGUMENTS` and the faults in `context.faults`
+ *
+ * @example
+ * ```ts
+ * import { createContract, literalShape, objectShape, stringShape, unionShape } from '@orkestrel/contract'
+ * import { buildArgumentRefusal } from '@src/core'
+ *
+ * const { schema } = createContract(
+ * 	unionShape(
+ * 		objectShape({ operation: literalShape(['read']), path: stringShape() }),
+ * 		objectShape({ operation: literalShape(['list']) }),
+ * 	),
+ * )
+ * buildArgumentRefusal(schema, { operation: 'read' }, []).message
+ * // 'operation "read" takes path; correct each line and send it again:\npath: missing; expected string'
+ * ```
+ */
+export function buildArgumentRefusal(
+	schema: JSONSchema,
+	value: unknown,
+	faults: readonly AuditFault[],
+): ToolError {
+	const forms = schema.anyOf ?? []
+	const names = forms.flatMap((form) => form.properties?.operation?.enum ?? [])
+	if (names.length === 0) {
+		return new ToolError('ARGUMENTS', describeFaults(faults, schema), { faults })
+	}
+	const operation: unknown = isRecord(value) ? value.operation : undefined
+	const form = forms.find((candidate) =>
+		candidate.properties?.operation?.enum?.some((name) => name === operation),
+	)
+	if (form === undefined) {
+		const absent = !isRecord(value) || !Object.hasOwn(value, 'operation')
+		const fault: AuditFault = absent
+			? { reason: 'missing', path: ['operation'], expected: 'literal' }
+			: { reason: 'type', path: ['operation'], expected: 'literal', received: preview(operation) }
+		return new ToolError(
+			'ARGUMENTS',
+			`operation: ${absent ? 'missing' : `received ${preview(operation)}`}; send one of ${names.map((name) => preview(name)).join(', ')}`,
+			{ faults: [fault] },
+		)
+	}
+	const audited = createContract(schemaToShape(form)).audit(value)
+	const listed = audited.length > 0 ? audited : faults
+	const keys = Object.keys(form.properties ?? {}).filter((key) => key !== 'operation')
+	const required = keys.filter((key) => form.required?.includes(key) === true)
+	const optional = keys.filter((key) => !required.includes(key))
+	const takes = [
+		required.length === 0 && optional.length === 0 ? 'no other key' : renderList(required),
+		...(optional.length === 0 ? [] : [`optional: ${renderList(optional)}`]),
+	]
+		.filter((part) => part !== '')
+		.join('; ')
+	return new ToolError(
+		'ARGUMENTS',
+		`operation ${preview(operation)} takes ${takes}; correct each line and send it again:\n${describeFaults(listed, form)}`,
+		{ faults: listed },
+	)
+}
+
+/**
+ * Picks the effective value of a positive numeric tool option: the configured value when it is a
+ * positive safe integer, and the fallback when it is omitted.
+ *
+ * @param value - The configured option, or `undefined`
+ * @param fallback - The default an omitted option takes
+ * @param subject - The name the refusal gives the option
+ * @returns The effective value
+ * @throws {ToolboxError} Thrown with code `TOOL` when `value` is present and is anything else, because `NaN` as a bound passes every comparison
+ *
+ * @example
+ * ```ts
+ * import { resolveBound } from '@src/core'
+ *
+ * resolveBound(undefined, 100, 'database limit') // 100
+ * resolveBound(25, 100, 'database limit') // 25
+ * resolveBound(0, 100, 'database limit') // throws ToolboxError ('TOOL')
+ * ```
+ */
+export function resolveBound(value: number | undefined, fallback: number, subject: string): number {
+	if (value === undefined) return fallback
+	if (isPositiveSafeInteger(value)) return value
+	throw new ToolboxError(
+		'TOOL',
+		`${subject} must be a positive safe integer; received ${preview(value)}; omit it for the default ${String(fallback)}`,
+		{ received: preview(value) },
+	)
+}
+
+/**
+ * Reads the active workspace for an operation that edits a file that must already exist, or refuses.
+ *
+ * @param manager - The manager the workspace tool drives
+ * @param operation - The operation that needs an active workspace
+ * @returns The active workspace
+ * @throws {ToolboxError} Thrown with code `TOOL` when no workspace is active, and creates none
+ *
+ * @example
+ * ```ts
+ * import { createWorkspaceManager } from '@orkestrel/workspace'
+ * import { requireActiveWorkspace } from '@src/core'
+ *
+ * const manager = createWorkspaceManager()
+ * const workspace = manager.add()
+ * requireActiveWorkspace(manager, 'remove') === workspace // true
+ * ```
+ */
+export function requireActiveWorkspace(
+	manager: WorkspaceManagerInterface,
+	operation: string,
+): WorkspaceInterface {
+	const active = manager.active
+	if (active !== undefined) return active
+	throw new ToolboxError(
+		'TOOL',
+		`operation ${preview(operation)} needs an active workspace and none is; call "write" to create one, or "workspaces" then "switch"`,
+		{ operation },
+	)
+}
+
+/**
+ * Describes a stored definition this package refuses to read, naming its first fault and the remedy.
+ *
+ * @param id - The database id the row is stored under
+ * @param faults - The refused definition's faults
+ * @returns The refusal message
+ *
+ * @example
+ * ```ts
+ * import { describeDefinitionRefusal } from '@src/core'
+ *
+ * describeDefinitionRefusal('shop', [{ reason: 'extra', path: ['keys'] }])
+ * // 'database "shop" holds a definition this version refuses (extra key "keys" at the root; ...'
+ * ```
+ */
+export function describeDefinitionRefusal(id: string, faults: readonly AuditFault[]): string {
+	const [first] = faults
+	const path = first === undefined ? [] : extractPath(first)
+	const held = preview(id)
+	const finding =
+		first?.reason === 'extra'
+			? `extra key ${preview(path.at(-1))} at ${path.length === 1 ? 'the root' : preview(path.slice(0, -1).join('.'))}`
+			: first === undefined
+				? 'a value its shape cannot name'
+				: `${first.reason} at ${path.length === 0 ? 'the root' : preview(path.join('.'))}`
+	const remedy =
+		first?.reason === 'extra' ? 'rewrite it without the key' : 'rewrite it to the declared shape'
+	return `database ${held} holds a definition this version refuses (${finding}; a definition written before this change can carry it); read the row through your own table and ${remedy}, or delete it with store.delete(${held})`
 }

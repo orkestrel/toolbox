@@ -1,6 +1,17 @@
-import type { ContractInterface } from '@orkestrel/contract'
-import { createContract } from '@orkestrel/contract'
+import type { AuditFault, ContractInterface } from '@orkestrel/contract'
+import {
+	createContract,
+	integerShape,
+	literalShape,
+	numberShape,
+	objectShape,
+	optionalShape,
+	stringShape,
+	unionShape,
+} from '@orkestrel/contract'
 import { captureError } from '@orkestrel/test'
+import { isToolError } from '@orkestrel/tool'
+import { createWorkspaceManager } from '@orkestrel/workspace'
 import type { QueryInput } from '@orkestrel/database'
 import type { WorkflowDraft, WorkflowSteps } from '@src/core'
 import type {
@@ -12,6 +23,11 @@ import type {
 import {
 	tagAgent,
 	ToolboxError,
+	buildArgumentRefusal,
+	describeDefinitionRefusal,
+	requireActiveWorkspace,
+	requireToolCall,
+	resolveBound,
 	clampQuery,
 	completeDraft,
 	resolveWorkflowTarget,
@@ -477,11 +493,179 @@ describe('resolveWorkflowTarget', () => {
 		const nested = { phases: [{ tasks: [{ behavior: 'compile' }] }] }
 		expect(resolveWorkflowTarget(nested, definition, steps, draft)).toEqual(completeDraft(nested))
 	})
-	it('leaves a refused flat or draft input absent for the strict caller gate', () => {
+	it('refuses a flat or draft input with the chosen form`s own faults', () => {
 		const definition = completeDraft({ phases: [{ tasks: [{}] }] })
 		const steps: ContractInterface<WorkflowSteps> = createContract(workflowStepsShape)
 		const draft = createWorkflowDraftContract()
-		expect(resolveWorkflowTarget({ steps: [{}] }, definition, steps, draft)).toBeUndefined()
-		expect(resolveWorkflowTarget({ phases: false }, definition, steps, draft)).toBeUndefined()
+		const flat = captureError(() =>
+			resolveWorkflowTarget({ steps: [{}] }, definition, steps, draft),
+		)
+		expect(isToolError(flat) ? flat.context?.faults : undefined).toMatchObject([
+			{ reason: 'missing', path: ['steps', '0', 'name'] },
+		])
+		const nested = captureError(() =>
+			resolveWorkflowTarget({ phases: false }, definition, steps, draft),
+		)
+		expect(isToolError(nested) ? nested.context?.faults : undefined).toMatchObject([
+			{ reason: 'type', path: ['phases'] },
+		])
+	})
+
+	it('a non-array steps takes the flat form, not the draft form', () => {
+		const definition = completeDraft({ phases: [{ tasks: [{}] }] })
+		const steps: ContractInterface<WorkflowSteps> = createContract(workflowStepsShape)
+		const draft = createWorkflowDraftContract()
+		const error = captureError(() =>
+			resolveWorkflowTarget({ steps: 'compile' }, definition, steps, draft),
+		)
+		expect(isToolError(error) ? error.context?.faults : undefined).toMatchObject([
+			{ reason: 'type', path: ['steps'] },
+		])
+	})
+})
+
+describe('requireToolCall', () => {
+	const contract = createContract(objectShape({ amount: numberShape() }))
+
+	it('returns what parse returns, repairing a coercible leaf', () => {
+		expect(requireToolCall(contract, { amount: 3 })).toEqual({ amount: 3 })
+		expect(requireToolCall(contract, { amount: '3' })).toEqual({ amount: 3 })
+	})
+
+	it('refuses an undeclared key that parse alone would strip', () => {
+		const error = captureError(() => requireToolCall(contract, { amount: 3, extra: 1 }))
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['extra'] },
+		])
+		expect(error instanceof Error ? error.message : '').toContain('extra: extra')
+	})
+
+	it('refuses arguments it cannot read, with no faults to carry', () => {
+		const revoked = Proxy.revocable<Record<string, unknown>>({}, {})
+		revoked.revoke()
+		const error = captureError(() => requireToolCall(contract, revoked.proxy))
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(error instanceof Error ? error.message : '').toContain('could not be read')
+	})
+})
+
+describe('buildArgumentRefusal', () => {
+	const { schema } = createContract(
+		unionShape(
+			objectShape({
+				operation: literalShape(['read']),
+				path: stringShape(),
+				limit: optionalShape(integerShape({ min: 1 })),
+			}),
+			objectShape({ operation: literalShape(['list']) }),
+		),
+	)
+
+	it('reports the faults as given for a schema that is no operation union', () => {
+		const flat = createContract(objectShape({ amount: numberShape() }))
+		const faults = flat.audit({ extra: 1 })
+		const error = buildArgumentRefusal(flat.schema, { extra: 1 }, faults)
+		expect(error.context?.faults).toEqual(faults)
+		expect(error.message).toContain('amount: missing')
+	})
+
+	it('names the required and optional keys of the operation the call selects', () => {
+		const error = buildArgumentRefusal(schema, { operation: 'read' }, [])
+		expect(error.code).toBe('ARGUMENTS')
+		expect(error.message).toContain('operation "read" takes path; optional: limit')
+		expect(error.context?.faults).toMatchObject([{ reason: 'missing', path: ['path'] }])
+	})
+
+	it('says an operation with no fields takes no other key', () => {
+		const error = buildArgumentRefusal(schema, { operation: 'list', depth: 1 }, [])
+		expect(error.message).toContain('operation "list" takes no other key')
+		expect(error.message).toContain('depth: extra')
+	})
+
+	it('lists every candidate for an unknown or a missing operation, and for a value that is no record', () => {
+		const unknown = buildArgumentRefusal(schema, { operation: 'nope' }, [])
+		expect(unknown.message).toBe('operation: received "nope"; send one of "read", "list"')
+		expect(unknown.context?.faults).toEqual([
+			{ reason: 'type', path: ['operation'], expected: 'literal', received: '"nope"' },
+		])
+		for (const value of [{}, 'read', null]) {
+			const missing = buildArgumentRefusal(schema, value, [])
+			expect(missing.message).toBe('operation: missing; send one of "read", "list"')
+			expect(missing.context?.faults).toEqual([
+				{ reason: 'missing', path: ['operation'], expected: 'literal' },
+			])
+		}
+	})
+
+	it('keeps the union`s faults when the selected form finds none', () => {
+		const faults: readonly AuditFault[] = [{ reason: 'variant', path: [], variants: 2 }]
+		const error = buildArgumentRefusal(schema, { operation: 'list' }, faults)
+		expect(error.context?.faults).toEqual(faults)
+	})
+})
+
+describe('resolveBound', () => {
+	it('takes the fallback when omitted and the value when it is a positive safe integer', () => {
+		expect(resolveBound(undefined, 100, 'database limit')).toBe(100)
+		expect(resolveBound(1, 100, 'database limit')).toBe(1)
+		expect(resolveBound(Number.MAX_SAFE_INTEGER, 100, 'database limit')).toBe(
+			Number.MAX_SAFE_INTEGER,
+		)
+	})
+
+	it('refuses anything else, naming the subject, what it received, and the default', () => {
+		for (const value of [0, -0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+			const error = captureError(() => resolveBound(value, 100, 'database limit'))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			const text = error instanceof Error ? error.message : ''
+			expect(text).toContain('database limit must be a positive safe integer')
+			expect(text).toContain('default 100')
+		}
+	})
+})
+
+describe('requireActiveWorkspace', () => {
+	it('returns the active workspace and refuses with what to call when none is active', () => {
+		const manager = createWorkspaceManager()
+		const error = captureError(() => requireActiveWorkspace(manager, 'remove'))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(error instanceof Error ? error.message : '').toContain(
+			'"remove" needs an active workspace',
+		)
+		expect(manager.count).toBe(0)
+		const workspace = manager.add()
+		expect(requireActiveWorkspace(manager, 'remove')).toBe(workspace)
+	})
+})
+
+describe('describeDefinitionRefusal', () => {
+	it('names an undeclared key at the root and below it, with the remedy', () => {
+		const root = describeDefinitionRefusal('shop', [{ reason: 'extra', path: ['keys'] }])
+		expect(root).toContain('database "shop" holds a definition this version refuses')
+		expect(root).toContain('extra key "keys" at the root')
+		expect(root).toContain('rewrite it without the key')
+		expect(root).toContain('store.delete("shop")')
+		const nested = describeDefinitionRefusal('shop', [
+			{ reason: 'extra', path: ['tables', 'items', 'note'] },
+		])
+		expect(nested).toContain('extra key "note" at "tables.items"')
+	})
+
+	it('names another fault by its reason and path, or the root, and an empty report plainly', () => {
+		const fault = describeDefinitionRefusal('shop', [
+			{ reason: 'missing', path: ['tables'], expected: 'object' },
+		])
+		expect(fault).toContain('missing at "tables"')
+		expect(fault).toContain('rewrite it to the declared shape')
+		const root = describeDefinitionRefusal('shop', [
+			{ reason: 'type', path: [], expected: 'object', received: '"x"' },
+		])
+		expect(root).toContain('type at the root')
+		expect(describeDefinitionRefusal('shop', [])).toContain('a value its shape cannot name')
+	})
+
+	it('keeps an untrusted id bounded', () => {
+		expect(describeDefinitionRefusal('x'.repeat(20_000), []).length).toBeLessThanOrEqual(2048)
 	})
 })

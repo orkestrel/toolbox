@@ -135,10 +135,9 @@ export const taskDraftShape = objectShape({
 	),
 	timeout: optionalShape(
 		integerShape({
-			min: 0,
+			min: 1,
 			max: MAX_TIMER_MS,
-			description:
-				'Persisted per-attempt deadline in milliseconds (0 disables it); omitted means no deadline.',
+			description: 'Per-attempt deadline in milliseconds. Omit the key for no deadline.',
 		}),
 	),
 })
@@ -157,6 +156,7 @@ export const phaseDraftShape = objectShape({
 	concurrency: optionalShape(
 		integerShape({
 			min: 1,
+			max: Number.MAX_SAFE_INTEGER,
 			description: 'Max tasks in flight at once (a resource throttle); omitted means unbounded.',
 		}),
 	),
@@ -255,20 +255,23 @@ export const workflowStepsShape = objectShape({
 export const workspaceToolShape = unionShape(
 	objectShape({
 		operation: literalShape(['read'], { description: "Read a whole text file's text by path." }),
-		path: stringShape({ description: 'The path of the file to read.' }),
+		path: stringShape({ min: 1, description: 'The path of the file to read.' }),
 	}),
 	objectShape({
 		operation: literalShape(['list'], { description: 'List every file in the workspace.' }),
 	}),
 	objectShape({
 		operation: literalShape(['has'], { description: 'Check whether a file exists at the path.' }),
-		path: stringShape({ description: 'The path to check for.' }),
+		path: stringShape({ min: 1, description: 'The path to check for.' }),
 	}),
 	objectShape({
 		operation: literalShape(['search'], {
 			description: 'Search every text file for a query, returning each hit.',
 		}),
-		query: stringShape({ description: 'The text (or regular-expression source) to search for.' }),
+		query: stringShape({
+			min: 1,
+			description: 'The text (or regular-expression source) to search for.',
+		}),
 		regex: optionalShape(
 			booleanShape({
 				description:
@@ -291,7 +294,10 @@ export const workspaceToolShape = unionShape(
 		operation: literalShape(['replace'], {
 			description: 'Replace a query with a replacement across every text file.',
 		}),
-		query: stringShape({ description: 'The text (or regular-expression source) to replace.' }),
+		query: stringShape({
+			min: 1,
+			description: 'The text (or regular-expression source) to replace.',
+		}),
 		replacement: stringShape({ description: 'The text to substitute for each match.' }),
 		regex: optionalShape(
 			booleanShape({
@@ -315,7 +321,7 @@ export const workspaceToolShape = unionShape(
 		operation: literalShape(['write'], {
 			description: 'Create or overwrite a whole file with content.',
 		}),
-		path: stringShape({ description: 'The path of the file to write.' }),
+		path: stringShape({ min: 1, description: 'The path of the file to write.' }),
 		content: stringShape({ description: 'The full new contents of the file.' }),
 	}),
 	objectShape({
@@ -323,7 +329,7 @@ export const workspaceToolShape = unionShape(
 			description:
 				'Replace a 1-based range of an existing text file (from inclusive, to exclusive) with content.',
 		}),
-		path: stringShape({ description: 'The path of the text file to edit.' }),
+		path: stringShape({ min: 1, description: 'The path of the text file to edit.' }),
 		content: stringShape({ description: 'The text to splice in place of the range.' }),
 		fromLine: integerShape({
 			min: 1,
@@ -344,26 +350,26 @@ export const workspaceToolShape = unionShape(
 		operation: literalShape(['prepend'], {
 			description: 'Add content to the start of a file (creating it when absent).',
 		}),
-		path: stringShape({ description: 'The path of the file to prepend to.' }),
+		path: stringShape({ min: 1, description: 'The path of the file to prepend to.' }),
 		content: stringShape({ description: 'The text to add at the start of the file.' }),
 	}),
 	objectShape({
 		operation: literalShape(['append'], {
 			description: 'Add content to the end of a file (creating it when absent).',
 		}),
-		path: stringShape({ description: 'The path of the file to append to.' }),
+		path: stringShape({ min: 1, description: 'The path of the file to append to.' }),
 		content: stringShape({ description: 'The text to add at the end of the file.' }),
 	}),
 	objectShape({
 		operation: literalShape(['move'], {
 			description: 'Rename or move a file (overwriting an occupied target).',
 		}),
-		from: stringShape({ description: 'The current path of the file.' }),
-		to: stringShape({ description: 'The new path for the file.' }),
+		from: stringShape({ min: 1, description: 'The current path of the file.' }),
+		to: stringShape({ min: 1, description: 'The new path for the file.' }),
 	}),
 	objectShape({
 		operation: literalShape(['remove'], { description: 'Delete a file from the workspace.' }),
-		path: stringShape({ description: 'The path of the file to remove.' }),
+		path: stringShape({ min: 1, description: 'The path of the file to remove.' }),
 	}),
 	objectShape({
 		operation: literalShape(['workspaces'], {
@@ -410,6 +416,42 @@ export const tableSpecShape = recordShape(
 	{ description: 'Table name to its column layout.' },
 )
 
+/** Describes a {@link import('./types.js').DatabaseDefinition}'s `primary` map — table name to its primary-key column. */
+export const primaryShape = recordShape(stringShape({ min: 1 }), {
+	description: 'Table name to its primary-key column.',
+})
+
+/** Describes a {@link import('./types.js').DatabaseDefinition}'s `indexes` map — table name to its index column groups. */
+export const indexesShape = recordShape(
+	arrayShape(
+		arrayShape(stringShape({ min: 1 }), {
+			min: 1,
+			description: 'One nonempty index group of column names.',
+		}),
+		{ description: 'Zero or more index groups declared for the table.' },
+	),
+	{ description: 'Table name to its index column groups.' },
+)
+
+/**
+ * Describes a stored {@link import('./types.js').DatabaseDefinition} exactly: the owned record
+ * {@link import('./stores/DatabaseDefinitionStore.js').DatabaseDefinitionStore} reads and writes.
+ *
+ * @remarks
+ * {@link import('./validators.js').isDatabaseDefinition} is the guard the store runs, and a lockstep
+ * test holds it to this shape. The compiled contract fills a refusal's faults.
+ */
+export const definitionShape = objectShape({
+	id: stringShape({ min: 1, description: 'The database id.' }),
+	driver: stringShape({ min: 1, description: 'The registered driver key.' }),
+	tables: tableSpecShape,
+	primary: optionalShape(primaryShape),
+	indexes: optionalShape(indexesShape),
+	version: optionalShape(
+		numberShape({ description: 'The schema version for open-time reconciliation.' }),
+	),
+})
+
 /**
  * Describes one key value for the database tool and the relation tool — a string or number; the
  * array form (multiple keys, positional) resolves first, so an array argument is read as many keys
@@ -417,7 +459,7 @@ export const tableSpecShape = recordShape(
  */
 export const keyShape = unionShape(
 	arrayShape(unionShape(stringShape(), numberShape()), {
-		description: 'Multiple row keys, positional — a miss at an index is undefined there.',
+		description: 'Multiple row keys, positional — a miss at an index is null there.',
 	}),
 	stringShape({ description: 'One row key.' }),
 	numberShape({ description: 'One row key.' }),
@@ -513,23 +555,8 @@ export const databaseToolShape = unionShape(
 		driver: optionalShape(
 			stringShape({ min: 1, description: 'The registered driver key. Defaults to "memory".' }),
 		),
-		primary: optionalShape(
-			recordShape(stringShape({ min: 1 }), {
-				description: 'Table name to its primary-key column.',
-			}),
-		),
-		indexes: optionalShape(
-			recordShape(
-				arrayShape(
-					arrayShape(stringShape({ min: 1 }), {
-						min: 1,
-						description: 'One nonempty index group of column names.',
-					}),
-					{ description: 'Zero or more index groups declared for the table.' },
-				),
-				{ description: 'Table name to its index column groups.' },
-			),
-		),
+		primary: optionalShape(primaryShape),
+		indexes: optionalShape(indexesShape),
 		version: optionalShape(
 			numberShape({ description: 'The schema version for open-time reconciliation.' }),
 		),
@@ -699,8 +726,8 @@ export const relationToolShape = unionShape(
  * optional `candidates` array to check against the inferred schema.
  *
  * @remarks
- * `samples` requires at least one element (`min: 1`) — an empty array parses to `undefined`,
- * surfaced by the handler as a typed `TOOL` {@link import('./errors.js').ToolboxError}. When
+ * `samples` requires at least one element (`min: 1`) — the Tool door refuses an empty array with
+ * a `ToolError` carrying code `ARGUMENTS` (`@orkestrel/tool`). When
  * `candidates` is present (any array, including empty), the handler compiles a contract from the
  * freshly inferred schema and checks each candidate against it with a strict guard (`.is`, no
  * coercion) — the opposite of {@link import('./factories.js').createEndpointTool}'s normalizing

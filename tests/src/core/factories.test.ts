@@ -3,15 +3,17 @@ import type { AgentToolArguments } from '@src/core'
 import type { WorkflowDraft } from '@src/core'
 import type { WorkflowDefinition, WorkflowFunction, WorkflowRegistry } from '@orkestrel/workflow'
 import type { FormValues } from '@orkestrel/form'
+import { createForm } from '@orkestrel/form'
 import { createAgent, createAgentRegistry, createMemoryConversationStore } from '@orkestrel/agent'
 import { createMemoryWorkspaceStore, createWorkspaceManager } from '@orkestrel/workspace'
-import { createTool, createToolManager } from '@orkestrel/tool'
-import { isRecord, numberShape, stringShape } from '@orkestrel/contract'
+import { createTool, createToolManager, isToolError } from '@orkestrel/tool'
+import { isRecord, numberShape, objectShape, stringShape } from '@orkestrel/contract'
 import {
 	createMemoryWorkflowStore,
 	createWorkflowRunner,
 	isWorkflowError,
 	createRestoredWorkflow,
+	MAX_TIMER_MS,
 	WorkflowError,
 } from '@orkestrel/workflow'
 import {
@@ -43,6 +45,7 @@ import {
 	PROMPT_TOOL_NAME,
 	RELATION_TOOL_NAME,
 	WORKFLOW_TOOL_DESCRIPTION,
+	WORKFLOW_TOOL_FLAT_EXAMPLE,
 	WORKFLOW_TOOL_NAME,
 	WORKFLOW_TOOL_SUMMARY,
 	WORKSPACE_TOOL_DESCRIPTION,
@@ -53,7 +56,9 @@ import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { afterEach, describe, expect, it } from 'vitest'
 import { captureError, createRecorder, waitForAbort, waitForDelay } from '@orkestrel/test'
 import {
+	buildDatabaseStoreWithTable,
 	createNestedWorkflow,
+	createOpenAuthority,
 	readToolboxSummary,
 	buildFormSchema,
 	createAskCall,
@@ -112,6 +117,7 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 		tools.add(
 			createTool({
 				name: 'scan',
+				contract: objectShape({ path: stringShape() }),
 				execute: (args) => {
 					seen.handler(args)
 					return 'scanned'
@@ -122,6 +128,28 @@ describe('createToolFunction — wraps a registered tool as a WorkflowFunction',
 		const value = await fn(await createTestTaskController({ input: { path: '/repo' } }))
 		expect(value).toBe('scanned')
 		expect(seen.calls[0]?.[0]).toEqual({ path: '/repo' })
+	})
+
+	it('a task input the tool does not declare refuses through the tool door, and the handler never runs', async () => {
+		const tools = createToolManager()
+		const seen = createRecorder<readonly []>()
+		tools.add(
+			createTool({
+				name: 'scan',
+				execute: () => {
+					seen.handler()
+					return 'scanned'
+				},
+			}),
+		)
+		const error = await readToolboxRejection(
+			createToolFunction(
+				tools,
+				'scan',
+			)(await createTestTaskController({ input: { path: '/repo' } })),
+		)
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(seen.calls).toHaveLength(0)
 	})
 
 	it('the running task`s cancellation reaches the tool handler through the execution context', async () => {
@@ -325,7 +353,23 @@ describe('createAgentFunction — wraps a live AgentInterface as a WorkflowFunct
 		if (tool === undefined) throw new Error('workflow tool was not bound')
 		const error = await readToolboxRejection(tool.execute({}, createTestToolContext()))
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
-		expect(error instanceof Error ? error.message : '').toContain('cycle')
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain('cycle')
+		expect(text).toContain('send steps with a new name')
+	})
+
+	it('a bound tool wraps no phases and never runs them: its empty-args call is DEPTH, never SCHEDULE', async () => {
+		const store = new RecordingWorkflowStore()
+		const agent = createAgent(new ScriptedProvider([{ content: 'bound' }]))
+		await createAgentFunction(agent, { runner: createWorkflowRunner(), store })(
+			await createTestTaskController({ workflow: 'containing' }),
+		)
+		const tool = agent.context.tools.tool(WORKFLOW_TOOL_NAME)
+		if (tool === undefined) throw new Error('workflow tool was not bound')
+		const error = await readToolboxRejection(tool.execute({}, createTestToolContext()))
+		expect(isWorkflowError(error)).toBe(false)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
+		expect(store.attempts).toBe(0)
 	})
 
 	it('composed into a real runner: a task whose `run` maps to a createAgentFunction entry dispatches the agent for real', async () => {
@@ -565,7 +609,7 @@ describe('workflow/agent recursion through real providers and runners', () => {
 			createWorkflowProviderCall('child', 'a'),
 			{ content: 'outer done' },
 		])
-		const agent = createAgent(provider)
+		const agent = createAgent(provider, { authority: createOpenAuthority() })
 		const functions = createWorkflowFunctions(runner, {
 			agents: { a: agent },
 			store,
@@ -595,8 +639,8 @@ describe('workflow/agent recursion through real providers and runners', () => {
 			createWorkflowProviderCall('grandchild', 'a'),
 			{ content: 'B done' },
 		])
-		const agentA = createAgent(providerA)
-		const agentB = createAgent(providerB)
+		const agentA = createAgent(providerA, { authority: createOpenAuthority() })
+		const agentB = createAgent(providerB, { authority: createOpenAuthority() })
 		const functions = createWorkflowFunctions(runner, {
 			agents: { a: agentA, b: agentB },
 			store,
@@ -622,7 +666,7 @@ describe('workflow/agent recursion through real providers and runners', () => {
 			createWorkflowProviderCall('root', 'leaf'),
 			{ content: 'handled refusal' },
 		])
-		const agent = createAgent(provider)
+		const agent = createAgent(provider, { authority: createOpenAuthority() })
 		const functions = createWorkflowFunctions(runner, {
 			functions: { leaf: () => 'leaf' },
 			agents: { a: agent },
@@ -635,9 +679,7 @@ describe('workflow/agent recursion through real providers and runners', () => {
 			},
 			{ functions },
 		)
-		expect(JSON.stringify(provider.calls[1]?.messages)).toContain(
-			"workflow 'root' is already an ancestor",
-		)
+		expect(JSON.stringify(provider.calls[1]?.messages)).toContain('is already an ancestor')
 	})
 })
 
@@ -714,7 +756,7 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		expect(store.attempts).toBe(0)
 	})
 
-	it('a malformed authored blob throws a typed TOOL ToolboxError', async () => {
+	it('a malformed authored blob refuses with what to correct, carrying every fault', async () => {
 		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
 		const error = await readToolboxRejection(
 			tool.execute(
@@ -726,13 +768,118 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 				createTestToolContext(),
 			),
 		)
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(isToolboxError(error) ? error.context : undefined).toMatchObject({
-			workflow: 'wrapped',
-		})
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(isToolError(error) ? error.context?.faults : undefined).toMatchObject([
+			{ reason: 'constraint', path: ['id'], constraint: 'min' },
+			{ reason: 'constraint', path: ['phases', '0', 'concurrency'], constraint: 'min' },
+		])
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain('id: constraint')
+		expect(text).toContain('phases.0.concurrency: constraint')
 	})
 
-	it('hostile argument traversal becomes TOOL before runner functions or persistence start', async () => {
+	it('a draft timeout outside 1..MAX_TIMER_MS reaches the model as a named refusal, never as the strict gate', async () => {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		for (const timeout of [0, -1, MAX_TIMER_MS + 1]) {
+			const error = await readToolboxRejection(
+				tool.execute({ phases: [{ tasks: [{ timeout }] }] }, createTestToolContext()),
+			)
+			expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+			expect(error instanceof Error ? error.message : '').toContain('phases.0.tasks.0.timeout')
+		}
+	})
+
+	it('a draft concurrency past the safe integers refuses at the door, as the strict contract does', async () => {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		const error = await readToolboxRejection(
+			tool.execute(
+				{ phases: [{ tasks: [{}], concurrency: Number.MAX_SAFE_INTEGER + 1 }] },
+				createTestToolContext(),
+			),
+		)
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(error instanceof Error ? error.message : '').toContain('phases.0.concurrency')
+	})
+
+	it('a key the chosen form does not declare refuses, and the text lists the declared keys', async () => {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		const flat = await readToolboxRejection(
+			tool.execute({ steps: [{ name: 'compile' }], behaviour: 'x' }, createTestToolContext()),
+		)
+		expect(isToolError(flat) ? flat.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['behaviour'] },
+		])
+		expect(flat instanceof Error ? flat.message : '').toContain('name, steps')
+		const nested = await readToolboxRejection(
+			tool.execute({ phases: [{ tasks: [{ behaviour: 'x' }] }] }, createTestToolContext()),
+		)
+		expect(isToolError(nested) ? nested.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['phases', '0', 'tasks', '0', 'behaviour'] },
+		])
+	})
+
+	it('a blob with neither steps nor phases is told to send the advertised form', async () => {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		const error = await readToolboxRejection(
+			tool.execute({ name: 'release' }, createTestToolContext()),
+		)
+		expect(isToolError(error) ? error.context?.faults : undefined).toMatchObject([
+			{ reason: 'missing', path: ['steps'] },
+		])
+	})
+
+	it('a leaf the draft contract repairs still runs: a numeric string timeout reaches the runner as a number', async () => {
+		const store = createMemoryWorkflowStore()
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
+			store,
+		})
+		const summary = await tool.execute(
+			{ id: 'repaired', phases: [{ tasks: [{ timeout: '500' }] }] },
+			createTestToolContext(),
+		)
+		expect(readToolboxSummary(summary)).toEqual({ status: 'completed', count: 1 })
+		expect((await store.get('repaired'))?.phases[0]?.tasks[0]?.timeout).toBe(500)
+	})
+
+	it('a refusal stays within about 2 KB however many faults the call carries', async () => {
+		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
+		const extras = Object.fromEntries(
+			Array.from({ length: 200 }, (_, index) => [`key-${index}`, index]),
+		)
+		const error = await readToolboxRejection(
+			tool.execute({ steps: [{ name: 'compile' }], ...extras }, createTestToolContext()),
+		)
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		const text = error instanceof Error ? error.message : ''
+		expect(text.length).toBeLessThanOrEqual(2048)
+		expect(text).toContain('more faults')
+	})
+
+	it('a wrapped definition with no task rejects SCHEDULE on an empty-args call, and an authored form still runs', async () => {
+		const tool = createWorkflowTool(
+			{ id: 'release', name: 'Release', phases: [] },
+			createWorkflowRunner(),
+		)
+		const error = await readToolboxRejection(tool.execute({}, createTestToolContext()))
+		expect(isWorkflowError(error) ? error.code : undefined).toBe('SCHEDULE')
+		expect(error instanceof Error ? error.message : '').toContain('has no task to run')
+		expect(
+			readToolboxSummary(
+				await tool.execute({ phases: [{ tasks: [{}] }] }, createTestToolContext()),
+			),
+		).toEqual({ status: 'completed', count: 1 })
+	})
+
+	it('a wrapped definition the strict contract refuses throws TOOL, naming the definition', async () => {
+		const definition: WorkflowDefinition = { id: 'wrapped', name: '', phases: [] }
+		const tool = createWorkflowTool(definition, createWorkflowRunner())
+		const error = await readToolboxRejection(tool.execute({}, createTestToolContext()))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.context?.workflow : undefined).toBe('wrapped')
+		expect(error instanceof Error ? error.message : '').toContain('name: constraint')
+	})
+
+	it('hostile argument traversal refuses before runner functions or persistence start', async () => {
 		const entered = createRecorder<readonly []>()
 		const store = new RecordingWorkflowStore()
 		const tool = createWorkflowTool(
@@ -758,8 +905,10 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 			throwingGetWorkflowArguments,
 		]) {
 			const error = await readToolboxRejection(tool.execute(args, createTestToolContext()))
-			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-			expect(error instanceof Error ? error.message : '').toBe('malformed workflow definition')
+			expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+			const text = error instanceof Error ? error.message : ''
+			expect(text).toContain('could not be read')
+			expect(text).toContain(JSON.stringify(WORKFLOW_TOOL_FLAT_EXAMPLE))
 		}
 		expect(entered.calls).toHaveLength(0)
 		expect(store.attempts).toBe(0)
@@ -822,10 +971,11 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		expect(summary).toEqual({ status: 'completed', count: 2 })
 	})
 
-	it('a flat blob that cannot expand throws a typed TOOL ToolboxError', async () => {
+	it('a flat blob that cannot expand refuses with the step it names', async () => {
 		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner())
 		const error = await readToolboxRejection(tool.execute({ steps: [{}] }, createTestToolContext()))
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(error instanceof Error ? error.message : '').toContain('steps.0.name: missing')
 	})
 
 	it('a top-level tool contextually adapts a raw agent registry', async () => {
@@ -870,25 +1020,30 @@ describe('createWorkflowTool — authoring forms (flat / draft / full / preceden
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DEPTH')
 	})
 
-	it('a blob carrying BOTH `steps` and `phases` takes the FLAT branch (expands steps, IGNORES phases)', async () => {
+	it('a blob carrying BOTH `steps` and `phases` refuses `phases` rather than ignoring it', async () => {
+		const entered = createRecorder<readonly []>()
 		const tool = createWorkflowTool(createNestedWorkflow('wrapped'), createWorkflowRunner(), {
-			functions: { a: () => 'a', b: () => 'b' },
+			functions: {
+				a: () => {
+					entered.handler()
+					return 'a'
+				},
+			},
 		})
-		const summary = readToolboxSummary(
-			await tool.execute(
+		const error = await readToolboxRejection(
+			tool.execute(
 				{
 					name: 'precedence',
-					steps: [{ name: 'a' }, { name: 'b' }],
-					phases: [
-						{ id: 'x', name: 'X', tasks: [{ id: 'x0', name: 'X0', behavior: 'p' }] },
-						{ id: 'y', name: 'Y', tasks: [{ id: 'y0', name: 'Y0', behavior: 'q' }] },
-						{ id: 'z', name: 'Z', tasks: [{ id: 'z0', name: 'Z0', behavior: 'r' }] },
-					],
+					steps: [{ name: 'a' }],
+					phases: [{ id: 'x', name: 'X', tasks: [{ id: 'x0', name: 'X0', behavior: 'a' }] }],
 				},
 				createTestToolContext(),
 			),
 		)
-		expect(summary).toEqual({ status: 'completed', count: 2 })
+		expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['phases'] },
+		])
+		expect(entered.calls).toHaveLength(0)
 	})
 })
 
@@ -1107,12 +1262,163 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 		)
 	})
 
-	it('rejects a malformed operation with this package`s TOOL ToolboxError', async () => {
+	it('an operation no form declares refuses with every candidate', async () => {
 		const tool = createWorkspaceTool()
 		const error = await readToolboxRejection(
 			Promise.resolve().then(() => tool.execute({ operation: 'unknown' }, createTestToolContext())),
 		)
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
+			{ reason: 'type', path: ['operation'], expected: 'literal', received: '"unknown"' },
+		])
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain('received "unknown"')
+		for (const operation of ['read', 'splice', 'workspaces', 'switch']) {
+			expect(text).toContain(`"${operation}"`)
+		}
+	})
+
+	it('a missing operation refuses with every candidate', async () => {
+		const tool = createWorkspaceTool()
+		const error = await readToolboxRejection(
+			Promise.resolve().then(() => tool.execute({}, createTestToolContext())),
+		)
+		expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
+			{ reason: 'missing', path: ['operation'], expected: 'literal' },
+		])
+		expect(error instanceof Error ? error.message : '').toContain('operation: missing')
+	})
+
+	it('a known operation refuses with its own faults and the keys it takes', async () => {
+		const tool = createWorkspaceTool()
+		const missing = await readToolboxRejection(
+			Promise.resolve().then(() => tool.execute({ operation: 'read' }, createTestToolContext())),
+		)
+		expect(isToolError(missing) ? missing.context?.faults : undefined).toMatchObject([
+			{ reason: 'missing', path: ['path'] },
+		])
+		const text = missing instanceof Error ? missing.message : ''
+		expect(text).toContain('operation "read" takes path')
+		expect(text).toContain('path: missing')
+
+		const extra = await readToolboxRejection(
+			Promise.resolve().then(() =>
+				tool.execute({ operation: 'list', depth: 2 }, createTestToolContext()),
+			),
+		)
+		expect(isToolError(extra) ? extra.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['depth'] },
+		])
+		expect(extra instanceof Error ? extra.message : '').toContain(
+			'operation "list" takes no other key',
+		)
+	})
+
+	it('a union repairs nothing: a numeric string limit refuses, naming the operation`s own key', async () => {
+		const tool = createWorkspaceTool()
+		const error = await readToolboxRejection(
+			Promise.resolve().then(() =>
+				tool.execute({ operation: 'search', query: 'x', limit: '5' }, createTestToolContext()),
+			),
+		)
+		expect(isToolError(error) ? error.context?.faults : undefined).toMatchObject([
+			{ reason: 'type', path: ['limit'] },
+		])
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain('takes query; optional: regex, sensitive, limit')
+		expect(text).toContain('limit: type')
+	})
+
+	it('an untrusted operation stays bounded in the refusal', async () => {
+		const tool = createWorkspaceTool()
+		const error = await readToolboxRejection(
+			Promise.resolve().then(() =>
+				tool.execute({ operation: 'x'.repeat(20_000) }, createTestToolContext()),
+			),
+		)
+		expect((error instanceof Error ? error.message : '').length).toBeLessThanOrEqual(2048)
+	})
+
+	it('an empty path or query refuses, and an empty replacement is a deletion', async () => {
+		const tool = createWorkspaceTool()
+		await tool.execute(
+			{ operation: 'write', path: 'a.txt', content: 'alpha beta' },
+			createTestToolContext(),
+		)
+		for (const args of [
+			{ operation: 'read', path: '' },
+			{ operation: 'write', path: '', content: 'x' },
+			{ operation: 'search', query: '' },
+			{ operation: 'replace', query: '', replacement: 'x' },
+			{ operation: 'move', from: '', to: 'b.txt' },
+			{ operation: 'move', from: 'a.txt', to: '' },
+		]) {
+			const error = await readToolboxRejection(
+				Promise.resolve().then(() => tool.execute(args, createTestToolContext())),
+			)
+			expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		}
+		expect(
+			await tool.execute(
+				{ operation: 'replace', query: ' beta', replacement: '' },
+				createTestToolContext(),
+			),
+		).toEqual({ occurrences: 1, files: 1 })
+		expect(await tool.execute({ operation: 'read', path: 'a.txt' }, createTestToolContext())).toBe(
+			'alpha',
+		)
+	})
+
+	it('a read miss is an explicit null, told apart from an empty file', async () => {
+		const tool = createWorkspaceTool()
+		expect(
+			await tool.execute({ operation: 'read', path: 'absent.txt' }, createTestToolContext()),
+		).toBeNull()
+		await tool.execute(
+			{ operation: 'write', path: 'empty.txt', content: '' },
+			createTestToolContext(),
+		)
+		expect(
+			await tool.execute({ operation: 'read', path: 'empty.txt' }, createTestToolContext()),
+		).toBe('')
+		expect(
+			await tool.execute({ operation: 'read', path: 'absent.txt' }, createTestToolContext()),
+		).toBeNull()
+	})
+
+	it('replace, splice, move, and remove refuse with no active workspace and create none', async () => {
+		const manager = createWorkspaceManager()
+		const tool = createWorkspaceTool({ manager })
+		for (const args of [
+			{ operation: 'replace', query: 'a', replacement: 'b' },
+			{
+				operation: 'splice',
+				path: 'a.txt',
+				content: 'x',
+				fromLine: 1,
+				fromColumn: 1,
+				toLine: 1,
+				toColumn: 1,
+			},
+			{ operation: 'move', from: 'a.txt', to: 'b.txt' },
+			{ operation: 'remove', path: 'a.txt' },
+		]) {
+			const error = await readToolboxRejection(
+				Promise.resolve().then(() => tool.execute(args, createTestToolContext())),
+			)
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			const text = error instanceof Error ? error.message : ''
+			expect(text).toContain(`"${args.operation}" needs an active workspace`)
+			expect(text).toContain('"write"')
+			expect(manager.count).toBe(0)
+		}
+	})
+
+	it('switch to an unknown id stays the reported no-op', async () => {
+		const tool = createWorkspaceTool()
+		expect(
+			await tool.execute({ operation: 'switch', id: 'ghost' }, createTestToolContext()),
+		).toEqual({ id: 'ghost', switched: false })
 	})
 })
 
@@ -1220,19 +1526,49 @@ describe('createWorkspaceTool — precedence: manager wins when BOTH manager and
 // ── createAgentTool — sub-agent delegation ────────────────────────────────────
 
 describe('createAgentTool — schema accept/reject through agentToolShape', () => {
-	it('a malformed call (missing/empty task) THROWS a typed TOOL ToolboxError', async () => {
+	it('a malformed call (missing/empty task) refuses through the Tool door, naming task', async () => {
 		const registry = createAgentRegistry({
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
-		const error = await readToolboxRejection(tool.execute({}, createTestToolContext()))
-		expect(isToolboxError(error)).toBe(true)
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		const error = await readToolboxRejection(
+			Promise.resolve().then(() => tool.execute({}, createTestToolContext())),
+		)
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(error instanceof Error ? error.message : '').toContain('task: missing')
 
 		const emptyTask = await readToolboxRejection(
-			tool.execute({ task: '' }, createTestToolContext()),
+			Promise.resolve().then(() => tool.execute({ task: '' }, createTestToolContext())),
 		)
-		expect(isToolboxError(emptyTask) ? emptyTask.code : undefined).toBe('TOOL')
+		expect(isToolError(emptyTask) ? emptyTask.code : undefined).toBe('ARGUMENTS')
+		expect(emptyTask instanceof Error ? emptyTask.message : '').toContain('task: constraint')
+	})
+
+	it('a key the shape does not declare refuses through the Tool door', async () => {
+		const registry = createAgentRegistry({
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
+		})
+		const tool = createAgentTool(registry, { provider: 'main' })
+		const error = await readToolboxRejection(
+			Promise.resolve().then(() =>
+				tool.execute({ task: 'x', authority: 'open' }, createTestToolContext()),
+			),
+		)
+		expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['authority'] },
+		])
+	})
+
+	it('a depth that is not a nonnegative safe integer throws at construction', () => {
+		const registry = createAgentRegistry({
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
+		})
+		for (const depth of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+			const error = captureError(() => createAgentTool(registry, { provider: 'main', depth }))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(error instanceof Error ? error.message : '').toContain('nonnegative safe integer')
+		}
+		expect(createAgentTool(registry, { provider: 'main', depth: 0 }).name).toBe('agent')
 	})
 
 	it('a well-formed call with every optional field is accepted by the contract', () => {
@@ -1245,15 +1581,65 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 		expect(call.task).toBe('summarize')
 	})
 
-	it('a malformed tools/system field on the call THROWS a typed TOOL ToolboxError', async () => {
+	it('a malformed tools/system field on the call refuses through the Tool door', async () => {
 		const registry = createAgentRegistry({
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
 		const tool = createAgentTool(registry, { provider: 'main' })
 		const error = await readToolboxRejection(
-			tool.execute({ task: 'x', tools: 'not-an-array' }, createTestToolContext()),
+			Promise.resolve().then(() =>
+				tool.execute({ task: 'x', tools: 'not-an-array' }, createTestToolContext()),
+			),
+		)
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(error instanceof Error ? error.message : '').toContain('tools: type')
+	})
+
+	it('tools with no configured authority refuse before the registry builds, and say what to send', async () => {
+		const provider = new ScriptedProvider([{ content: 'x' }])
+		const registry = createAgentRegistry({ providers: { main: provider } })
+		const tool = createAgentTool(registry, { provider: 'main' })
+		const error = await readToolboxRejection(
+			tool.execute({ task: 'x', tools: ['search'] }, createTestToolContext()),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(error instanceof Error ? error.message : '').toContain('call again without tools')
+		expect(provider.started).toBe(0)
+	})
+
+	it('the configured authority decides the delegated tool calls, and the model cannot send its own', async () => {
+		const seen = createRecorder<readonly []>()
+		const provider = new ScriptedProvider([
+			{ content: '', tools: [{ id: 'call-1', name: 'search', arguments: {} }] },
+			{ content: 'done' },
+		])
+		const registry = createAgentRegistry({
+			providers: { main: provider },
+			tools: {
+				search: createTool({
+					name: 'search',
+					execute: () => {
+						seen.handler()
+						return 'found'
+					},
+				}),
+			},
+			authorities: { open: createOpenAuthority() },
+		})
+		const tool = createAgentTool(registry, { provider: 'main', authority: 'open' })
+		expect(await tool.execute({ task: 'x', tools: ['search'] }, createTestToolContext())).toBe(
+			'done',
+		)
+		expect(seen.calls).toHaveLength(1)
+	})
+
+	it('the configured authority reaches the delegated job, so an unregistered key fails the build', async () => {
+		const registry = createAgentRegistry({
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
+		})
+		const tool = createAgentTool(registry, { provider: 'main', authority: 'absent' })
+		const error = await readToolboxRejection(tool.execute({ task: 'x' }, createTestToolContext()))
+		expect(error instanceof Error ? error.message : '').toContain('absent')
 	})
 
 	it('no resolvable provider (neither call nor tool default) THROWS a typed TOOL ToolboxError', async () => {
@@ -1511,15 +1897,37 @@ describe('createDescribeTool — returns a registered tool`s full description', 
 		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
 	})
 
-	it('malformed args (missing/empty name) are REJECTED with a typed TOOL ToolboxError', async () => {
+	it('an unknown name lists the registered names and stays bounded', async () => {
+		const manager = createToolManager()
+		manager.add(createInferTool())
+		const describeTool = createDescribeTool(manager)
+		manager.add(describeTool)
+		const error = await readToolboxRejection(
+			describeTool.execute({ name: 'x'.repeat(20_000) }, createTestToolContext()),
+		)
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain(`${INFER_TOOL_NAME}, ${DESCRIBE_TOOL_NAME}`)
+		expect(text.length).toBeLessThanOrEqual(2048)
+	})
+
+	it('a tool with no description and no summary describes as an explicit null', async () => {
+		const manager = createToolManager()
+		manager.add(createTool({ name: 'bare', execute: () => 'x' }))
+		const describeTool = createDescribeTool(manager)
+		expect(await describeTool.execute({ name: 'bare' }, createTestToolContext())).toBeNull()
+	})
+
+	it('malformed args (missing/empty name) refuse through the Tool door', async () => {
 		const manager = createToolManager()
 		const describeTool = createDescribeTool(manager)
-		const missing = await readToolboxRejection(describeTool.execute({}, createTestToolContext()))
-		expect(isToolboxError(missing) ? missing.code : undefined).toBe('TOOL')
-		const empty = await readToolboxRejection(
-			describeTool.execute({ name: '' }, createTestToolContext()),
+		const missing = await readToolboxRejection(
+			Promise.resolve().then(() => describeTool.execute({}, createTestToolContext())),
 		)
-		expect(isToolboxError(empty) ? empty.code : undefined).toBe('TOOL')
+		expect(isToolError(missing) ? missing.code : undefined).toBe('ARGUMENTS')
+		const empty = await readToolboxRejection(
+			Promise.resolve().then(() => describeTool.execute({ name: '' }, createTestToolContext())),
+		)
+		expect(isToolError(empty) ? empty.code : undefined).toBe('ARGUMENTS')
 	})
 })
 
@@ -1797,7 +2205,9 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(error instanceof Error ? error.message : '').toBe('malformed form schema')
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain('malformed form schema')
+		expect(text).toContain('confirm')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
@@ -1816,7 +2226,7 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 			),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(error instanceof Error ? error.message : '').toBe('malformed form schema')
+		expect(error instanceof Error ? error.message : '').toContain('malformed form schema')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
@@ -1840,9 +2250,9 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 		expect(manager.pending('reviewer')).toEqual([])
 		const error = await readToolboxRejection(execution)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(error instanceof Error ? error.message : '').toBe(
-			"select field 'value' has no enabled choices",
-		)
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain('select field "value" has no enabled choices')
+		expect(text).toContain('add a choice')
 	})
 
 	it('a generic non-TARGET/DEADLOCK/EXPIRE TerminalError surfaces as TOOL with the generic asking-failed message', async () => {
@@ -1866,27 +2276,31 @@ describe('createPromptTool / createAnswerTool — the terminal ask/answer seam',
 // ── pressure: createPromptTool arg fuzz ──────────────────────────────────────
 
 describe('pressure: prompt-tool arg fuzz — schema-invalid args surface as typed TOOL errors, nothing parks', () => {
-	it('missing `to` throws typed TOOL, nothing parks', async () => {
+	it('missing `to` refuses through the Tool door, nothing parks', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await readToolboxRejection(
-			askTool.execute({ schema: buildFormSchema('text', 'hi') }, createTestToolContext()),
+			Promise.resolve().then(() =>
+				askTool.execute({ schema: buildFormSchema('text', 'hi') }, createTestToolContext()),
+			),
 		)
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(error instanceof Error ? error.message : '').toContain('to: missing')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
-	it('missing `schema` throws typed TOOL, nothing parks', async () => {
+	it('missing `schema` refuses through the Tool door, nothing parks', async () => {
 		const manager = createTerminalManager()
 		manager.add('agent')
 		manager.add('reviewer')
 		const askTool = createPromptTool({ manager, from: 'agent' })
 		const error = await readToolboxRejection(
-			askTool.execute({ to: 'reviewer' }, createTestToolContext()),
+			Promise.resolve().then(() => askTool.execute({ to: 'reviewer' }, createTestToolContext())),
 		)
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(error instanceof Error ? error.message : '').toContain('schema: missing')
 		expect(manager.pending('reviewer')).toEqual([])
 	})
 
@@ -2281,7 +2695,7 @@ describe('createDatabaseTool — create', () => {
 		)
 		expect(isToolboxError(lookupError) ? lookupError.code : undefined).toBe('TOOL')
 		expect(isToolboxError(lookupError) ? lookupError.message : '').toContain(
-			"unknown database 'shop'",
+			'unknown database "shop"',
 		)
 	})
 
@@ -2335,8 +2749,35 @@ describe('createDatabaseTool — get', () => {
 		)
 		expect(isRecord(many) && Array.isArray(many.rows) ? many.rows : []).toEqual([
 			createItemRow('a'),
-			undefined,
+			null,
 		])
+
+		const miss = await tool.execute(
+			{ operation: 'get', id: 'shop', table: 'items', key: 'missing' },
+			createTestToolContext(),
+		)
+		expect(miss).toEqual({ row: null })
+		expect(JSON.stringify(miss)).toBe('{"row":null}')
+	})
+
+	it('an update of an absent key reports false, an answer JSON keeps', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
+			createTestToolContext(),
+		)
+		expect(
+			await tool.execute(
+				{
+					operation: 'update',
+					id: 'shop',
+					table: 'items',
+					key: 'missing',
+					changes: { price: 1 },
+				},
+				createTestToolContext(),
+			),
+		).toEqual({ updated: false })
 	})
 })
 
@@ -2707,17 +3148,76 @@ describe('createDatabaseTool — error paths', () => {
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 
-	it('malformed args (missing required fields) throw a typed TOOL error', async () => {
+	it('malformed args name the operation`s own faults and keys, and an unknown operation lists every candidate', async () => {
 		const tool = createDatabaseTool()
 		const error = await readToolboxRejection(
 			tool.execute({ operation: 'create' }, createTestToolContext()),
 		)
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(isToolError(error) ? error.context?.faults : undefined).toMatchObject([
+			{ reason: 'missing', path: ['id'] },
+			{ reason: 'missing', path: ['tables'] },
+		])
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain(
+			'operation "create" takes id, tables; optional: driver, primary, indexes, version',
+		)
+		expect(text).toContain('tables: missing')
 
 		const badOperation = await readToolboxRejection(
 			tool.execute({ operation: 'nope', id: 'shop' }, createTestToolContext()),
 		)
-		expect(isToolboxError(badOperation) ? badOperation.code : undefined).toBe('TOOL')
+		expect(isToolError(badOperation) ? badOperation.code : undefined).toBe('ARGUMENTS')
+		const candidates = badOperation instanceof Error ? badOperation.message : ''
+		for (const operation of ['create', 'records', 'aggregate', 'destroy']) {
+			expect(candidates).toContain(`"${operation}"`)
+		}
+	})
+
+	it('an unknown driver lists the registered drivers', async () => {
+		const tool = createDatabaseTool()
+		const error = await readToolboxRejection(
+			tool.execute(
+				{ operation: 'create', id: 'shop', tables: createItemTables(), driver: 'nope' },
+				createTestToolContext(),
+			),
+		)
+		expect(error instanceof Error ? error.message : '').toContain(
+			'unknown driver "nope"; send driver as one of memory',
+		)
+	})
+
+	it('a stored row the store refuses stops create, destroy, and a read, instead of overwriting it', async () => {
+		const { store, table } = buildDatabaseStoreWithTable()
+		const held = { id: 'shop', definition: { totally: 'not a definition' } }
+		await table.set(held)
+		const tool = createDatabaseTool({ store })
+		for (const args of [
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
+			{ operation: 'destroy', id: 'shop' },
+			{ operation: 'tables', id: 'shop' },
+		]) {
+			const error = await readToolboxRejection(tool.execute(args, createTestToolContext()))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+			expect(error instanceof Error ? error.message : '').toContain('store.delete("shop")')
+		}
+		expect(await table.get('shop')).toEqual(held)
+		await store.delete('shop')
+		expect(
+			await tool.execute(
+				{ operation: 'create', id: 'shop', tables: createItemTables() },
+				createTestToolContext(),
+			),
+		).toMatchObject({ id: 'shop' })
+	})
+
+	it('a limit that is not a positive safe integer throws at construction', () => {
+		for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+			const error = captureError(() => createDatabaseTool({ limit }))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(error instanceof Error ? error.message : '').toContain('database limit')
+		}
+		expect(createDatabaseTool({ limit: 1 }).name).toBe(DATABASE_TOOL_NAME)
 	})
 
 	it('a row that fails validation on add re-surfaces as a typed DATABASE error with context.code VALIDATION', async () => {
@@ -3181,7 +3681,17 @@ describe('createRelationTool — load', () => {
 		const rows = isRecord(result) && Array.isArray(result.rows) ? result.rows : []
 		expect(rows).toHaveLength(2)
 		expect(isRecord(rows[0]) ? rows[0].id : undefined).toBe('a1')
-		expect(rows[1]).toBeUndefined()
+		expect(rows[1]).toBeNull()
+	})
+
+	it('a single-key miss is an explicit null, which JSON keeps', async () => {
+		const tool = createRelationTool({ managers: { shop: buildRelationManager() } })
+		const result = await tool.execute(
+			{ operation: 'load', model: 'accounts', key: 'ghost', include: [] },
+			createTestToolContext(),
+		)
+		expect(result).toEqual({ row: null })
+		expect(JSON.stringify(result)).toBe('{"row":null}')
 	})
 })
 
@@ -3222,29 +3732,23 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 	})
 
 	it('a negative `limit` option floors the effective limit at 0 for find and links', async () => {
-		const manager = buildRelationManager()
-		await seedAccount(manager, 'a1')
-		await seedAccount(manager, 'a2')
-		await seedAccount(manager, 'a3')
-		await seedRep(manager, 'r1')
-		await manager.model('accounts').link('a1', 'reps', 'r1')
-		const tool = createRelationTool({ managers: { shop: manager }, limit: -1 })
-		const found = await tool.execute(
-			{ operation: 'find', model: 'accounts', include: [] },
-			createTestToolContext(),
-		)
-		expect(isRecord(found) ? found.count : undefined).toBe(0)
-		expect(isRecord(found) ? found.limit : undefined).toBe(0)
-		const linked = await tool.execute(
-			{
-				operation: 'links',
-				model: 'accounts',
-				key: 'a1',
-				relation: 'reps',
-			},
-			createTestToolContext(),
-		)
-		expect(isRecord(linked) ? linked.count : undefined).toBe(0)
+		const managers = { shop: buildRelationManager() }
+		for (const limit of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+			const error = captureError(() => createRelationTool({ managers, limit }))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(error instanceof Error ? error.message : '').toContain('relation limit')
+		}
+		expect(createRelationTool({ managers, limit: 1 }).name).toBe(RELATION_TOOL_NAME)
+	})
+
+	it('a depth that is not a positive safe integer throws at construction, so NaN cannot lift the cap', () => {
+		const managers = { shop: buildRelationManager() }
+		for (const depth of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53]) {
+			const error = captureError(() => createRelationTool({ managers, depth }))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(error instanceof Error ? error.message : '').toContain('relation depth')
+		}
+		expect(createRelationTool({ managers, depth: 1 }).name).toBe(RELATION_TOOL_NAME)
 	})
 
 	it('offset paging walks every row when driven by the reported truncation', async () => {
@@ -3605,20 +4109,25 @@ describe('createInferTool', () => {
 		expect(result.error).toBeDefined()
 
 		const direct = await readToolboxRejection(
-			tool.execute({ samples: [] }, createTestToolContext()),
+			Promise.resolve().then(() => tool.execute({ samples: [] }, createTestToolContext())),
 		)
-		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
+		expect(isToolError(direct) ? direct.code : undefined).toBe('ARGUMENTS')
+		expect(direct instanceof Error ? direct.message : '').toContain('samples: constraint')
 	})
 
-	it('malformed args (missing samples) THROW a typed TOOL ToolboxError', async () => {
+	it('malformed args (missing samples) refuse through the Tool door', async () => {
 		const tool = createInferTool()
-		const missing = await readToolboxRejection(tool.execute({}, createTestToolContext()))
-		expect(isToolboxError(missing) ? missing.code : undefined).toBe('TOOL')
+		const missing = await readToolboxRejection(
+			Promise.resolve().then(() => tool.execute({}, createTestToolContext())),
+		)
+		expect(isToolError(missing) ? missing.code : undefined).toBe('ARGUMENTS')
 
 		const wrongType = await readToolboxRejection(
-			tool.execute({ samples: 'not-an-array' }, createTestToolContext()),
+			Promise.resolve().then(() =>
+				tool.execute({ samples: 'not-an-array' }, createTestToolContext()),
+			),
 		)
-		expect(isToolboxError(wrongType) ? wrongType.code : undefined).toBe('TOOL')
+		expect(isToolError(wrongType) ? wrongType.code : undefined).toBe('ARGUMENTS')
 	})
 
 	it('name/description overrides are advertised on the returned ToolInterface', () => {
@@ -3702,7 +4211,7 @@ describe('createInferTool', () => {
 		])
 	})
 
-	it('(c2) strict-verdict pin: a candidate that WOULD coerce under a normalizing parse is still INVALID under the strict guard, yielding coercible: true with EMPTY faults', async () => {
+	it('(c2) strict-verdict pin: a candidate that WOULD coerce under a normalizing parse is still INVALID under the strict guard, yielding coercible: true with the audit fault that names why', async () => {
 		const tool = createInferTool()
 		const result = await tool.execute(
 			{
@@ -3714,10 +4223,31 @@ describe('createInferTool', () => {
 		// contrast: createEndpointTool's enforcement NORMALIZES through `.parse` (7 coerces to '7' and
 		// would be accepted); createInferTool's candidate check uses the strict `.is` guard, where a
 		// number is never a string regardless of whether it coerces cleanly. `coercible: true` reports
-		// that the normalizing parse WOULD accept it, and `.explain` mirrors that leniency — so
-		// `faults` stays empty even though `valid` is false.
+		// that the normalizing parse WOULD accept it, and `.audit` reports against the strict guard, so
+		// `faults` names the mismatch `valid: false` rests on.
 		expect(isRecord(result) && Array.isArray(result.checks) ? result.checks[0] : undefined).toEqual(
-			{ index: 0, valid: false, coercible: true, faults: [] },
+			{
+				index: 0,
+				valid: false,
+				coercible: true,
+				faults: [{ reason: 'type', path: ['name'], expected: 'string', received: '7' }],
+			},
+		)
+	})
+
+	it('(c2c) an undeclared key on a candidate is a named fault, while the normalizing parse would drop it', async () => {
+		const tool = createInferTool()
+		const result = await tool.execute(
+			{ samples: [{ name: 'Ada' }], candidates: [{ name: 'Ada', extra: 1 }] },
+			createTestToolContext(),
+		)
+		expect(isRecord(result) && Array.isArray(result.checks) ? result.checks[0] : undefined).toEqual(
+			{
+				index: 0,
+				valid: false,
+				coercible: true,
+				faults: [{ reason: 'extra', path: ['extra'] }],
+			},
 		)
 	})
 
@@ -3781,7 +4311,12 @@ describe('createInferTool', () => {
 		})
 		expect(isRecord(result) ? result.checks : undefined).toEqual([
 			{ index: 0, valid: true, coercible: true },
-			{ index: 1, valid: false, coercible: true, faults: [] },
+			{
+				index: 1,
+				valid: false,
+				coercible: true,
+				faults: [{ reason: 'type', path: [], expected: 'string', received: '7' }],
+			},
 		])
 	})
 
@@ -3825,7 +4360,7 @@ describe('createInferTool', () => {
 		manager.add(tool)
 
 		// a __proto__-carrying JSON.parse'd candidate is a plain JSON-safe value — it reaches
-		// checker.is/.explain (both total) and yields a bounded, non-throwing verdict.
+		// checker.is/.audit (both total) and yields a bounded, non-throwing verdict.
 		const hostileParsed = JSON.parse('{"name":"Ada","__proto__":{"polluted":true}}')
 		const parsedResult = await manager.execute({
 			id: 'call-1',
@@ -3840,9 +4375,9 @@ describe('createInferTool', () => {
 			: []
 		expect(verdicts.every((valid) => typeof valid === 'boolean')).toBe(true)
 
-		// a throwing-getter Proxy is not a JSON-safe value at all — the outer args parse rejects it
-		// (same shape family as `samples`/`format`/`enum`), surfaced through the EXISTING malformed
-		// -args TOOL error path through the manager envelope, never as an unhandled exception.
+		// a throwing-getter Proxy is not a JSON-safe value at all — the Tool door refuses it (same
+		// shape family as `samples`/`format`/`enum`), surfaced through the manager envelope, never as
+		// an unhandled exception.
 		const proxy = new Proxy(
 			{ name: 'Ada' },
 			{
@@ -3860,7 +4395,7 @@ describe('createInferTool', () => {
 		expect(proxyResult.error).toBeDefined()
 	})
 
-	it('(c8) malformed candidates arg (not an array) THROWS the existing TOOL error through the manager envelope', async () => {
+	it('(c8) malformed candidates arg (not an array) refuses through the Tool door and the manager envelope', async () => {
 		const tool = createInferTool()
 		const manager = createToolManager()
 		manager.add(tool)
@@ -3873,9 +4408,11 @@ describe('createInferTool', () => {
 		expect(result.error).toBeDefined()
 
 		const direct = await readToolboxRejection(
-			tool.execute({ samples: [{ id: 1 }], candidates: 'nope' }, createTestToolContext()),
+			Promise.resolve().then(() =>
+				tool.execute({ samples: [{ id: 1 }], candidates: 'nope' }, createTestToolContext()),
+			),
 		)
-		expect(isToolboxError(direct) ? direct.code : undefined).toBe('TOOL')
+		expect(isToolError(direct) ? direct.code : undefined).toBe('ARGUMENTS')
 	})
 })
 
@@ -3900,7 +4437,7 @@ describe('createEndpointTool', () => {
 		})
 	})
 
-	it('validate: false PASSTHROUGH: the handler receives the model-supplied args EXACTLY (same reference), even when they diverge from the inferred schema', async () => {
+	it('strict: false PASSTHROUGH: the handler receives the model-supplied args EXACTLY (same reference), even when they diverge from the inferred schema', async () => {
 		const received = new ToolboxValue<unknown>(undefined)
 		const tool = createEndpointTool(
 			{
@@ -3912,16 +4449,15 @@ describe('createEndpointTool', () => {
 					return null
 				},
 			},
-			{ validate: false },
+			{ strict: false },
 		)
 		const args = { id: 'unrelated-shape', extra: { nested: true }, list: [1, 2, 3] }
 		await tool.execute(args, createTestToolContext())
 		expect(received.value).toBe(args)
 	})
 
-	// Each wrapper body forwards the execution context on its own — the validating one alongside the
-	// contract-parsed record, the passthrough one alongside the raw record — so each path owns its
-	// own proof and a fix to one cannot cover the other.
+	// The door forwards the execution context on one path and is off on the other, so each path owns
+	// its own proof and a fix to one cannot cover the other.
 	it('default validation FORWARDS the execution context: a handler on the contract-parsed path observes the caller cancellation', async () => {
 		const tool = createEndpointTool({
 			name: 'watchUser',
@@ -3938,7 +4474,7 @@ describe('createEndpointTool', () => {
 		expect(await running).toBe('observed')
 	})
 
-	it('validate: false FORWARDS the execution context: a handler on the raw-passthrough path observes the caller cancellation', async () => {
+	it('strict: false FORWARDS the execution context: a handler on the raw-passthrough path observes the caller cancellation', async () => {
 		const tool = createEndpointTool(
 			{
 				name: 'watchUser',
@@ -3949,7 +4485,7 @@ describe('createEndpointTool', () => {
 					return 'observed'
 				},
 			},
-			{ validate: false },
+			{ strict: false },
 		)
 		const cancellation = new AbortController()
 		const running = tool.execute({ id: '1' }, { signal: cancellation.signal })
@@ -3975,7 +4511,7 @@ describe('createEndpointTool', () => {
 		expect(received.value).toEqual({ id: '7', name: 'x' })
 	})
 
-	it('a nonconforming call THROWS a typed TOOL ToolboxError carrying non-empty explain faults', async () => {
+	it('a nonconforming call refuses through the Tool door, carrying its faults', async () => {
 		const tool = createEndpointTool({
 			name: 'lookupUser',
 			description: 'Look up a user by id.',
@@ -3990,11 +4526,10 @@ describe('createEndpointTool', () => {
 				tool.execute({ id: true, name: 'Ada' }, createTestToolContext()),
 			),
 		)
-		expect(isToolboxError(error)).toBe(true)
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		const faults = isToolboxError(error) ? error.context?.faults : undefined
-		expect(Array.isArray(faults)).toBe(true)
-		expect(Array.isArray(faults) ? faults.length : 0).toBeGreaterThan(0)
+		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+		expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
+			{ reason: 'type', path: ['id'], expected: 'string', received: 'true' },
+		])
 	})
 
 	it('a sync handler result flows back as the manager value', async () => {
@@ -4136,7 +4671,7 @@ describe('createEndpointTool', () => {
 		})
 	})
 
-	it('non-object root samples (bare strings), validate: false: the handler receives raw args unchecked', async () => {
+	it('non-object root samples (bare strings), strict: false: the handler receives raw args unchecked', async () => {
 		const received = new ToolboxValue<unknown>(undefined)
 		const tool = createEndpointTool(
 			{
@@ -4148,7 +4683,7 @@ describe('createEndpointTool', () => {
 					return 'ok'
 				},
 			},
-			{ validate: false },
+			{ strict: false },
 		)
 		const args = { value: 'hello', unrelated: true }
 		await tool.execute(args, createTestToolContext())
@@ -4195,32 +4730,41 @@ describe('createEndpointTool', () => {
 		})
 		if (result.success) throw new Error('expected malformed endpoint arguments to fail')
 		expect(result.error).toBeDefined()
-		expect(result.error.split('malformed endpoint call arguments').length).toBe(2)
+		expect(result.error.split('id: type').length).toBe(2)
 	})
 
-	it('(v3) missing required key is rejected; an extra key against a closed inferred schema is silently DROPPED before the handler by default, passed through raw under validate: false', async () => {
-		// A closed object's extra keys never fault in `@orkestrel/contract` — `parse` silently drops
-		// them rather than rejecting the whole object. So the default-validation endpoint below still
-		// ACCEPTS a call with an extra key, but the handler receives the key stripped; only
-		// `validate: false` passes it through raw.
+	it('(v3) missing required key is rejected; an extra key against a closed inferred schema refuses before the handler by default, passed through raw under strict: false', async () => {
+		// The door refuses what the closed inferred schema does not declare, where `parse` alone would
+		// strip it, so the handler never reads a call with the key silently gone; only `strict: false`
+		// passes it through raw.
 		const definition = createLookupEndpointDefinition()
 		const strict = createEndpointTool(definition)
 		const caught = await captureToolboxFailure(async () => {
 			await strict.execute({ id: '1' }, createTestToolContext())
 		})
-		expect(isToolboxError(caught)).toBe(true)
-		expect(isToolboxError(caught) ? caught.code : undefined).toBe('TOOL')
+		expect(isToolError(caught) ? caught.code : undefined).toBe('ARGUMENTS')
+		expect(isToolError(caught) ? caught.context?.faults : undefined).toMatchObject([
+			{ reason: 'missing', path: ['name'] },
+		])
 
-		const strictReceived = new ToolboxValue<unknown>(undefined)
+		const strictEntered = createRecorder<readonly []>()
 		const strictWithRecorder = createEndpointTool({
 			...definition,
 			execute: (args) => {
-				strictReceived.value = args
+				strictEntered.handler()
 				return args
 			},
 		})
-		await strictWithRecorder.execute({ id: '1', name: 'Ada', extra: true }, createTestToolContext())
-		expect(strictReceived.value).toEqual({ id: '1', name: 'Ada' })
+		const extra = await captureToolboxFailure(async () => {
+			await strictWithRecorder.execute(
+				{ id: '1', name: 'Ada', extra: true },
+				createTestToolContext(),
+			)
+		})
+		expect(isToolError(extra) ? extra.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['extra'] },
+		])
+		expect(strictEntered.calls).toHaveLength(0)
 
 		const received = new ToolboxValue<unknown>(undefined)
 		const lenient = createEndpointTool(
@@ -4231,7 +4775,7 @@ describe('createEndpointTool', () => {
 					return args
 				},
 			},
-			{ validate: false },
+			{ strict: false },
 		)
 		await lenient.execute({ id: '1', name: 'Ada', extra: true }, createTestToolContext())
 		expect(received.value).toEqual({ id: '1', name: 'Ada', extra: true })
@@ -4257,7 +4801,9 @@ describe('createEndpointTool', () => {
 		const caught = await captureToolboxFailure(async () => {
 			await tool.execute({ status: 'pending' }, createTestToolContext())
 		})
-		expect(isToolboxError(caught)).toBe(true)
+		expect(isToolError(caught) ? caught.code : undefined).toBe('ARGUMENTS')
+		const text = caught instanceof Error ? caught.message : ''
+		expect(text).toContain('send one of "closed", "open"')
 	})
 
 	it('(v5) format is NOT enforced: a { format: true } endpoint over email-shaped samples still accepts a non-email string', async () => {
@@ -4295,10 +4841,10 @@ describe('createEndpointTool', () => {
 			// A boolean does not coerce to a string (unlike a number) — a genuine type mismatch.
 			await tool.execute({ value: true }, createTestToolContext())
 		})
-		expect(isToolboxError(caught)).toBe(true)
+		expect(isToolError(caught) ? caught.code : undefined).toBe('ARGUMENTS')
 	})
 
-	it("(v7) hostile args: a __proto__-carrying JSON.parse'd object flows through parse without polluting, and a throwing-getter Proxy yields the canonical TOOL error, never an unhandled throw", async () => {
+	it("(v7) hostile args: a __proto__-carrying JSON.parse'd object refuses without polluting, and a throwing-getter Proxy refuses through the manager, never an unhandled throw", async () => {
 		const tool = createEndpointTool({
 			name: 'lookupUser',
 			description: 'Look up a user by id.',
@@ -4307,8 +4853,12 @@ describe('createEndpointTool', () => {
 		})
 		const hostile: unknown = JSON.parse('{"id":"1","name":"Ada","__proto__":{"polluted":true}}')
 		if (!isRecord(hostile)) throw new Error('unreachable')
-		const result = await tool.execute(hostile, createTestToolContext())
-		expect(isRecord(result) ? result.polluted : undefined).toBeUndefined()
+		const refused = await captureToolboxFailure(async () => {
+			await tool.execute(hostile, createTestToolContext())
+		})
+		expect(isToolError(refused) ? refused.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['__proto__'] },
+		])
 		const clean: Record<string, unknown> = {}
 		expect(clean.polluted).toBeUndefined()
 
@@ -4347,5 +4897,163 @@ describe('createEndpointTool', () => {
 		const first = results[0]
 		expect(first).toEqual(args)
 		for (const result of results) expect(result).toEqual(first)
+	})
+})
+
+// ── refusal text — what a model reads must say what to send ──────────────────
+
+describe('a refusal a model reads names what to send', () => {
+	it('the terminal tools name the terminal, the form, and the fields to correct', async () => {
+		const manager = createTerminalManager()
+		manager.add('agent')
+		manager.add('reviewer')
+		const askTool = createPromptTool({ manager, from: 'agent' })
+		const answerTool = createAnswerTool({ manager, to: 'reviewer' })
+
+		const unknownTerminal = await readToolboxRejection(
+			askTool.execute(createAskCall('ghost', 'confirm', 'ok?'), createTestToolContext()),
+		)
+		expect(unknownTerminal instanceof Error ? unknownTerminal.message : '').toContain(
+			'unknown terminal "ghost"; send to as the name of one of the 2 mounted terminals',
+		)
+
+		const unknownForm = await readToolboxRejection(
+			answerTool.execute(
+				{ operation: 'answer', id: 'ghost', values: { value: true } },
+				createTestToolContext(),
+			),
+		)
+		expect(unknownForm instanceof Error ? unknownForm.message : '').toContain(
+			'unknown form "ghost"; call { "operation": "pending" }',
+		)
+
+		const asked = manager.ask(
+			'agent',
+			'reviewer',
+			createForm({ fields: [{ control: 'text', name: 'value', rule: { required: true } }] }),
+		)
+		const [form] = manager.pending('reviewer')
+		if (form === undefined) throw new Error('expected a parked form')
+		const rejected = await readToolboxRejection(
+			answerTool.execute({ operation: 'answer', id: form.id, values: {} }, createTestToolContext()),
+		)
+		expect(isToolboxError(rejected) ? rejected.code : undefined).toBe('ANSWER')
+		const text = rejected instanceof Error ? rejected.message : ''
+		expect(text).toContain('correct these fields and answer again')
+		expect(text).toContain('"value" This field is required')
+
+		const malformed = await readToolboxRejection(
+			answerTool.execute(
+				{ operation: 'answer', id: form.id, values: { value: { nested: 1 } } },
+				createTestToolContext(),
+			),
+		)
+		expect(malformed instanceof Error ? malformed.message : '').toContain(
+			'send values as a record of each field name',
+		)
+		manager.answer('reviewer', form.id, { value: 'Ada' })
+		await asked
+	})
+
+	it('the relation tool lists the managers and models, and states what an include path holds', async () => {
+		const tool = createRelationTool({ managers: { shop: buildRelationManager() } })
+		const manager = await readToolboxRejection(
+			tool.execute(
+				{ operation: 'load', manager: 'ghost', model: 'accounts', key: 'a1' },
+				createTestToolContext(),
+			),
+		)
+		expect(manager instanceof Error ? manager.message : '').toContain(
+			'unknown relation manager "ghost"; send manager as one of shop',
+		)
+		const model = await readToolboxRejection(
+			tool.execute({ operation: 'load', model: 'ghost', key: 'a1' }, createTestToolContext()),
+		)
+		expect(model instanceof Error ? model.message : '').toContain(
+			'unknown model "ghost"; send model as one of accounts',
+		)
+		const include = await readToolboxRejection(
+			tool.execute(
+				{ operation: 'load', model: 'accounts', key: 'a1', include: ['contacts..account'] },
+				createTestToolContext(),
+			),
+		)
+		expect(include instanceof Error ? include.message : '').toContain(
+			'malformed include path "contacts..account"; send dot-separated relation names',
+		)
+		const ambiguous = createRelationTool({
+			managers: { one: buildRelationManager(), two: buildRelationManager() },
+		})
+		const unresolved = await readToolboxRejection(
+			ambiguous.execute(
+				{ operation: 'load', model: 'accounts', key: 'a1' },
+				createTestToolContext(),
+			),
+		)
+		expect(unresolved instanceof Error ? unresolved.message : '').toContain(
+			'send manager as one of one, two',
+		)
+	})
+
+	it('the database tool names the id and the operations a readonly tool takes', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
+			createTestToolContext(),
+		)
+		const duplicate = await readToolboxRejection(
+			tool.execute(
+				{ operation: 'create', id: 'shop', tables: createItemTables() },
+				createTestToolContext(),
+			),
+		)
+		expect(duplicate instanceof Error ? duplicate.message : '').toContain(
+			'database "shop" already exists; use it, destroy it first, or send another id',
+		)
+		const readonly = await readToolboxRejection(
+			createDatabaseTool({ readonly: true }).execute(
+				{ operation: 'destroy', id: 'shop' },
+				createTestToolContext(),
+			),
+		)
+		expect(readonly instanceof Error ? readonly.message : '').toContain(
+			'call tables, get, records, count, or aggregate',
+		)
+	})
+
+	it('the agent tool says what to send for a provider, a depth, and a cycle', async () => {
+		const registry = createAgentRegistry({
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
+		})
+		const provider = await readToolboxRejection(
+			createAgentTool(registry).execute({ task: 'x' }, createTestToolContext()),
+		)
+		expect(provider instanceof Error ? provider.message : '').toContain('send provider as')
+		const depth = await readToolboxRejection(
+			createAgentTool(registry, { provider: 'main', depth: AGENT_TOOL_DEPTH }).execute(
+				{ task: 'x' },
+				createTestToolContext(),
+			),
+		)
+		expect(depth instanceof Error ? depth.message : '').toContain('without delegating')
+		const cycle = await readToolboxRejection(
+			createAgentTool(registry, { provider: 'main', ancestry: ['agent:main'] }).execute(
+				{ task: 'x' },
+				createTestToolContext(),
+			),
+		)
+		expect(cycle instanceof Error ? cycle.message : '').toContain('send another provider')
+	})
+
+	it('the workflow tool says what to do past the depth bound', async () => {
+		const tool = createWorkflowTool(createNestedWorkflow(), createWorkflowRunner(), {
+			lineage: buildToolLineageFixture(MAX_WORKFLOW_CHAIN + 1),
+		})
+		const error = await readToolboxRejection(
+			tool.execute({ ...createNestedWorkflow('deep') }, createTestToolContext()),
+		)
+		expect(error instanceof Error ? error.message : '').toContain(
+			'without nesting another workflow',
+		)
 	})
 })

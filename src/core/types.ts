@@ -59,7 +59,7 @@ export interface TaskDraft {
 	readonly behavior?: string
 	/** Holds the extra attempts after the first on failure (a non-negative integer); persisted with the workflow. */
 	readonly retries?: number
-	/** Holds the per-attempt deadline in milliseconds (`0..MAX_TIMER_MS`); persisted with the workflow. */
+	/** Holds the per-attempt deadline in milliseconds (`1..MAX_TIMER_MS`); persisted with the workflow, and omitted for no deadline. */
 	readonly timeout?: number
 }
 
@@ -242,7 +242,7 @@ export interface WorkspaceToolOptions {
  * the edit / read arms target.
  */
 export type WorkspaceOperation =
-	/** Reads a whole text file's text by `path` from the active workspace (a binary / absent path — or no active workspace — yields no content). */
+	/** Reads a whole text file's text by `path` from the active workspace (a binary / absent path — or no active workspace — yields `null`). */
 	| { readonly operation: 'read'; readonly path: string }
 	/** Lists every file in the active workspace (path / state / size / lines / kind summaries); `[]` when no workspace is active. */
 	| { readonly operation: 'list' }
@@ -325,9 +325,12 @@ export type WorkspaceOperation =
  *   per-call `tools` list overrides (never merges with) this default.
  * - `system` — the default system prompt seeding the sub-agent's context; a per-call `system`
  *   overrides this.
- * - `depth` — this invocation's nesting depth (default `0`); a delegated sub-agent that itself
- *   calls this tool again runs at `depth + 1`, bounded by
- *   {@link import('./constants.js').AGENT_TOOL_DEPTH}.
+ * - `authority` — the registry key of the authority that decides the delegated sub-agent's tool
+ *   calls. A host's choice, never the call's. Tools named with no `authority` refuse before
+ *   `registry.build` runs, because an agent with tools needs one.
+ * - `depth` — this invocation's nesting depth, a nonnegative safe integer (default `0`); a delegated
+ *   sub-agent that itself calls this tool again runs at `depth + 1`, bounded by
+ *   {@link import('./constants.js').AGENT_TOOL_DEPTH}. Any other value throws at construction.
  * - `ancestry` — the sub-agent identifiers already in this delegation chain (default empty); a
  *   cycle (the resolved agent already present) is rejected with a typed `DEPTH`
  *   {@link import('./errors.js').ToolboxError}.
@@ -349,6 +352,7 @@ export interface AgentToolOptions {
 	readonly provider?: string
 	readonly tools?: readonly string[]
 	readonly system?: string
+	readonly authority?: string
 	readonly depth?: number
 	readonly ancestry?: readonly string[]
 	readonly store?: ConversationStoreInterface
@@ -376,9 +380,10 @@ export interface AgentToolArguments {
  * thrown, typed, code-bearing error, never a `{ error }` return.
  *
  * @remarks
- * `TOOL` — malformed calls and package-owned resolution or configuration failures, including
- * unknown tools, terminals, databases, drivers, relation managers, or models; invalid prompt
- * choices or include paths; disabled readonly mutations; and invalid infer/endpoint inputs.
+ * `TOOL` — package-owned resolution or configuration failures, including unknown tools, terminals,
+ * databases, drivers, relation managers, or models; invalid prompt choices or include paths;
+ * disabled readonly mutations; and invalid construction options. Malformed call arguments are a
+ * `ToolError` with code `ARGUMENTS` (`@orkestrel/tool`), carrying `context.faults`.
  * `DEPTH` — the delegation would exceed {@link import('./constants.js').AGENT_TOOL_DEPTH}, or
  * the resolved agent is already an ancestor (a cycle).
  * `DEADLOCK` — an `ask` call ({@link import('./factories.js').createPromptTool}) would form a
@@ -389,7 +394,9 @@ export interface AgentToolArguments {
  * because the prompt id is unknown or already settled, or the terminal manager rejected the
  * answer.
  * `DATABASE` — a typed `@orkestrel/database` failure (`DatabaseError`), re-surfaced with the
- * granular {@link import('@orkestrel/database').DatabaseErrorCode} carried in `context.code`.
+ * granular {@link import('@orkestrel/database').DatabaseErrorCode} carried in `context.code`, or a
+ * stored definition {@link import('./stores/DatabaseDefinitionStore.js').DatabaseDefinitionStore}
+ * refuses, carrying `context.faults`.
  * `RELATION` — a typed `@orkestrel/relation` failure (`RelationError`), re-surfaced with the
  * granular {@link import('@orkestrel/relation').RelationErrorCode} carried in `context.code`.
  */
@@ -511,7 +518,7 @@ export interface DatabaseDefinitionRow {
  * rather than a live handle. Every primitive is async; `delete` of an absent id is a no-op.
  */
 export interface DefinitionStoreInterface {
-	/** Resolves the persisted definition for `id`, or `undefined` when none is stored. */
+	/** Resolves the persisted definition for `id`, or `undefined` when none is stored; a present row an implementation cannot read as a definition throws. */
 	get(id: string): Promise<DatabaseDefinition | undefined>
 	/** Inserts or replaces a definition under its own `id`, taking no separate id argument. */
 	set(definition: DatabaseDefinition): Promise<void>
@@ -578,7 +585,8 @@ export interface ClampedQuery {
  *   constructed with, used when a written row lacks its primary key. Omitted delegates to the
  *   database's default generator.
  * - `limit` — the `'records'` row cap — through {@link import('./helpers.js').clampQuery}
- *   — enforce when a call's `query.limit` is omitted or exceeds it. Defaults to
+ *   — enforce when a call's `query.limit` is omitted or exceeds it. A positive safe integer; any
+ *   other value throws at construction. Defaults to
  *   {@link import('./constants.js').DATABASE_TOOL_LIMIT}.
  * - `timeout` — a nonnegative safe-integer number of milliseconds. A fresh
  *   `AbortSignal.timeout(timeout)` is passed only to table operations whose current database API
@@ -616,10 +624,11 @@ export interface DatabaseToolOptions {
  *   manager when exactly one is registered, else throws a typed `TOOL`
  *   {@link import('./errors.js').ToolboxError} naming the registered manager keys.
  * - `limit` — the row cap `'find'` / `'links'` enforce when a call's `limit` is omitted or
- *   exceeds it. Defaults to {@link import('./constants.js').RELATION_TOOL_LIMIT}.
+ *   exceeds it. A positive safe integer; any other value throws at construction. Defaults to
+ *   {@link import('./constants.js').RELATION_TOOL_LIMIT}.
  * - `depth` — the max dot-path segment count `'load'` / `'find'`'s `include` paths may reach
- *   ({@link import('./helpers.js').expandInclude}). Defaults to
- *   {@link import('./constants.js').RELATION_TOOL_DEPTH}.
+ *   ({@link import('./helpers.js').expandInclude}). A positive safe integer; any other value throws
+ *   at construction. Defaults to {@link import('./constants.js').RELATION_TOOL_DEPTH}.
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').RELATION_TOOL_NAME} / {@link import('./constants.js').RELATION_TOOL_DESCRIPTION}.
  */
@@ -642,7 +651,7 @@ export interface RelationToolOptions {
 // its `parameters` are inferred once at construction from `samples` and advertised to steer the
 // model, and by default the tool's `execute` enforces that same advertised schema against the
 // model-supplied `args` before calling the definition's own `execute`
-// (`EndpointToolOptions.validate`, default `true`) — see the Contract invariant in `tool.md`.
+// (`EndpointToolOptions.strict`, default `true`) — see the Contract invariant in `tool.md`.
 
 /**
  * Represents the options for {@link import('./factories.js').createInferTool} — advertised name and
@@ -667,7 +676,8 @@ export interface InferToolOptions {
  * `ToolContext` second parameter, and the same `Promise<unknown> | unknown` return. A handler that
  * declares `args` alone still satisfies the type, the way a function declaring fewer parameters
  * than its contract does, so an endpoint definition written against the argument alone keeps
- * typechecking and reads no signal.
+ * typechecking and reads no signal. Under the default door `args` is a null-prototype record, on
+ * which `String(args)` and `args.hasOwnProperty()` throw; read it with `Object.hasOwn`.
  */
 export type EndpointHandler = (
 	args: Readonly<Record<string, unknown>>,
@@ -682,13 +692,13 @@ export type EndpointHandler = (
  * @remarks
  * `samples` must be non-empty — {@link import('./factories.js').createEndpointTool} throws a
  * typed `TOOL` {@link import('./errors.js').ToolboxError} at construction when it is empty,
- * because an empty sample set cannot infer a schema. By default ({@link EndpointToolOptions.validate}
+ * because an empty sample set cannot infer a schema. By default ({@link EndpointToolOptions.strict}
  * `true`) `execute` receives the parsed, normalized args record — a copy of the model-supplied
  * `args` with each scalar coerced to its inferred type (for example a number sent for a string slot
  * arrives coerced to a string), checked against the same schema advertised as `parameters` — and
- * a call with a missing required key or a non-coercible value never reaches `execute` at all (see
- * {@link EndpointToolOptions.validate}). With
- * `validate: false`, `execute` receives the model-supplied `args` verbatim (raw passthrough, never
+ * a call with an undeclared key, a missing required key, or a non-coercible value never reaches
+ * `execute` at all (see {@link EndpointToolOptions.strict}). With
+ * `strict: false`, `execute` receives the model-supplied `args` verbatim (raw passthrough, never
  * checked against the inferred schema). Either way `execute`'s return flows back as the tool
  * call's result; a throw propagates uncaught, isolated by the `ToolManagerInterface`
  * (`@orkestrel/tool`) into the canonical error envelope. When `samples` are non-object values,
@@ -709,30 +719,26 @@ export interface EndpointDefinition {
  *
  * @remarks
  * `format` / `enum` default to `false`, matching `@orkestrel/contract`'s own
- * `ValueToSchemaOptions` defaults. `validate` defaults to `true`: the schema
- * `createEndpointTool` advertises as `parameters` (`samplesToSchema` and `schemaToObject`) is
- * compiled once at construction (through `@orkestrel/contract`'s `schemaToShape`) into a
- * `ContractInterface` used to `parse` every call's `args` before `execute` runs — a normalizing
+ * `ValueToSchemaOptions` defaults. `strict` mirrors `@orkestrel/tool`'s `ToolOptions.strict` and
+ * defaults to `true`: the schema `createEndpointTool` advertises as `parameters` (`samplesToSchema`
+ * and `schemaToObject`) is converted by the Tool door through `@orkestrel/contract`'s lenient
+ * `schemaToShape` on the first call, and runs on every call's `args` before `execute` — a normalizing
  * parse: a scalar value is coerced to its inferred type where the house parsers coerce (a number
  * to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/`'false'`/`1`/`0`), so `execute`
  * receives the coerced values (for example `7` sent for a string slot arrives at `execute` as `'7'`), not
- * the raw call args. A call whose `args` fails to parse — a required key missing, or a value not
- * coercible to its slot's type — throws a typed `TOOL` {@link import('./errors.js').ToolboxError}
- * carrying the structured `explain` faults, and `execute` is never called. Beyond that coercion,
- * enforcement is structural — required keys, `enum` membership, and numeric bounds — `format`
- * annotations (`email`, `date-time`, `uuid`, `uri`, ...) are never asserted, mirroring
- * `@orkestrel/contract`'s own widening-only law for `schemaToShape`: a `format: true`-tuned
- * endpoint still accepts a non-conforming string in a format-tagged slot. A key not present in
- * the inferred (closed, `additionalProperties: false`) schema is never a rejection either — it is
- * silently dropped before `execute` runs (the same leniency `@orkestrel/contract`'s own `parse`
- * grants a closed object generally), so `execute` may see fewer keys than the caller sent. Set
- * `validate: false` when the endpoint's own handler validates its arguments, or when `samples`
- * under-describe the real contract and the normalizing coercion would corrupt a call: the tool's
- * `execute` then passes the model-supplied `args` to the handler unchanged, unchecked and
- * unstripped.
+ * the raw call args. A call that carries a key the inferred (closed, `additionalProperties: false`)
+ * schema does not declare, misses a required key, or holds a value not coercible to its slot's type
+ * throws a `ToolError` with code `ARGUMENTS` (`@orkestrel/tool`) carrying `context.faults`, and
+ * `execute` is never called. Beyond that, enforcement is structural — required keys, `enum`
+ * membership, and numeric bounds — `format` annotations (`email`, `date-time`, `uuid`, `uri`, ...)
+ * are never asserted, mirroring `@orkestrel/contract`'s own widening-only law for `schemaToShape`: a
+ * `format: true`-tuned endpoint still accepts a non-conforming string in a format-tagged slot. Set
+ * `strict: false` when the endpoint's own handler validates its arguments, or when `samples`
+ * under-describe the real contract and the door would refuse a real call: the tool's `execute` then
+ * passes the model-supplied `args` to the handler unchanged, unchecked and unstripped.
  */
 export interface EndpointToolOptions {
 	readonly format?: boolean
 	readonly enum?: boolean
-	readonly validate?: boolean
+	readonly strict?: boolean
 }

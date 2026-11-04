@@ -6,8 +6,8 @@ import type { DatabaseDefinition, DefinitionStoreInterface } from '../types.js'
  * {@link import('../factories.js').createMemoryDefinitionStore} builds. It implements the same
  * {@link DefinitionStoreInterface} contract as
  * {@link import('./DatabaseDefinitionStore.js').DatabaseDefinitionStore}: this store copies on
- * write and on read; the table-backed store narrows an untrusted stored blob and reports
- * `undefined` for a malformed one.
+ * write and on read; the table-backed store narrows an untrusted stored blob and refuses a malformed
+ * one.
  *
  * @remarks
  * A plain `Map<string, DatabaseDefinition>` (the definition is already pure,

@@ -7,6 +7,7 @@ import { WORKFLOW_TOOL_NAME, DatabaseDefinitionStore } from '@src/core'
 import type {
 	AgentInterface,
 	AgentResult,
+	AuthorityInterface,
 	Message,
 	ProviderDelta,
 	ProviderInterface,
@@ -29,7 +30,7 @@ import type {
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from '@orkestrel/workflow'
-import { createAgent, ProviderAbortError } from '@orkestrel/agent'
+import { createAgent, createAuthority, ProviderAbortError } from '@orkestrel/agent'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { createWorkflowRunner } from '@orkestrel/workflow'
 import type { FileInterface } from '@orkestrel/workspace'
@@ -75,6 +76,112 @@ export function createTestDefinition(id = 'shop'): DatabaseDefinition {
 		version: 3.5,
 	}
 }
+
+/** Represents one value the definition guard and its shape must agree on. */
+export interface DefinitionCase {
+	readonly label: string
+	readonly value: unknown
+	readonly valid: boolean
+}
+
+/** Holds the values the definition guard and its shape are compared over, each with its verdict. */
+export const DEFINITION_CASES: readonly DefinitionCase[] = Object.freeze([
+	{ label: 'full', value: createTestDefinition(), valid: true },
+	{ label: 'minimal', value: { id: 'a', driver: 'b', tables: {} }, valid: true },
+	{
+		label: 'null prototype',
+		value: Object.assign(Object.create(null), { id: 'a', driver: 'b', tables: {} }),
+		valid: true,
+	},
+	{ label: 'zero version', value: { id: 'a', driver: 'b', tables: {}, version: 0 }, valid: true },
+	{
+		label: 'negative version',
+		value: { id: 'a', driver: 'b', tables: {}, version: -1 },
+		valid: true,
+	},
+	{
+		label: 'empty index list',
+		value: { id: 'a', driver: 'b', tables: {}, indexes: { t: [] } },
+		valid: true,
+	},
+	{
+		label: 'object column',
+		value: { id: 'a', driver: 'b', tables: { t: { columns: { c: { primitive: 'number' } } } } },
+		valid: true,
+	},
+	{
+		label: 'undeclared key',
+		value: { id: 'a', driver: 'b', tables: {}, summary: 'x' },
+		valid: false,
+	},
+	{ label: 'obsolete keys', value: { id: 'a', driver: 'b', tables: {}, keys: {} }, valid: false },
+	{
+		label: 'own undefined optional',
+		value: { id: 'a', driver: 'b', tables: {}, version: undefined },
+		valid: false,
+	},
+	{ label: 'empty id', value: { id: '', driver: 'b', tables: {} }, valid: false },
+	{ label: 'empty driver', value: { id: 'a', driver: '', tables: {} }, valid: false },
+	{ label: 'missing tables', value: { id: 'a', driver: 'b' }, valid: false },
+	{
+		label: 'table with no columns',
+		value: { id: 'a', driver: 'b', tables: { t: {} } },
+		valid: false,
+	},
+	{
+		label: 'table with a stray key',
+		value: { id: 'a', driver: 'b', tables: { t: { columns: {}, note: 'x' } } },
+		valid: false,
+	},
+	{
+		label: 'unknown primitive',
+		value: { id: 'a', driver: 'b', tables: { t: { columns: { c: 'text' } } } },
+		valid: false,
+	},
+	{
+		label: 'column with a stray key',
+		value: {
+			id: 'a',
+			driver: 'b',
+			tables: { t: { columns: { c: { primitive: 'string', x: 1 } } } },
+		},
+		valid: false,
+	},
+	{
+		label: 'empty primary',
+		value: { id: 'a', driver: 'b', tables: {}, primary: { t: '' } },
+		valid: false,
+	},
+	{
+		label: 'empty index group',
+		value: { id: 'a', driver: 'b', tables: {}, indexes: { t: [[]] } },
+		valid: false,
+	},
+	{
+		label: 'empty index column',
+		value: { id: 'a', driver: 'b', tables: {}, indexes: { t: [['']] } },
+		valid: false,
+	},
+	{
+		label: 'NaN version',
+		value: { id: 'a', driver: 'b', tables: {}, version: Number.NaN },
+		valid: false,
+	},
+	{
+		label: 'infinite version',
+		value: { id: 'a', driver: 'b', tables: {}, version: Number.POSITIVE_INFINITY },
+		valid: false,
+	},
+	{
+		label: 'string version',
+		value: { id: 'a', driver: 'b', tables: {}, version: '1' },
+		valid: false,
+	},
+	{ label: 'null', value: null, valid: false },
+	{ label: 'array', value: [], valid: false },
+	{ label: 'string', value: 'shop', valid: false },
+	{ label: 'date', value: new Date(0), valid: false },
+])
 
 /**
  * Creates the execution context an uncancelled direct `ToolInterface.execute` call receives.
@@ -286,6 +393,15 @@ export class ScriptedProvider implements ScriptedProviderInterface {
 			if (step.done) return step.value
 		}
 	}
+}
+
+/**
+ * Creates the authority a test agent that runs its bound tools needs, allowing every call.
+ *
+ * @returns An authority whose fallback allows each call
+ */
+export function createOpenAuthority(): AuthorityInterface {
+	return createAuthority({ fallback: { zone: 'default', verdict: 'allow' } })
 }
 
 /** Implements a structural agent boundary whose typed result is deliberately malformed at runtime. */

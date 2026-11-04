@@ -43,21 +43,39 @@ await new GuideCommand({
 	reader: readInventory,
 	runner: createVitest,
 }).execute(async ({ files, report, rows }) => {
-	const { isRecord, parseJSON } = await import('@orkestrel/contract')
+	const {
+		createContract,
+		isRecord,
+		literalShape,
+		numberShape,
+		objectShape,
+		parseJSON,
+		stringShape,
+		unionShape,
+	} = await import('@orkestrel/contract')
 	const { computeSymbolKey, findMissingSymbols } = await import('@orkestrel/guide')
 	const { createToolManager } = await import('@orkestrel/tool')
 	const { requireValue } = await import('@orkestrel/test')
+	const { createWorkspaceManager } = await import('@orkestrel/workspace')
 	const {
+		buildArgumentRefusal,
 		clampQuery,
 		completeTaskDraft,
 		createEndpointTool,
 		createWorkflowDraftContract,
 		deriveWorkflowDepth,
+		describeDefinitionRefusal,
 		expandInclude,
 		extendLineage,
 		isAgentFunction,
+		isIndexMap,
+		isPrimaryMap,
+		isTableSpec,
 		isWorkflowLineage,
 		normalizeLineage,
+		requireActiveWorkspace,
+		requireToolCall,
+		resolveBound,
 		tagAgent,
 		tagWorkflow,
 	} = await import('@src/core')
@@ -195,6 +213,34 @@ await new GuideCommand({
 			const { query, limit } = clampQuery(undefined, 100)
 			expect(limit).toBe(100)
 			expect(query.limit).toBe(101)
+		})
+
+		it('the refusal fence returns what its comments claim', () => {
+			expect(isTableSpec({ items: { columns: { id: 'string' } } })).toBe(true)
+			expect(isPrimaryMap({ items: 'id' })).toBe(true)
+			expect(isIndexMap({ items: [['id']] })).toBe(true)
+			const amount = createContract(objectShape({ amount: numberShape() }))
+			expect(requireToolCall(amount, { amount: '3' })).toEqual({ amount: 3 })
+			const { schema } = createContract(
+				unionShape(
+					objectShape({ operation: literalShape(['read']), path: stringShape() }),
+					objectShape({ operation: literalShape(['list']) }),
+				),
+			)
+			expect(buildArgumentRefusal(schema, { operation: 'read' }, []).message).toBe(
+				'operation "read" takes path; correct each line and send it again:\npath: missing; expected string',
+			)
+			expect(buildArgumentRefusal(schema, { operation: 'nope' }, []).message).toBe(
+				'operation: received "nope"; send one of "read", "list"',
+			)
+			expect(resolveBound(undefined, 100, 'database limit')).toBe(100)
+			expect(resolveBound(25, 100, 'database limit')).toBe(25)
+			const manager = createWorkspaceManager()
+			const workspace = manager.add()
+			expect(requireActiveWorkspace(manager, 'remove')).toBe(workspace)
+			expect(describeDefinitionRefusal('shop', [{ reason: 'extra', path: ['keys'] }])).toContain(
+				'database "shop" holds a definition this version refuses (extra key "keys" at the root;',
+			)
 		})
 
 		it('the endpoint-bridge fence returns the row its comment claims', async () => {

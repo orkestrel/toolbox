@@ -1,14 +1,18 @@
 import {
 	createAgentFunction,
+	definitionContract,
 	isAgentFunction,
 	isColumnPrimitive,
 	isColumnSpec,
 	isDatabaseDefinition,
+	isIndexMap,
+	isPrimaryMap,
+	isTableSpec,
 	isWorkflowLineage,
 } from '@src/core'
 import { createAgent } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
-import { ScriptedProvider } from '../../setup.js'
+import { DEFINITION_CASES, ScriptedProvider, throwingGetWorkflowArguments } from '../../setup.js'
 
 // tests/src/core/validators.test.ts — mirrors src/core/validators.ts. Every guard is driven with
 // real values (AGENTS' no-mocks rule): live lineages, a live agent adapter, and untrusted
@@ -91,6 +95,8 @@ describe('isColumnSpec — narrow to a bare ColumnPrimitive or a { primitive, op
 		expect(isColumnSpec({ primitive: 'text' })).toBe(false)
 		expect(isColumnSpec({ primitive: 'string', optional: 'yes' })).toBe(false)
 		expect(isColumnSpec({})).toBe(false)
+		expect(isColumnSpec({ primitive: 'string', optional: undefined })).toBe(false)
+		expect(isColumnSpec({ primitive: 'string', note: 'x' })).toBe(false)
 		expect(isColumnSpec(null)).toBe(false)
 		expect(isColumnSpec(42)).toBe(false)
 		expect(isColumnSpec('text')).toBe(false)
@@ -161,5 +167,65 @@ describe('isDatabaseDefinition — narrow an untrusted value to a DatabaseDefini
 		expect(isDatabaseDefinition('nope')).toBe(false)
 		expect(isDatabaseDefinition(42)).toBe(false)
 		expect(isDatabaseDefinition([])).toBe(false)
+	})
+
+	it('is exact on owned keys: an undeclared key and an own undefined optional refuse', () => {
+		expect(isDatabaseDefinition({ ...valid, note: 'x' })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, version: undefined })).toBe(false)
+		expect(isDatabaseDefinition({ ...valid, primary: undefined })).toBe(false)
+		expect(
+			isDatabaseDefinition({ ...valid, tables: { widgets: { columns: {}, note: 'x' } } }),
+		).toBe(false)
+	})
+
+	it('never throws: a record whose reads throw is false', () => {
+		expect(isDatabaseDefinition(throwingGetWorkflowArguments)).toBe(false)
+		expect(isTableSpec(throwingGetWorkflowArguments)).toBe(false)
+		expect(isPrimaryMap(throwingGetWorkflowArguments)).toBe(false)
+		expect(isIndexMap(throwingGetWorkflowArguments)).toBe(false)
+	})
+
+	it('moves in lockstep with definitionShape over every fixture, both ways', () => {
+		const divergent = DEFINITION_CASES.filter(
+			(fixture) => isDatabaseDefinition(fixture.value) !== definitionContract.is(fixture.value),
+		).map((fixture) => fixture.label)
+		expect(divergent).toEqual([])
+		expect(
+			DEFINITION_CASES.filter((fixture) => fixture.valid).map((fixture) => fixture.label),
+		).toEqual(
+			DEFINITION_CASES.filter((fixture) => isDatabaseDefinition(fixture.value)).map(
+				(fixture) => fixture.label,
+			),
+		)
+	})
+})
+
+describe('isTableSpec / isPrimaryMap / isIndexMap — the definition guard parts', () => {
+	it('isTableSpec holds table name to exactly { columns } of valid column specs', () => {
+		expect(isTableSpec({})).toBe(true)
+		expect(isTableSpec({ items: { columns: {} } })).toBe(true)
+		expect(isTableSpec({ items: { columns: { id: 'string' } } })).toBe(true)
+		expect(isTableSpec({ items: {} })).toBe(false)
+		expect(isTableSpec({ items: { columns: { id: 'text' } } })).toBe(false)
+		expect(isTableSpec({ items: { columns: {}, note: 'x' } })).toBe(false)
+		expect(isTableSpec('items')).toBe(false)
+	})
+
+	it('isPrimaryMap holds table name to a nonempty column name', () => {
+		expect(isPrimaryMap({})).toBe(true)
+		expect(isPrimaryMap({ items: 'id' })).toBe(true)
+		expect(isPrimaryMap({ items: '' })).toBe(false)
+		expect(isPrimaryMap({ items: 1 })).toBe(false)
+		expect(isPrimaryMap([])).toBe(false)
+	})
+
+	it('isIndexMap holds table name to groups of nonempty column names', () => {
+		expect(isIndexMap({})).toBe(true)
+		expect(isIndexMap({ items: [] })).toBe(true)
+		expect(isIndexMap({ items: [['id'], ['id', 'name']] })).toBe(true)
+		expect(isIndexMap({ items: [[]] })).toBe(false)
+		expect(isIndexMap({ items: [['']] })).toBe(false)
+		expect(isIndexMap({ items: 'id' })).toBe(false)
+		expect(isIndexMap('items')).toBe(false)
 	})
 })

@@ -1,5 +1,6 @@
 import type { ColumnSpec, DatabaseDefinition } from '@src/core'
-import { createDatabaseDefinitionStore, isDatabaseDefinition } from '@src/core'
+import { createDatabaseDefinitionStore, isToolboxError } from '@src/core'
+import { captureToolboxFailure } from '../../../setup.js'
 import { createTestDefinition, buildDatabaseStoreWithTable } from '../../../setup.js'
 import { describe, expect, it } from 'vitest'
 
@@ -10,9 +11,9 @@ import { describe, expect, it } from 'vitest'
 // asserted here against the driver-pluggable tier. Database-only scenarios (default driver,
 // malformed stored blob) follow in their own sections.
 
-// Builds a fresh DatabaseDefinitionStore PLUS a handle to its underlying table, so a test can
-// write junk directly into storage (bypassing the store's own `set`) to prove a malformed
-// stored blob resolves `undefined` rather than throwing.
+// The malformed-blob section takes a store PLUS a handle to its underlying table, so a test can
+// write junk directly into storage (reaching it without the store's own `set`) to prove a present
+// row the guard refuses throws rather than reading as absent.
 
 describe('DatabaseDefinitionStore — DefinitionStoreInterface conformance', () => {
 	it('set→get round-trips the FULL definition (mixed columns, primary, indexes, and version)', async () => {
@@ -110,16 +111,73 @@ describe('createDatabaseDefinitionStore — default driver', () => {
 })
 
 describe('DatabaseDefinitionStore — malformed stored blob', () => {
-	it('get resolves undefined (not a throw) when the underlying row holds a non-definition blob', async () => {
+	it('get throws DATABASE when the underlying row holds a non-definition blob, carrying its faults', async () => {
 		const { store, table } = buildDatabaseStoreWithTable()
 		await table.set({ id: 'junk', definition: { totally: 'not a definition' } })
-		expect(isDatabaseDefinition({ totally: 'not a definition' })).toBe(false)
-		await expect(store.get('junk')).resolves.toBeUndefined()
+		const error = await captureToolboxFailure(() => store.get('junk'))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isToolboxError(error) ? error.context?.id : undefined).toBe('junk')
+		expect(isToolboxError(error) ? error.context?.faults : undefined).toEqual(
+			expect.arrayContaining([{ reason: 'extra', path: ['totally'] }]),
+		)
+		expect(error instanceof Error ? error.message : '').toContain('store.delete("junk")')
 	})
 
-	it('get resolves undefined when the underlying row holds a primitive (non-record) blob', async () => {
+	it('get throws DATABASE when the underlying row holds a primitive (non-record) blob', async () => {
 		const { store, table } = buildDatabaseStoreWithTable()
 		await table.set({ id: 'junk-primitive', definition: 'just a string' })
-		await expect(store.get('junk-primitive')).resolves.toBeUndefined()
+		const error = await captureToolboxFailure(() => store.get('junk-primitive'))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+	})
+
+	it('an undeclared key names the key, the table, and the remedy', async () => {
+		const { store, table } = buildDatabaseStoreWithTable()
+		await table.set({
+			id: 'shop',
+			definition: { ...createTestDefinition(), keys: { items: 'id' } },
+		})
+		const error = await captureToolboxFailure(() => store.get('shop'))
+		expect(isToolboxError(error) ? error.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['keys'] },
+		])
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain('extra key "keys" at the root')
+		expect(text).toContain('read the row through your own table')
+		expect(text).toContain('rewrite it without the key')
+		expect(text).toContain('store.delete("shop")')
+	})
+
+	it('a row that names another id throws, naming the fault at id', async () => {
+		const { store, table } = buildDatabaseStoreWithTable()
+		await table.set({ id: 'shop', definition: createTestDefinition('other') })
+		const error = await captureToolboxFailure(() => store.get('shop'))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isToolboxError(error) ? error.context?.faults : undefined).toEqual([
+			{ reason: 'type', path: ['id'], expected: 'literal', received: '"other"' },
+		])
+	})
+
+	it('only a missing row reads undefined', async () => {
+		const { store } = buildDatabaseStoreWithTable()
+		await expect(store.get('absent')).resolves.toBeUndefined()
+	})
+
+	it('set refuses what get would and writes nothing', async () => {
+		const { store, table } = buildDatabaseStoreWithTable()
+		const malformed: unknown = { ...createTestDefinition(), keys: { items: 'id' } }
+		const error = await captureToolboxFailure(() => Reflect.apply(store.set, store, [malformed]))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isToolboxError(error) ? error.context?.faults : undefined).toEqual([
+			{ reason: 'extra', path: ['keys'] },
+		])
+		expect(error instanceof Error ? error.message : '').toContain('keys: extra')
+		await expect(table.get('shop')).resolves.toBeUndefined()
+	})
+
+	it('delete clears a refused row without reading it, so get reads undefined afterwards', async () => {
+		const { store, table } = buildDatabaseStoreWithTable()
+		await table.set({ id: 'junk', definition: 'just a string' })
+		await store.delete('junk')
+		await expect(store.get('junk')).resolves.toBeUndefined()
 	})
 })

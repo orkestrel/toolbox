@@ -1,7 +1,9 @@
 import {
 	agentToolShape,
 	answerToolShape,
+	completeDraft,
 	databaseToolShape,
+	definitionShape,
 	promptToolShape,
 	relationToolShape,
 	workflowDraftShape,
@@ -11,7 +13,7 @@ import {
 import type { AgentToolArguments, WorkspaceOperation } from '@src/core'
 import { createContract, isRecord } from '@orkestrel/contract'
 import type { Infer, JSONValue } from '@orkestrel/contract'
-import { MAX_TIMER_MS } from '@orkestrel/workflow'
+import { createWorkflowContract, MAX_TIMER_MS } from '@orkestrel/workflow'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 
 // tests/src/core/shapers.test.ts — mirrors src/core/shapers.ts. Each shape compiles
@@ -217,10 +219,34 @@ describe('workflowDraftShape — the lenient draft (ids/names optional at every 
 		expect(contract.is({ phases: [{ tasks: [], concurrency: 0 }] })).toBe(false)
 	})
 
-	it('accepts timeout 0 and MAX_TIMER_MS, and rejects max + 1', () => {
-		expect(contract.is({ phases: [{ tasks: [{ timeout: 0 }] }] })).toBe(true)
-		expect(contract.is({ phases: [{ tasks: [{ timeout: MAX_TIMER_MS }] }] })).toBe(true)
-		expect(contract.is({ phases: [{ tasks: [{ timeout: MAX_TIMER_MS + 1 }] }] })).toBe(false)
+	it('accepts timeout 1 and MAX_TIMER_MS, and rejects 0 and max + 1, as the strict contract does', () => {
+		const strict = createWorkflowContract()
+		for (const timeout of [1, MAX_TIMER_MS]) {
+			const draft = { phases: [{ tasks: [{ timeout }] }] }
+			expect(contract.is(draft)).toBe(true)
+			expect(strict.is(completeDraft(draft))).toBe(true)
+		}
+		for (const timeout of [0, MAX_TIMER_MS + 1]) {
+			const draft = { phases: [{ tasks: [{ timeout }] }] }
+			expect(contract.is(draft)).toBe(false)
+			expect(strict.is(completeDraft(draft))).toBe(false)
+		}
+	})
+
+	it('accepts concurrency up to the safe integers, and rejects past them, as the strict contract does', () => {
+		const strict = createWorkflowContract()
+		const fits = { phases: [{ tasks: [], concurrency: Number.MAX_SAFE_INTEGER }] }
+		expect(contract.is(fits)).toBe(true)
+		expect(strict.is(completeDraft(fits))).toBe(true)
+		const past = { phases: [{ tasks: [], concurrency: Number.MAX_SAFE_INTEGER + 1 }] }
+		expect(contract.is(past)).toBe(false)
+		expect(strict.is(completeDraft(past))).toBe(false)
+	})
+
+	it('advertises a timeout that names what omission does, with no zero sentinel', () => {
+		const text = JSON.stringify(contract.schema)
+		expect(text).toContain('Omit the key for no deadline')
+		expect(text).not.toContain('0 disables')
 	})
 
 	it('generate() round-trips through its own guard and parser', () => {
@@ -376,6 +402,65 @@ describe('workspaceToolShape — the operation-discriminated union', () => {
 			'toLine',
 		])
 		expect(isRecord(spliceProps) ? 'range' in spliceProps : true).toBe(false)
+	})
+})
+
+describe('workspaceToolShape — a name the workspace cannot address refuses', () => {
+	const contract = createContract(workspaceToolShape)
+
+	it('refuses an empty path, query, from, or to, and keeps an empty replacement and content', () => {
+		for (const operation of [
+			{ operation: 'read', path: '' },
+			{ operation: 'has', path: '' },
+			{ operation: 'write', path: '', content: 'x' },
+			{ operation: 'prepend', path: '', content: 'x' },
+			{ operation: 'append', path: '', content: 'x' },
+			{ operation: 'remove', path: '' },
+			{
+				operation: 'splice',
+				path: '',
+				content: 'x',
+				fromLine: 1,
+				fromColumn: 1,
+				toLine: 1,
+				toColumn: 1,
+			},
+			{ operation: 'search', query: '' },
+			{ operation: 'replace', query: '', replacement: 'x' },
+			{ operation: 'move', from: '', to: 'b' },
+			{ operation: 'move', from: 'a', to: '' },
+		]) {
+			expect(contract.is(operation)).toBe(false)
+		}
+		expect(contract.is({ operation: 'replace', query: 'x', replacement: '' })).toBe(true)
+		expect(contract.is({ operation: 'write', path: 'a', content: '' })).toBe(true)
+	})
+})
+
+describe('definitionShape — a stored definition, exactly', () => {
+	const contract = createContract(definitionShape)
+
+	it('accepts a full and a minimal definition', () => {
+		expect(
+			contract.is({
+				id: 'shop',
+				driver: 'memory',
+				tables: { items: { columns: { id: 'string' } } },
+				primary: { items: 'id' },
+				indexes: { items: [['id']] },
+				version: 2.5,
+			}),
+		).toBe(true)
+		expect(contract.is({ id: 'shop', driver: 'memory', tables: {} })).toBe(true)
+	})
+
+	it('reports an undeclared key at the root and inside a table', () => {
+		expect(contract.audit({ id: 'shop', driver: 'memory', tables: {}, keys: {} })).toEqual([
+			{ reason: 'extra', path: ['keys'] },
+		])
+		expect(
+			contract.audit({ id: 'shop', driver: 'memory', tables: { a: { columns: {}, note: 'x' } } }),
+		).toEqual([{ reason: 'extra', path: ['tables', 'a', 'note'] }])
 	})
 })
 

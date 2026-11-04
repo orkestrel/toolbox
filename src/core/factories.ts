@@ -33,7 +33,7 @@ import type {
 import type { DatabaseInterface, DriverInterface, TableInterface } from '@orkestrel/database'
 import { agentResultToJSON } from '@orkestrel/agent'
 import { createWorkspaceManager, isTextContent, rangeOf } from '@orkestrel/workspace'
-import { createTool } from '@orkestrel/tool'
+import { createTool, describeFaults, renderList, ToolError } from '@orkestrel/tool'
 import {
 	attempt,
 	cloneJSONRecord,
@@ -41,10 +41,11 @@ import {
 	isArray,
 	isError,
 	isFunction,
+	isNonNegativeInteger,
 	isNumber,
-	isRecord,
 	isString,
 	parseJSONValue,
+	preview,
 	rawShape,
 	samplesToSchema,
 	schemaToObject,
@@ -53,7 +54,7 @@ import {
 	stringShape,
 } from '@orkestrel/contract'
 import { isTerminalError } from '@orkestrel/terminal'
-import { createForm, isFormError, isFormValues, parseForm } from '@orkestrel/form'
+import { createForm, FIELD_CONTROLS, isFormError, isFormValues, parseForm } from '@orkestrel/form'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
 import { createWorkflowContract } from '@orkestrel/workflow'
 import { MemoryDefinitionStore } from './stores/MemoryDefinitionStore.js'
@@ -88,6 +89,7 @@ import {
 	RELATION_TOOL_NAME,
 	RELATION_TOOL_SUMMARY,
 	WORKFLOW_TOOL_DESCRIPTION,
+	WORKFLOW_TOOL_FLAT_EXAMPLE,
 	WORKFLOW_TOOL_NAME,
 	WORKFLOW_TOOL_SUMMARY,
 	WORKSPACE_TOOL_DESCRIPTION,
@@ -106,6 +108,9 @@ import {
 	inferTerminalCode,
 	normalizeLineage,
 	normalizeQuery,
+	requireActiveWorkspace,
+	requireToolCall,
+	resolveBound,
 	resolveLimit,
 	resolveRelationManager,
 	resolveRelationModel,
@@ -197,7 +202,8 @@ export function createToolFunction(tools: ToolManagerInterface, name: string): W
  * targets deeper than {@link import('./constants.js').MAX_WORKFLOW_CHAIN} are rejected before
  * agent or runner activity. When {@link import('./types.js').AgentFunctionOptions.runner} is
  * supplied, the adapter binds a recursion-safe {@link createWorkflowTool} onto the agent's
- * `context.tools`, propagating opaque leaves, raw agents, lineage, and the native store. The
+ * `context.tools`, propagating opaque leaves, raw agents, lineage, and the native store. The agent
+ * needs an `authority` of its own to run that tool, because an agent with none denies every call. The
  * task's cancellation propagates through the Agent's native per-run signal seam:
  * `agent.generate({ signal: controller.signal })` resolves a partial `AgentResult` on a cancel
  * (never rejects), projected onto its exact JSON fields.
@@ -391,7 +397,12 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
  * It is also the propagation carrier
  * {@link createAgentFunction} binds onto a wrapped agent's `context.tools`: because a tool
  * handler receives only the model-supplied `args`, the immutable lineage is closed over at bind
- * time. The authored target is appended and its zero-based depth derived from workflow tags.
+ * time. The authored target is appended and its zero-based depth derived from workflow tags. That
+ * bound tool wraps the containing workflow's id over no phases, and its empty-args call always
+ * refuses as a cycle before the runner, so the wrapper never runs.
+ *
+ * `parameters` advertises the flat form alone, so the tool is built `strict: false` and its handler
+ * runs the door ({@link import('./helpers.js').requireToolCall}) on the form the arguments take.
  *
  * **Widened authoring surface (additive — the canonical contract and runner stay strict and
  * unchanged).** A 2B model reliably calls the tool but cannot reliably emit the full nested
@@ -406,9 +417,11 @@ export function createWorkflowDraftContract(): ContractInterface<WorkflowDraft> 
  *   super-set.
  *
  * The universal tool-handler contract: returns the plain run summary
- * (`{ status, count, durable?, fault? }`) on success, throws a typed `ToolboxError` on Toolbox
- * boundary failures — malformed authored args (`TOOL`), or an over-deep / cyclic nested run
- * (`DEPTH`) — and preserves genuine runner `WorkflowError`s. The `ToolManagerInterface` isolates every throw into the canonical tool result's
+ * (`{ status, count, durable?, fault? }`) on success. Malformed authored args throw a `ToolError`
+ * with code `ARGUMENTS` (`@orkestrel/tool`) whose text lists what to correct, carrying
+ * `context.faults`; a wrapped definition the strict contract refuses throws `TOOL`, and an over-deep
+ * or cyclic nested run throws `DEPTH`. Genuine runner `WorkflowError`s are preserved, including
+ * `SCHEDULE` for a target with no task. The `ToolManagerInterface` isolates every throw into the canonical tool result's
  * top-level `error`, so nothing escapes the run. `options.lineage` is the propagation carrier
  * across a workflow → agent → workflow chain. Opaque `functions` remain host leaves; raw `agents`
  * are contextually adapted through {@link createWorkflowFunctions}; native checkpoint persistence
@@ -483,41 +496,46 @@ export function createWorkflowTool(
 		description: WORKFLOW_TOOL_DESCRIPTION,
 		summary: WORKFLOW_TOOL_SUMMARY,
 		...(parameters === undefined ? {} : { parameters }),
+		strict: false,
 		async execute(args) {
 			const cloned = attempt(() => cloneJSONRecord(args))
 			if (!cloned.success) {
-				throw new ToolboxError('TOOL', 'malformed workflow definition', {
-					workflow: definition.id,
-				})
+				throw new ToolError(
+					'ARGUMENTS',
+					`Arguments could not be read; send one JSON object such as ${JSON.stringify(WORKFLOW_TOOL_FLAT_EXAMPLE)}`,
+					undefined,
+					{ cause: cloned.error },
+				)
 			}
-			const owned = cloned.value
 			// Branch on the owned args snapshot's shape (no ambient context — a tool handler gets only
-			// `args`): empty ⇒ the wrapped definition; a `steps` array ⇒ the flat form, parsed and
-			// expanded; otherwise the nested draft form, parsed and completed. A parse failure leaves
-			// `target` undefined ⇒ the strict gate that follows throws `TOOL`.
-			const target = resolveWorkflowTarget(owned, definition, steps, draft)
+			// `args`), and refuse with the chosen form's own faults.
+			const target = resolveWorkflowTarget(cloned.value, definition, steps, draft)
 			// The soundness gate: whatever authoring form produced `target`, it must satisfy the
 			// strict canonical contract before it runs — the leniency never reaches the runner.
-			if (target === undefined || !strict.is(target)) {
-				throw new ToolboxError('TOOL', 'malformed workflow definition', {
-					workflow: definition.id,
-				})
+			if (!strict.is(target)) {
+				const faults = strict.audit(target)
+				throw new ToolboxError(
+					'TOOL',
+					`workflow ${preview(definition.id)} cannot run; send steps to author another one, or correct it:\n${describeFaults(faults, strict.schema)}`,
+					{ workflow: definition.id, faults },
+				)
 			}
 			const tag = tagWorkflow(target.id)
 			if (lineage.includes(tag)) {
-				throw new ToolboxError('DEPTH', `workflow '${target.id}' is already an ancestor (cycle)`, {
-					workflow: target.id,
-					lineage: [...lineage],
-				})
+				throw new ToolboxError(
+					'DEPTH',
+					`workflow ${preview(target.id)} is already an ancestor (cycle); send steps with a new name, or phases with a new id`,
+					{ workflow: target.id, lineage: [...lineage] },
+				)
 			}
 			const targetLineage = extendLineage(lineage, tag)
 			const depth = deriveWorkflowDepth(targetLineage)
 			if (depth > MAX_WORKFLOW_CHAIN) {
-				throw new ToolboxError('DEPTH', `nested workflow exceeds max depth ${MAX_WORKFLOW_CHAIN}`, {
-					workflow: target.id,
-					depth,
-					max: MAX_WORKFLOW_CHAIN,
-				})
+				throw new ToolboxError(
+					'DEPTH',
+					`nested workflow exceeds max depth ${MAX_WORKFLOW_CHAIN}; finish this task without nesting another workflow`,
+					{ workflow: target.id, depth, max: MAX_WORKFLOW_CHAIN },
+				)
 			}
 			const registry =
 				functions === undefined && agents === undefined
@@ -552,17 +570,20 @@ export function createWorkflowTool(
  * active workspace by id (lenient — an unknown id is a no-op reporting `switched: false`, never a
  * throw).
  *
- * No-active rule (the ergonomic seam): a writing op (write / splice / prepend / append / move /
- * remove / replace) run when `manager.active` is `undefined` auto-creates and activates a default
- * workspace (`manager.add()`) so the model can start writing; a pure-read op (read / list /
- * has / search) against no active workspace returns the empty result (`undefined` / `[]` /
- * `false`), never creating one and never throwing.
+ * No-active rule (the ergonomic seam): an op that can create the file it names (write / prepend /
+ * append) run when `manager.active` is `undefined` auto-creates and activates a default workspace
+ * (`manager.add()`) so the model can start writing; an op that edits a file that must already exist
+ * (splice / move / remove / replace) refuses with a `TOOL` `ToolboxError` and creates none; a
+ * pure-read op (read / list / has / search) against no active workspace returns the empty result
+ * (`null` / `[]` / `false`), never creating one and never throwing.
  *
- * The handler conforms to the universal tool-handler contract: it `contract.parse`s
- * the args, throws a `TOOL` `ToolboxError` when no operation arm matched (a malformed / unknown
- * operation), else `switch`es on `op.operation` and returns the plain result — letting a
- * `WorkspaceError` raised by the live workspace (`MISSING` / `MODALITY` / `PATTERN` / `RANGE`)
- * propagate uncaught. The range edit is the flat `'splice'` op: its flat caret integers are
+ * The handler conforms to the universal tool-handler contract: the tool is built `strict: false`
+ * because its root is a union, and {@link import('./helpers.js').requireToolCall} refuses malformed
+ * args with a `ToolError` carrying code `ARGUMENTS` that names the operation's own faults or every
+ * operation it can take. The handler then `switch`es on `op.operation` and returns the plain result
+ * — letting a `WorkspaceError` raised by the live workspace (`MISSING` / `MODALITY` / `PATTERN` /
+ * `RANGE`) propagate uncaught. `read` returns `null` for a path that holds no text, because JSON
+ * tells that from an empty file. The range edit is the flat `'splice'` op: its flat caret integers are
  * reassembled into a `Range` (`@orkestrel/workspace`) by `rangeOf` and fed to the workspace's
  * ranged `write`.
  *
@@ -591,11 +612,9 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 		description: options?.description ?? WORKSPACE_TOOL_DESCRIPTION,
 		summary: WORKSPACE_TOOL_SUMMARY,
 		...(parameters === undefined ? {} : { parameters }),
+		strict: false,
 		execute(args) {
-			const op = contract.parse(args)
-			if (op === undefined) {
-				throw new ToolboxError('TOOL', 'unknown or malformed operation', { args })
-			}
+			const op = requireToolCall(contract, args)
 			// Registry ops act on the manager, not a workspace — handle them first.
 			if (op.operation === 'workspaces') {
 				const activeId = manager.active?.id
@@ -612,13 +631,13 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 					? { id: op.id, switched: false }
 					: { id: switched.id, switched: true, files: switched.count }
 			}
-			// Edit and read ops target the active workspace. A writing op auto-creates and activates a
-			// default workspace when none is active (the no-active ergonomic seam) — while a pure-read
-			// op returns the empty result against no active workspace rather than creating one.
+			// Edit and read ops target the active workspace. An op that can create its file auto-creates
+			// and activates a default workspace when none is active (the no-active ergonomic seam), an op
+			// on a file that must exist refuses, and a pure-read op returns the empty result.
 			const active = manager.active
 			switch (op.operation) {
 				case 'read':
-					return active?.read(op.path)
+					return active?.read(op.path) ?? null
 				case 'list':
 					return (active?.files() ?? []).map((file) => ({
 						path: file.path,
@@ -638,7 +657,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 						}) ?? []
 					)
 				case 'replace': {
-					const workspace = active ?? manager.add()
+					const workspace = requireActiveWorkspace(manager, op.operation)
 					return workspace.replace(op.query, op.replacement, {
 						...(op.regex === undefined ? {} : { regex: op.regex }),
 						...(op.sensitive === undefined ? {} : { sensitive: op.sensitive }),
@@ -651,7 +670,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 					return { path: op.path, state: workspace.file(op.path)?.state }
 				}
 				case 'splice': {
-					const workspace = active ?? manager.add()
+					const workspace = requireActiveWorkspace(manager, op.operation)
 					workspace.write(
 						op.path,
 						op.content,
@@ -670,11 +689,11 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 					return { path: op.path, state: workspace.file(op.path)?.state }
 				}
 				case 'move': {
-					const workspace = active ?? manager.add()
+					const workspace = requireActiveWorkspace(manager, op.operation)
 					return { from: op.from, to: op.to, moved: workspace.move(op.from, op.to) }
 				}
 				case 'remove': {
-					const workspace = active ?? manager.add()
+					const workspace = requireActiveWorkspace(manager, op.operation)
 					return { path: op.path, removed: workspace.remove(op.path) }
 				}
 			}
@@ -687,16 +706,20 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
  * from `registry` and runs it to completion for one delegated `task`.
  *
  * @remarks
- * The universal tool-handler contract: validates the call args against
- * {@link import('./shapers.js').agentToolShape}, assembles an `AgentJobInput` (`task` seeds the
+ * The universal tool-handler contract: the Tool door holds the call args to
+ * {@link import('./shapers.js').agentToolShape}, refusing a malformed call with a `ToolError`
+ * carrying code `ARGUMENTS`. The handler assembles an `AgentJobInput` (`task` seeds the
  * sub-agent's conversation as a single `user` message; `provider` / `tools` / `system` fall
- * back to the tool's own {@link import('./types.js').AgentToolOptions} defaults), rehydrates the sub-agent through
+ * back to the tool's own {@link import('./types.js').AgentToolOptions} defaults, and `authority` is
+ * the tool's own, never the call's), rehydrates the sub-agent through
  * `registry.build`, runs it with `agent.generate()`, and returns the settled
- * `AgentResult.content` string (the sub-agent's final text). A missing / unresolvable `provider`, or a malformed call, throws a typed `TOOL`
+ * `AgentResult.content` string (the sub-agent's final text). A missing / unresolvable `provider`, or
+ * tools with no configured `authority`, throws a typed `TOOL`
  * {@link import('./errors.js').ToolboxError}; a delegation that would exceed
  * {@link import('./constants.js').AGENT_TOOL_DEPTH}, or re-enter an already-delegated agent (a
  * cycle), throws a typed `DEPTH` {@link import('./errors.js').ToolboxError}, each isolated
- * by the `ToolManagerInterface` into the canonical tool result's top-level `error`.
+ * by the `ToolManagerInterface` into the canonical tool result's top-level `error`. A `depth` that
+ * is not a nonnegative safe integer throws `TOOL` at construction.
  *
  * `AgentInterface` (`@orkestrel/agent`) exposes no teardown method — a bound sub-agent's
  * lifetime is the single `generate()` call this handler awaits; there is nothing to release
@@ -726,46 +749,60 @@ export function createAgentTool(
 	options?: AgentToolOptions,
 ): ToolInterface {
 	const contract = createContract(agentToolShape)
-	const parameters = schemaToParameters(contract.schema)
 	const depth = options?.depth ?? 0
+	if (!isNonNegativeInteger(depth) || !Number.isSafeInteger(depth)) {
+		throw new ToolboxError(
+			'TOOL',
+			`agent tool depth must be a nonnegative safe integer; received ${preview(depth)}; omit it for a direct root`,
+			{ received: preview(depth) },
+		)
+	}
 	const ancestry = options?.ancestry ?? []
 	return createTool({
 		name: options?.name ?? AGENT_TOOL_NAME,
 		description: options?.description ?? AGENT_TOOL_DESCRIPTION,
 		summary: AGENT_TOOL_SUMMARY,
-		...(parameters === undefined ? {} : { parameters }),
+		contract: agentToolShape,
 		async execute(args) {
-			const call = contract.parse(args)
-			if (call === undefined) {
-				throw new ToolboxError('TOOL', 'malformed agent-delegation call', { args })
-			}
+			const call = requireToolCall(contract, args)
 			const provider = call.provider ?? options?.provider
 			if (provider === undefined) {
-				throw new ToolboxError('TOOL', 'no provider resolved for the delegated agent', {
-					task: call.task,
-				})
+				throw new ToolboxError(
+					'TOOL',
+					'no provider resolved for the delegated agent; send provider as a registered provider key',
+					{ task: call.task },
+				)
 			}
 			if (depth + 1 > AGENT_TOOL_DEPTH) {
-				throw new ToolboxError('DEPTH', `delegation exceeds max agent depth ${AGENT_TOOL_DEPTH}`, {
-					provider,
-					depth,
-					max: AGENT_TOOL_DEPTH,
-				})
+				throw new ToolboxError(
+					'DEPTH',
+					`delegation exceeds max agent depth ${AGENT_TOOL_DEPTH}; carry out this task without delegating`,
+					{ provider, depth, max: AGENT_TOOL_DEPTH },
+				)
 			}
 			const tag = tagAgent(provider)
 			if (ancestry.includes(tag)) {
-				throw new ToolboxError('DEPTH', `agent '${provider}' is already an ancestor (cycle)`, {
-					provider,
-					ancestry: [...ancestry],
-				})
+				throw new ToolboxError(
+					'DEPTH',
+					`agent ${preview(provider)} is already an ancestor (cycle); send another provider, or carry out this task without delegating`,
+					{ provider, ancestry: [...ancestry] },
+				)
 			}
 			const tools = call.tools ?? options?.tools
+			if (tools !== undefined && tools.length > 0 && options?.authority === undefined) {
+				throw new ToolboxError(
+					'TOOL',
+					'this agent tool has no authority to decide tool calls, so its sub-agent can load no tools; call again without tools',
+					{ provider, tools: [...tools] },
+				)
+			}
 			const system = call.system ?? options?.system
 			const agent = registry.build({
 				provider,
 				messages: [{ role: 'user', content: call.task }],
 				...(system === undefined ? {} : { system }),
 				...(tools === undefined ? {} : { tools }),
+				...(options?.authority === undefined ? {} : { authority: options.authority }),
 			})
 			const result = await agent.generate()
 			if (options?.store !== undefined) {
@@ -787,12 +824,13 @@ export function createAgentTool(
  * description when `summary` is set, keeping the advertised tool list compact for a small model.
  * This tool is the on-demand expansion seam: given a registered tool's `name`, it looks the tool
  * up through `tools.tool(name)` and returns its full `description` (falling back to `summary` when a
- * tool has no `description` of its own, then a placeholder when it has neither).
+ * tool has no `description` of its own, then an explicit `null` when it has neither).
  *
- * The universal tool-handler contract: validates the call args against
- * {@link import('./shapers.js').describeToolShape}, returns the plain description string on
- * success, throws a typed `TOOL` {@link import('./errors.js').ToolboxError} on a malformed call
- * or an unknown tool name.
+ * The universal tool-handler contract: the Tool door holds the call args to
+ * {@link import('./shapers.js').describeToolShape}, refusing a malformed call with a `ToolError`
+ * carrying code `ARGUMENTS`. The handler returns the plain description on success, and throws a typed
+ * `TOOL` {@link import('./errors.js').ToolboxError} that lists the registered names on an unknown
+ * tool name.
  *
  * @param tools - The `ToolManagerInterface` (`@orkestrel/tool`) whose registered tools this
  *   tool can describe
@@ -812,22 +850,23 @@ export function createAgentTool(
  */
 export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
 	const contract = createContract(describeToolShape)
-	const parameters = schemaToParameters(contract.schema)
 	return createTool({
 		name: DESCRIBE_TOOL_NAME,
 		description: DESCRIBE_TOOL_DESCRIPTION,
 		summary: DESCRIBE_TOOL_SUMMARY,
-		...(parameters === undefined ? {} : { parameters }),
+		contract: describeToolShape,
 		async execute(args) {
-			const call = contract.parse(args)
-			if (call === undefined) {
-				throw new ToolboxError('TOOL', 'malformed describe call', { args })
-			}
+			const call = requireToolCall(contract, args)
 			const tool = tools.tool(call.name)
 			if (tool === undefined) {
-				throw new ToolboxError('TOOL', `unknown tool '${call.name}'`, { name: call.name })
+				const names = tools.tools().map((registered) => registered.name)
+				throw new ToolboxError(
+					'TOOL',
+					`unknown tool ${preview(call.name)}; send name as one of ${renderList(names)}`,
+					{ name: call.name, names },
+				)
 			}
-			return tool.description ?? tool.summary ?? '<no description>'
+			return tool.description ?? tool.summary ?? null
 		},
 	})
 }
@@ -837,8 +876,9 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
  * and blocks until the addressed terminal answers, returning the resolved values record.
  *
  * @remarks
- * The universal tool-handler contract: validates the call args against
- * {@link import('./shapers.js').promptToolShape}, parses the call's schema through
+ * The universal tool-handler contract: the Tool door holds the call args to
+ * {@link import('./shapers.js').promptToolShape}, refusing a malformed call with a `ToolError`
+ * carrying code `ARGUMENTS`. The handler parses the call's schema through
  * `@orkestrel/form`, constructs the live form, and passes it to `TerminalManagerInterface.ask`.
  * `from` is fixed at construction
  * ({@link import('./types.js').PromptToolOptions.from}) — never read from the model-supplied
@@ -871,20 +911,20 @@ export function createDescribeTool(tools: ToolManagerInterface): ToolInterface {
  */
 export function createPromptTool(options: PromptToolOptions): ToolInterface {
 	const contract = createContract(promptToolShape)
-	const parameters = schemaToParameters(contract.schema)
 	return createTool({
 		name: options.name ?? PROMPT_TOOL_NAME,
 		description: options.description ?? PROMPT_TOOL_DESCRIPTION,
 		summary: PROMPT_TOOL_SUMMARY,
-		...(parameters === undefined ? {} : { parameters }),
+		contract: promptToolShape,
 		async execute(args) {
-			const call = contract.parse(args)
-			if (call === undefined) {
-				throw new ToolboxError('TOOL', 'malformed ask call', { args })
-			}
+			const call = requireToolCall(contract, args)
 			const schema = parseForm(call.schema)
 			if (schema === undefined) {
-				throw new ToolboxError('TOOL', 'malformed form schema', { schema: call.schema })
+				throw new ToolboxError(
+					'TOOL',
+					`malformed form schema; send { "fields": [{ "control", "name" }] } with unique names, where control is one of ${FIELD_CONTROLS.join(', ')}, and select or checkbox carries choices of { "label", "value" }`,
+					{ schema: call.schema },
+				)
 			}
 			for (const field of schema.fields) {
 				if (
@@ -893,7 +933,7 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 				) {
 					throw new ToolboxError(
 						'TOOL',
-						`${field.control} field '${field.name}' has no enabled choices`,
+						`${field.control} field ${preview(field.name)} has no enabled choices; add a choice that is not disabled`,
 						{ control: field.control, field: field.name },
 					)
 				}
@@ -902,31 +942,38 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
 				return await options.manager.ask(options.from, call.to, createForm(schema))
 			} catch (error) {
 				if (isFormError(error) && error.code === 'ABANDONED') {
-					throw new ToolboxError('EXPIRE', `form to '${call.to}' expired before it was answered`, {
-						to: call.to,
-					})
+					throw new ToolboxError(
+						'EXPIRE',
+						`form to ${preview(call.to)} expired before it was answered; ask again to give it more time`,
+						{ to: call.to },
+					)
 				}
 				const code = inferTerminalCode(error)
 				if (code === undefined) throw error
 				if (code === 'DEADLOCK') {
 					throw new ToolboxError(
 						'DEADLOCK',
-						`asking '${call.to}' would create a form cycle`,
+						`asking ${preview(call.to)} would create a form cycle; answer the form addressed to you first`,
 						isTerminalError(error) ? error.context : { from: options.from, to: call.to },
 					)
 				}
 				if (code === 'EXPIRE') {
-					throw new ToolboxError('EXPIRE', `form to '${call.to}' expired before it was answered`, {
-						to: call.to,
-					})
+					throw new ToolboxError(
+						'EXPIRE',
+						`form to ${preview(call.to)} expired before it was answered; ask again to give it more time`,
+						{ to: call.to },
+					)
 				}
 				if (isTerminalError(error) && error.code === 'TARGET') {
-					throw new ToolboxError('TOOL', `unknown terminal '${call.to}'`, {
-						to: call.to,
-						count: options.manager.count,
-					})
+					throw new ToolboxError(
+						'TOOL',
+						`unknown terminal ${preview(call.to)}; send to as the name of one of the ${String(options.manager.count)} mounted terminals`,
+						{ to: call.to, count: options.manager.count },
+					)
 				}
-				throw new ToolboxError('TOOL', `asking '${call.to}' failed`, { to: call.to })
+				throw new ToolboxError('TOOL', `asking ${preview(call.to)} failed; ask again`, {
+					to: call.to,
+				})
 			}
 		},
 	})
@@ -937,8 +984,10 @@ export function createPromptTool(options: PromptToolOptions): ToolInterface {
  * addressed to {@link import('./types.js').AnswerToolOptions.to}, or answers one of them by id.
  *
  * @remarks
- * The universal tool-handler contract: validates the call args against
- * {@link import('./shapers.js').answerToolShape} (discriminated by `operation`). `'pending'`
+ * The universal tool-handler contract: the tool is built `strict: false` because its root is a union,
+ * and {@link import('./helpers.js').requireToolCall} holds the call args to
+ * {@link import('./shapers.js').answerToolShape} (discriminated by `operation`), refusing malformed
+ * args with a `ToolError` carrying code `ARGUMENTS`. `'pending'`
  * returns a compact list (`{ id, from, schema }`) of every form addressed to `to`.
  * `'answer'` looks the form up by `id`, narrows the supplied `values` through `@orkestrel/form`,
  * and applies it through
@@ -975,11 +1024,9 @@ export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 		description: options.description ?? ANSWER_TOOL_DESCRIPTION,
 		summary: ANSWER_TOOL_SUMMARY,
 		...(parameters === undefined ? {} : { parameters }),
+		strict: false,
 		async execute(args) {
-			const call = contract.parse(args)
-			if (call === undefined) {
-				throw new ToolboxError('TOOL', 'malformed answer call', { args })
-			}
+			const call = requireToolCall(contract, args)
 			if (call.operation === 'pending') {
 				return options.manager.pending(options.to).map((form) => ({
 					id: form.id,
@@ -989,19 +1036,28 @@ export function createAnswerTool(options: AnswerToolOptions): ToolInterface {
 			}
 			const form = options.manager.pending(options.to).find((entry) => entry.id === call.id)
 			if (form === undefined) {
-				throw new ToolboxError('ANSWER', `unknown form '${call.id}'`, {
-					id: call.id,
-					reason: 'unknown',
-				})
+				throw new ToolboxError(
+					'ANSWER',
+					`unknown form ${preview(call.id)}; call { "operation": "pending" } for the ids you can answer`,
+					{ id: call.id, reason: 'unknown' },
+				)
 			}
 			if (!isFormValues(call.values)) {
-				throw new ToolboxError('TOOL', 'malformed form values', { values: call.values })
+				throw new ToolboxError(
+					'TOOL',
+					'malformed form values; send values as a record of each field name to a string, a finite number, a boolean, or a list of strings',
+					{ values: call.values },
+				)
 			}
 			const result = options.manager.answer(options.to, call.id, call.values)
 			if (!result.success) {
+				const detail =
+					result.error.reason === 'rejected'
+						? `; correct these fields and answer again: ${renderList(result.error.errors.map((fault) => `${preview(fault.field)} ${fault.message}`))}`
+						: '; call { "operation": "pending" } for the ids you can answer'
 				throw new ToolboxError(
 					'ANSWER',
-					`failed to answer form '${call.id}': ${result.error.reason}`,
+					`failed to answer form ${preview(call.id)}: ${result.error.reason}${detail}`,
 					{
 						id: call.id,
 						reason: result.error.reason,
@@ -1068,9 +1124,12 @@ export function createDatabaseDefinitionStore(
  * {@link createWorkspaceTool}'s single-tool-many-operations shape).
  *
  * @remarks
- * The universal tool-handler contract: validates the call args against
- * {@link import('./shapers.js').databaseToolShape}, dispatches to the matching operation, and
- * returns a plain result on success. A database is resolved lazily and cached for the tool's
+ * The universal tool-handler contract: the tool is built `strict: false` because its root is a union,
+ * and {@link import('./helpers.js').requireToolCall} holds the call args to
+ * {@link import('./shapers.js').databaseToolShape}, refusing malformed args with a `ToolError`
+ * carrying code `ARGUMENTS`. The handler dispatches to the matching operation and
+ * returns a plain result on success. A row a `'get'` misses is an explicit `null`. A `limit` that is
+ * not a positive safe integer throws `TOOL` at construction. A database is resolved lazily and cached for the tool's
  * lifetime — `'create'` mints one from `tables` ({@link import('./compilers.js').expandTables}) and
  * a registered `driver` key ({@link import('./types.js').DatabaseToolOptions.drivers}, default
  * `{ memory: () => createMemoryDriver() }`); any other operation addressing an uncached id falls
@@ -1139,7 +1198,7 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 	const handles = new Map<string, DatabaseInterface>(Object.entries(options.databases ?? {}))
 	const drivers = options.drivers ?? { memory: createMemoryDriver }
 	const generator = options.generator
-	const cap = options.limit ?? DATABASE_TOOL_LIMIT
+	const cap = resolveBound(options.limit, DATABASE_TOOL_LIMIT, 'database limit')
 	const store = options.store
 	const resolver =
 		store === undefined
@@ -1151,15 +1210,13 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 		description: options.description ?? DATABASE_TOOL_DESCRIPTION,
 		summary: DATABASE_TOOL_SUMMARY,
 		...(parameters === undefined ? {} : { parameters }),
+		strict: false,
 		async execute(args) {
-			const call = contract.parse(args)
-			if (call === undefined) {
-				throw new ToolboxError('TOOL', 'malformed database call', { args })
-			}
+			const call = requireToolCall(contract, args)
 			if (options.readonly === true && DATABASE_TOOL_MUTATIONS.includes(call.operation)) {
 				throw new ToolboxError(
 					'TOOL',
-					`operation '${call.operation}' is disabled in readonly mode`,
+					`operation '${call.operation}' is disabled in readonly mode; call tables, get, records, count, or aggregate`,
 					{ operation: call.operation },
 				)
 			}
@@ -1172,17 +1229,20 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 							resolver.has(call.id) ||
 							(store !== undefined && (await store.get(call.id)) !== undefined)
 						) {
-							throw new ToolboxError('TOOL', `database '${call.id}' already exists`, {
-								id: call.id,
-							})
+							throw new ToolboxError(
+								'TOOL',
+								`database ${preview(call.id)} already exists; use it, destroy it first, or send another id`,
+								{ id: call.id },
+							)
 						}
 						const name = call.driver ?? 'memory'
 						const factory = drivers[name]
 						if (factory === undefined) {
-							throw new ToolboxError('TOOL', `unknown driver '${name}'`, {
-								id: call.id,
-								driver: name,
-							})
+							throw new ToolboxError(
+								'TOOL',
+								`unknown driver ${preview(name)}; send driver as one of ${renderList(Object.keys(drivers))}`,
+								{ id: call.id, driver: name },
+							)
 						}
 						const tables = call.tables
 						const primary = call.primary
@@ -1222,8 +1282,8 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 						const table = handle.table(call.table)
 						const many = isArray(call.key)
 						const keys = isArray(call.key) ? call.key : [call.key]
-						const rows = await table.get(keys)
-						return many ? { rows } : { row: rows[0] }
+						const rows = (await table.get(keys)).map((row) => row ?? null)
+						return many ? { rows } : { row: rows[0] ?? null }
 					}
 					case 'records': {
 						const handle = await resolver.resolve(call.id)
@@ -1321,8 +1381,11 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * single-tool-many-operations shape).
  *
  * @remarks
- * The universal tool-handler contract: validates the call args against
- * {@link import('./shapers.js').relationToolShape}, resolves the addressed
+ * The universal tool-handler contract: the tool is built `strict: false` because its root is a union,
+ * and {@link import('./helpers.js').requireToolCall} holds the call args to
+ * {@link import('./shapers.js').relationToolShape}, refusing malformed args with a `ToolError`
+ * carrying code `ARGUMENTS`. A `limit` or `depth` that is not a positive safe integer throws `TOOL` at
+ * construction, and a row `'load'` misses is an explicit `null`. The handler resolves the addressed
  * {@link import('@orkestrel/relation').RelationManagerInterface} — an explicit `manager` field
  * must match a key of {@link import('./types.js').RelationToolOptions.managers}, an omitted one
  * resolves to the sole registered manager, either miss throwing a typed `TOOL`
@@ -1369,18 +1432,16 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 export function createRelationTool(options: RelationToolOptions): ToolInterface {
 	const contract = createContract(relationToolShape)
 	const parameters = schemaToParameters(contract.schema)
-	const depth = options.depth ?? RELATION_TOOL_DEPTH
-	const cap = options.limit ?? RELATION_TOOL_LIMIT
+	const depth = resolveBound(options.depth, RELATION_TOOL_DEPTH, 'relation depth')
+	const cap = resolveBound(options.limit, RELATION_TOOL_LIMIT, 'relation limit')
 	return createTool({
 		name: options.name ?? RELATION_TOOL_NAME,
 		description: options.description ?? RELATION_TOOL_DESCRIPTION,
 		summary: RELATION_TOOL_SUMMARY,
 		...(parameters === undefined ? {} : { parameters }),
+		strict: false,
 		async execute(args) {
-			const call = contract.parse(args)
-			if (call === undefined) {
-				throw new ToolboxError('TOOL', 'malformed relation call', { args })
-			}
+			const call = requireToolCall(contract, args)
 			try {
 				const manager = resolveRelationManager(options.managers, call.manager)
 				const model = resolveRelationModel(manager, call.model)
@@ -1389,10 +1450,10 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
 						const include = expandInclude(call.include, depth)
 						if (isString(call.key) || isNumber(call.key)) {
 							const row = await model.load(call.key, include)
-							return { row }
+							return { row: row ?? null }
 						}
 						const rows = await model.load(call.key, include)
-						return { rows }
+						return { rows: rows.map((row) => row ?? null) }
 					}
 					case 'find': {
 						const include = expandInclude(call.include, depth)
@@ -1451,14 +1512,13 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * {@link createEndpointTool}, wraps one concrete endpoint).
  *
  * @remarks
- * The universal tool-handler contract: validates the call args against
+ * The universal tool-handler contract: the Tool door holds the call args to
  * {@link import('./shapers.js').inferToolShape} (`samples` non-empty, `format` / `enum` optional
- * booleans, `candidates` an optional array), infers a schema through `@orkestrel/contract`'s
+ * booleans, `candidates` an optional array), refusing malformed args with a `ToolError` carrying code
+ * `ARGUMENTS`. The handler infers a schema through `@orkestrel/contract`'s
  * `samplesToSchema`, wraps a non-object root as `{ value: <schema> }` through `schemaToObject` (mirrors
  * the tool-parameters convention every other `create*Tool` factory advertises), and returns the
- * resulting parameters record. An empty `samples` array fails `inferToolShape`'s `min: 1` bound —
- * `contract.parse` returns `undefined` and the handler throws a typed `TOOL`
- * {@link import('./errors.js').ToolboxError}.
+ * resulting parameters record.
  *
  * When `candidates` is absent, the return is the bare parameters record — unchanged from before
  * this array existed. When `candidates` is present (any array, including empty), the handler
@@ -1473,18 +1533,14 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  * normalizing parse accept this value", that is would {@link createEndpointTool}'s default enforcement
  * admit it (`checker.parse(candidate) !== undefined`) — computed for every candidate regardless of
  * `valid`; by the house parse/guard round-trip, a `valid: true` entry is
- * always also `coercible: true`. `@orkestrel/contract`'s `explain` mirrors the normalizing
- * `parse`'s leniency, not `is`'s strictness — so a strictly-invalid but coercible candidate (`7`
- * against a string slot) yields `{ valid: false, coercible: true, faults: [] }`: empty faults, because
- * the mismatch the normalizing parse would silently fix is not one `explain` reports. `faults`
- * therefore only ever populates for a non-coercible mismatch — a wrong type the parse can't coerce
- * (a boolean in a string slot), a missing required key, or an out-of-enum value — where
- * `coercible: false`. `checker.is` / `.parse` / `.explain` are all total over JSON-safe input — a
- * JSON-safe hostile candidate (a `__proto__`-carrying object, deeply nested data) reaches each of them
+ * always also `coercible: true`. `faults` is `checker.audit(candidate)`, which reports against `is`'s
+ * strictness: a strictly-invalid but coercible candidate (`7` against a string slot) yields
+ * `{ valid: false, coercible: true, faults: [{ reason: 'type', ... }] }`, so every invalid candidate
+ * names why, an undeclared key included. `checker.is` / `.parse` / `.audit` are all total over
+ * JSON-safe input — a JSON-safe hostile candidate (a `__proto__`-carrying object, deeply nested data) reaches each of them
  * and yields a bounded, non-throwing per-candidate verdict; a non-JSON-safe candidate (for example a
- * throwing-getter `Proxy`) never reaches the checker at all — it fails the outer `args` parse
- * against {@link import('./shapers.js').inferToolShape} and rejects the whole call with the same
- * `TOOL` {@link import('./errors.js').ToolboxError} a malformed `samples`/`format`/`enum` throws,
+ * throwing-getter `Proxy`) never reaches the checker at all — the Tool door refuses the whole call
+ * with the same `ToolError` a malformed `samples`/`format`/`enum` throws,
  * with no per-candidate verdict produced.
  *
  * @param options - Advertised `name` / `description` overrides (see
@@ -1524,24 +1580,24 @@ export function createRelationTool(options: RelationToolOptions): ToolInterface 
  */
 export function createInferTool(options?: InferToolOptions): ToolInterface {
 	const contract = createContract(inferToolShape)
-	const parameters = schemaToParameters(contract.schema)
 	return createTool({
 		name: options?.name ?? INFER_TOOL_NAME,
 		description: options?.description ?? INFER_TOOL_DESCRIPTION,
 		summary: INFER_TOOL_SUMMARY,
-		...(parameters === undefined ? {} : { parameters }),
+		contract: inferToolShape,
 		async execute(args) {
-			const parsed = contract.parse(args)
-			if (parsed === undefined) {
-				throw new ToolboxError('TOOL', 'malformed infer arguments', { args })
-			}
+			const parsed = requireToolCall(contract, args)
 			const schema = samplesToSchema(parsed.samples, {
 				format: parsed.format ?? false,
 				enum: parsed.enum ?? false,
 			})
 			const result = schemaToParameters(schemaToObject(schema))
 			if (result === undefined) {
-				throw new ToolboxError('TOOL', 'could not infer a schema', { args })
+				throw new ToolboxError(
+					'TOOL',
+					'could not infer a schema; send samples that are JSON values of one shape',
+					{ args },
+				)
 			}
 			if (parsed.candidates === undefined) {
 				return result
@@ -1552,7 +1608,7 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
 				const coercible = checker.parse(candidate) !== undefined
 				return valid
 					? { index, valid, coercible }
-					: { index, valid, coercible, faults: checker.explain(candidate) }
+					: { index, valid, coercible, faults: checker.audit(candidate) }
 			})
 			return { parameters: result, checks }
 		},
@@ -1569,20 +1625,19 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * `@orkestrel/contract`'s `samplesToSchema` (tuned by {@link import('./types.js').EndpointToolOptions}'s
  * `format` / `enum`), wrapping a non-object root as `{ value: <schema> }` through `schemaToObject` —
  * the same object-rooted schema is both the advertised `parameters` and, by default
- * ({@link import('./types.js').EndpointToolOptions.validate} `true`), the enforced contract:
- * `@orkestrel/contract`'s `schemaToShape` compiles it once (through `createContract`) into a
- * `ContractInterface` whose `.parse` runs on every call's `args` before `definition.execute` — a
+ * ({@link import('./types.js').EndpointToolOptions.strict} `true`), the enforced contract: the Tool
+ * door converts it through `@orkestrel/contract`'s lenient `schemaToShape` and compiles it on the
+ * first call, then runs on every call's `args` before `definition.execute` — a
  * normalizing parse, not a strict type check: a scalar is coerced to its inferred type where the
  * house parsers coerce (a number to/from a numeric string, a boolean from `'1'`/`'0'`/`'true'`/
  * `'false'`/`1`/`0`), so `definition.execute` receives the coerced value (for example `7` sent for a
- * string slot arrives as `'7'`), not the raw call value. A call whose `args` fails to parse into
- * a record — a required key missing, or a value not coercible to its slot's type — throws a
- * typed `TOOL` {@link import('./errors.js').ToolboxError} carrying the compiled contract's
- * structured `explain` faults, and `definition.execute` is never called. `format` annotations are
- * never asserted, and a key outside the closed inferred schema is silently dropped rather than
- * rejected (see {@link import('./types.js').EndpointToolOptions.validate}). With
- * `validate: false`, the tool's `execute` passes through the model-supplied `args` to
- * `definition.execute` without re-validation — the raw-passthrough opt-out. The execution context
+ * string slot arrives as `'7'`), not the raw call value. A call whose `args` carries a key outside
+ * the closed inferred schema, misses a required key, or holds a value not coercible to its slot's
+ * type throws a `ToolError` with code `ARGUMENTS` (`@orkestrel/tool`) carrying `context.faults`, and
+ * `definition.execute` is never called. `format` annotations are never asserted (see
+ * {@link import('./types.js').EndpointToolOptions.strict}). With
+ * `strict: false`, the tool's `execute` passes through the model-supplied `args` to
+ * `definition.execute` without validation — the raw-passthrough opt-out. The execution context
  * the tool's `execute` receives reaches `definition.execute` unchanged whichever way `args` are
  * handled, so a handler that reads `context.signal` observes the caller's cancellation. Either way,
  * the definition's return flows back as the tool call's plain result; a throw propagates uncaught,
@@ -1591,7 +1646,7 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  *
  * @param definition - The endpoint's identity, non-empty samples, and local handler (see
  *   {@link import('./types.js').EndpointDefinition})
- * @param options - Construction-time inference tuning and the validate opt-out (see
+ * @param options - Construction-time inference tuning and the strict opt-out (see
  *   {@link import('./types.js').EndpointToolOptions})
  * @returns A `ToolInterface` named `definition.name`
  *
@@ -1624,7 +1679,7 @@ export function createInferTool(options?: InferToolOptions): ToolInterface {
  * 	name: 'lookupUser',
  * 	arguments: { id: true, name: 'Ada' },
  * })
- * // rejected.error -> the TOOL ToolboxError message
+ * // rejected.error -> the ARGUMENTS ToolError message, which names `id`
  * ```
  */
 export function createEndpointTool(
@@ -1643,31 +1698,13 @@ export function createEndpointTool(
 		}),
 	)
 	const parameters = schemaToParameters(objectSchema)
-	const validate = options?.validate ?? true
-	if (!validate) {
-		return createTool({
-			name: definition.name,
-			description: definition.description,
-			...(parameters === undefined ? {} : { parameters }),
-			execute(args, context) {
-				return definition.execute(args, context)
-			},
-		})
-	}
-	const contract = createContract(schemaToShape(objectSchema))
 	return createTool({
 		name: definition.name,
 		description: definition.description,
 		...(parameters === undefined ? {} : { parameters }),
+		...(options?.strict === undefined ? {} : { strict: options.strict }),
 		execute(args, context) {
-			const parsed = contract.parse(args)
-			if (parsed === undefined || !isRecord(parsed)) {
-				throw new ToolboxError('TOOL', 'malformed endpoint call arguments', {
-					name: definition.name,
-					faults: contract.explain(args),
-				})
-			}
-			return definition.execute(parsed, context)
+			return definition.execute(args, context)
 		},
 	})
 }

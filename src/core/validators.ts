@@ -1,13 +1,16 @@
 import type { Guard } from '@orkestrel/contract'
+import type { IndexMap, PrimaryMap } from '@orkestrel/database'
 import type {
 	AgentFunction,
 	ColumnPrimitive,
 	ColumnSpec,
 	DatabaseDefinition,
+	TableSpec,
 	WorkflowLineage,
 } from './types.js'
 import {
 	attempt,
+	holds,
 	isArray,
 	isBoolean,
 	isFiniteNumber,
@@ -16,6 +19,8 @@ import {
 	isRecord,
 	isString,
 	literalOf,
+	recordOf,
+	unionOf,
 } from '@orkestrel/contract'
 
 // Toolbox guards — the total `(value: unknown) => value is T` narrows this package applies at its
@@ -66,21 +71,6 @@ export function isAgentFunction(value: unknown): value is AgentFunction {
 }
 
 /**
- * Narrows an unknown value to a {@link ColumnSpec}.
- *
- * @param value - The value to inspect
- * @returns True if `value` is a valid {@link ColumnPrimitive} shorthand or a `{ primitive, optional }` record with a valid `primitive`; false otherwise
- */
-export function isColumnSpec(value: unknown): value is ColumnSpec {
-	if (isColumnPrimitive(value)) return true
-	if (!isRecord(value)) return false
-	return (
-		isColumnPrimitive(value.primitive) &&
-		(value.optional === undefined || isBoolean(value.optional))
-	)
-}
-
-/**
  * Narrows an unknown value to a {@link ColumnPrimitive}.
  *
  * @param value - The value to inspect
@@ -94,44 +84,93 @@ export const isColumnPrimitive: Guard<ColumnPrimitive> = literalOf(
 )
 
 /**
- * Narrows an unknown value to a {@link DatabaseDefinition} — a non-empty `id` and `driver`, a
- * `tables` record whose every value is `{ columns: record of valid ColumnSpec }`, plus optional
- * `primary`, `indexes`, and finite `version` schema configuration. The boundary guard a
- * {@link import('./types.js').DefinitionStoreInterface} applies to an untrusted persisted blob
- * before trusting it as a definition (never an `as`).
+ * Narrows an unknown value to a {@link ColumnSpec} — a bare {@link ColumnPrimitive}, or exactly
+ * `{ primitive, optional? }`.
+ *
+ * @param value - The value to inspect
+ * @returns True if `value` is a valid shorthand or an exact record with a valid `primitive`; false otherwise
+ */
+export const isColumnSpec: Guard<ColumnSpec> = unionOf(
+	isColumnPrimitive,
+	recordOf({ primitive: isColumnPrimitive, optional: isBoolean }, ['optional']),
+)
+
+/**
+ * Narrows an unknown value to a {@link TableSpec} — table name to exactly `{ columns }`, each column
+ * a valid {@link ColumnSpec}.
+ *
+ * @param value - The value to inspect
+ * @returns True if `value` is a table layout; false otherwise
+ */
+export function isTableSpec(value: unknown): value is TableSpec {
+	return holds(
+		() =>
+			isRecord(value) &&
+			Object.values(value).every(
+				(table) =>
+					isRecord(table) &&
+					Object.keys(table).length === 1 &&
+					isRecord(table.columns) &&
+					Object.values(table.columns).every((column) => isColumnSpec(column)),
+			),
+	)
+}
+
+/**
+ * Narrows an unknown value to a `PrimaryMap` (`@orkestrel/database`) — table name to a nonempty
+ * primary-key column name.
+ *
+ * @param value - The value to inspect
+ * @returns True if every value is a nonempty string; false otherwise
+ */
+export function isPrimaryMap(value: unknown): value is PrimaryMap {
+	return holds(() => isRecord(value) && Object.values(value).every((key) => isNonEmptyString(key)))
+}
+
+/**
+ * Narrows an unknown value to an `IndexMap` (`@orkestrel/database`) — table name to its index
+ * groups, each group a nonempty list of nonempty column names.
+ *
+ * @param value - The value to inspect
+ * @returns True if every value is a list of such groups; false otherwise
+ */
+export function isIndexMap(value: unknown): value is IndexMap {
+	return holds(
+		() =>
+			isRecord(value) &&
+			Object.values(value).every(
+				(groups) =>
+					isArray(groups) &&
+					groups.every(
+						(group) =>
+							isArray(group) &&
+							group.length > 0 &&
+							group.every((column) => isNonEmptyString(column)),
+					),
+			),
+	)
+}
+
+/**
+ * Narrows an unknown value to exactly a {@link DatabaseDefinition} — a non-empty `id` and `driver`,
+ * a {@link TableSpec}, plus optional `primary`, `indexes`, and finite `version` schema configuration,
+ * refusing every other key. The boundary guard a {@link import('./types.js').DefinitionStoreInterface}
+ * applies to an untrusted persisted blob before trusting it as a definition (never an `as`).
+ *
+ * @remarks
+ * A lockstep test holds this guard to {@link import('./shapers.js').definitionShape}.
  *
  * @param value - The value to inspect
  * @returns True if `value` is a complete {@link DatabaseDefinition}; false otherwise
  */
-export function isDatabaseDefinition(value: unknown): value is DatabaseDefinition {
-	if (!isRecord(value)) return false
-	if ('keys' in value) return false
-	if (!isNonEmptyString(value.id) || !isNonEmptyString(value.driver)) return false
-	if (!isRecord(value.tables)) return false
-	for (const table of Object.values(value.tables)) {
-		if (!isRecord(table) || !isRecord(table.columns)) return false
-		for (const column of Object.values(table.columns)) {
-			if (!isColumnSpec(column)) return false
-		}
-	}
-	if (value.primary !== undefined) {
-		if (!isRecord(value.primary)) return false
-		for (const key of Object.values(value.primary)) {
-			if (!isNonEmptyString(key)) return false
-		}
-	}
-	if (value.indexes !== undefined) {
-		if (!isRecord(value.indexes)) return false
-		for (const groups of Object.values(value.indexes)) {
-			if (!isArray(groups)) return false
-			for (const group of groups) {
-				if (!isArray(group) || group.length === 0) return false
-				for (const column of group) {
-					if (!isNonEmptyString(column)) return false
-				}
-			}
-		}
-	}
-	if (value.version !== undefined && !isFiniteNumber(value.version)) return false
-	return true
-}
+export const isDatabaseDefinition: Guard<DatabaseDefinition> = recordOf(
+	{
+		id: isNonEmptyString,
+		driver: isNonEmptyString,
+		tables: isTableSpec,
+		primary: isPrimaryMap,
+		indexes: isIndexMap,
+		version: isFiniteNumber,
+	},
+	['primary', 'indexes', 'version'],
+)
