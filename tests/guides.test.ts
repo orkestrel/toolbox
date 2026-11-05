@@ -231,8 +231,7 @@ await new GuideCommand({
 				),
 			)
 			expect(buildArgumentRefusal(schema, { operation: 'read' }, []).message).toBe(
-				'path: missing; expected string
-send {"operation": "read", "path": string} | {"operation": "list"}',
+				'path: missing; expected string\nsend {"operation": "read", "path": string} | {"operation": "list"}',
 			)
 			expect(
 				buildArgumentRefusal(schema, { operation: 'nope' }, []).context?.faults?.[0]?.reason,

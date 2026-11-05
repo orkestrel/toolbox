@@ -933,8 +933,7 @@ const { schema } = createContract(
 	),
 )
 buildArgumentRefusal(schema, { operation: 'read' }, []).message
-// 'path: missing; expected string
-send {"operation": "read", "path": string} | {"operation": "list"}'
+// 'path: missing; expected string\nsend {"operation": "read", "path": string} | {"operation": "list"}'
 buildArgumentRefusal(schema, { operation: 'nope' }, []).context?.faults?.[0]?.reason
 // 'variant'
 
