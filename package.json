@@ -83,28 +83,28 @@
 		"test:setup": "vitest run --config vite.config.ts --no-cache --reporter=dot --project setup"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.35",
-		"@orkestrel/contract": "^0.0.21",
-		"@orkestrel/database": "^0.0.20",
-		"@orkestrel/form": "^0.0.15",
-		"@orkestrel/relation": "^0.0.18",
-		"@orkestrel/server": "^0.0.25",
-		"@orkestrel/terminal": "^0.0.22",
-		"@orkestrel/tool": "^0.0.21",
-		"@orkestrel/workflow": "^0.0.25",
-		"@orkestrel/workspace": "^0.0.14"
+		"@orkestrel/agent": "^0.0.36",
+		"@orkestrel/contract": "^0.0.22",
+		"@orkestrel/database": "^0.0.21",
+		"@orkestrel/form": "^0.0.16",
+		"@orkestrel/relation": "^0.0.19",
+		"@orkestrel/server": "^0.0.26",
+		"@orkestrel/terminal": "^0.0.23",
+		"@orkestrel/tool": "^0.0.22",
+		"@orkestrel/workflow": "^0.0.26",
+		"@orkestrel/workspace": "^0.0.15"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.60.1",
-		"@orkestrel/guide": "^0.0.29",
+		"@orkestrel/guide": "^0.0.30",
 		"@orkestrel/probe": "^0.0.28",
-		"@orkestrel/scaffold": "^0.0.122",
-		"@orkestrel/test": "^0.0.32",
+		"@orkestrel/scaffold": "^0.0.124",
+		"@orkestrel/test": "^0.0.33",
 		"@types/node": "^24.19.2",
 		"oxfmt": "^0.76.0",
 		"oxlint": "^1.91.0",
 		"typescript": "^7.0.2",
-		"vite": "^8.3.5",
+		"vite": "^8.3.6",
 		"vitest": "^5.1.0"
 	},
 	"engines": {
