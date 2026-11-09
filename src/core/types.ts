@@ -623,6 +623,10 @@ export interface DatabaseToolOptions {
  *   on demand from a tool call). A call that omits `manager` resolves to the sole registered
  *   manager when exactly one is registered, else throws a typed `TOOL`
  *   {@link import('./errors.js').ToolboxError} naming the registered manager keys.
+ *   The tool opens no transaction: `unlink` removes matching junction rows one at a time.
+ *   Outside a transaction, a failed removal leaves the pair linked; repeating the call
+ *   completes removal. For all-or-nothing removal, build the manager over a transaction's
+ *   storage and use it only within that scope.
  * - `limit` — the row cap `'find'` / `'links'` enforce when a call's `limit` is omitted or
  *   exceeds it. A positive safe integer; any other value throws at construction. Defaults to
  *   {@link import('./constants.js').RELATION_TOOL_LIMIT}.

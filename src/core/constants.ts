@@ -475,7 +475,7 @@ export const RELATION_TOOL_DESCRIPTION = [
 	'- load   { "operation": "load", "model": "<model>", "key": "<row key>", "include"?: ["<path>", ...] } — fetch one (or, with an array key, several) row(s) with related rows attached.',
 	'- find   { "operation": "find", "model": "<model>", "include"?: ["<path>", ...], "limit"?: <n>, "offset"?: <n>, "sort"?: "<column>", "direction"?: "ascending"|"descending" } — list rows, each with related rows attached.',
 	'- link   { "operation": "link", "model": "<model>", "key": "<row key>", "relation": "<relation>", "target": "<related row key>" } — connect two rows through a "through" relation.',
-	'- unlink { "operation": "unlink", "model": "<model>", "key": "<row key>", "relation": "<relation>", "target": "<related row key>" } — disconnect two rows.',
+	'- unlink { "operation": "unlink", "model": "<model>", "key": "<row key>", "relation": "<relation>", "target": "<related row key>" } — disconnect two rows; if it fails, they stay linked and the call can be repeated.',
 	'- links  { "operation": "links", "model": "<model>", "key": "<row key>", "relation": "<relation>" } — list every key linked to a row through a "through" relation.',
 	'',
 	'"include" is a FLAT dot-path array (not nested objects) — each string names a chain of relations to attach, up to the configured depth cap. Example: "contacts.account" attaches each row\'s contacts, and each contact\'s account.',

@@ -53,11 +53,13 @@ import {
 } from '@src/core'
 import { createTerminalManager, TerminalError } from '@orkestrel/terminal'
 import { createDatabase, createMemoryDriver } from '@orkestrel/database'
+import { RelationError } from '@orkestrel/relation'
 import { afterEach, describe, expect, it } from 'vitest'
 import { captureError, createRecorder, waitForAbort, waitForDelay } from '@orkestrel/test'
 import {
 	buildDatabaseStoreWithTable,
 	buildRelationDatabase,
+	JunctionFaultDriver,
 	createNestedWorkflow,
 	createOpenAuthority,
 	readToolboxSummary,
@@ -3983,6 +3985,46 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 })
 
 describe('createRelationTool — link / unlink / links round trip on a through relation', () => {
+	it('a partial unlink failure keeps the pair linked and a retry completes removal', async () => {
+		const fault = new RelationError('INVALID', 'junction removal refused')
+		const database = buildRelationDatabase(undefined, new JunctionFaultDriver(fault))
+		const manager = buildRelationManager(database)
+		const tool = createRelationTool({ managers: { shop: manager } })
+		const context = createTestToolContext()
+		const pair = { model: 'accounts', key: 'acc1', relation: 'reps' }
+		await seedAccount(manager, 'acc1')
+		await seedRep(manager, 'rep1')
+		await database.table('accountReps').set([
+			{ id: 'junction1', accountId: 'acc1', repId: 'rep1' },
+			{ id: 'junction2', accountId: 'acc1', repId: 'rep1' },
+		])
+		try {
+			await expect(
+				tool.execute({ ...pair, target: 'rep1', operation: 'unlink' }, context),
+			).rejects.toMatchObject({
+				code: 'RELATION',
+				context: { code: 'INVALID', operation: 'unlink' },
+			})
+			expect(await database.table('accountReps').count()).toBe(1)
+			await expect(tool.execute({ ...pair, operation: 'links' }, context)).resolves.toMatchObject({
+				keys: ['rep1'],
+				count: 1,
+			})
+			await expect(
+				tool.execute({ ...pair, target: 'rep1', operation: 'unlink' }, context),
+			).resolves.toEqual({
+				unlinked: true,
+			})
+			await expect(tool.execute({ ...pair, operation: 'links' }, context)).resolves.toMatchObject({
+				keys: [],
+				count: 0,
+			})
+			expect(await database.table('accountReps').count()).toBe(0)
+		} finally {
+			await database.close()
+		}
+	})
+
 	it('link then unlink is reflected by a subsequent links call', async () => {
 		const manager = buildRelationManager()
 		await seedAccount(manager, 'a1')

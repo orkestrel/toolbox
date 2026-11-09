@@ -1410,8 +1410,11 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * {@link import('./constants.js').RELATION_TOOL_LIMIT}), taken through
  * {@link import('./helpers.js').resolveLimit} — `'find'` probes one row past the effective limit to
  * report `truncated`; `'links'` (which has no upstream pagination) fetches the full linked-key
- * list and slices/truncates it the same way. `'link'` / `'unlink'` write / remove one `through` junction
- * row.
+ * list and slices/truncates it the same way. `'link'` writes a `through` junction row.
+ * `'unlink'` removes every matching junction row, one row at a time, through the manager's
+ * bound storage. Outside a transaction, a failed removal leaves the pair linked; repeat the
+ * call to complete removal. The tool opens no transaction. For all-or-nothing removal, build
+ * the manager over a transaction's storage and use the tool within that scope.
  *
  * A typed `@orkestrel/relation` failure (`RelationError`) re-surfaces as a typed `RELATION`
  * `ToolboxError` carrying the original {@link import('@orkestrel/relation').RelationErrorCode}

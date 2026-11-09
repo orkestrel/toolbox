@@ -847,12 +847,19 @@ restored?.id // 'audit'
 
 Register a live relation manager and load a row with a nested dot-path `include` list:
 
+The tool opens no transaction. `unlink` removes every matching junction row through the manager's
+bound storage, one row at a time. Outside a transaction, a failed removal leaves earlier removals
+committed and the pair linked; `links` still lists the target. Repeat `unlink` to complete removal.
+For all-or-nothing removal, build the manager with `createRelationManager({ storage, relations })`
+inside the host's `database.transaction(async (storage) => ...)` callback and use its tool only
+within that scope. Let the failure propagate out of the callback so the transaction rolls back.
+
 ```ts
 import { createRelationTool } from '@orkestrel/toolbox'
 import { createToolManager } from '@orkestrel/tool'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 
-declare const manager: RelationManagerInterface // built with createRelationManager({ database, relations: { ... } })
+declare const manager: RelationManagerInterface // built with createRelationManager({ storage: database, relations: { ... } })
 
 const tool = createRelationTool({ managers: { shop: manager } }) // omit "manager" in a call when only one is registered
 

@@ -28,7 +28,13 @@ import type {
 	ProviderInterface,
 	ProviderResult,
 } from '@orkestrel/agent'
-import type { DatabaseInterface, TableInterface, DriverInterface } from '@orkestrel/database'
+import type {
+	DatabaseInterface,
+	TableInterface,
+	DriverInterface,
+	Key,
+	OperationOptions,
+} from '@orkestrel/database'
 import type {
 	createWorkflowTool,
 	DatabaseDefinition,
@@ -46,7 +52,7 @@ import type {
 	WorkflowStoreInterface,
 } from '@orkestrel/workflow'
 import { createAgent, createAuthority, ProviderAbortError } from '@orkestrel/agent'
-import { createDatabase, createMemoryDriver } from '@orkestrel/database'
+import { createDatabase, createMemoryDriver, MemoryDriver } from '@orkestrel/database'
 import { createWorkflowRunner } from '@orkestrel/workflow'
 import type { FileInterface } from '@orkestrel/workspace'
 import { createBinaryContent, createFile, createTextContent } from '@orkestrel/workspace'
@@ -646,9 +652,31 @@ export function buildItemsHandle(): DatabaseInterface {
 	})
 }
 
-export function buildRelationDatabase(name?: string): DatabaseInterface {
+/** Injects a fault on the second junction deletion while retaining real memory storage. */
+export class JunctionFaultDriver extends MemoryDriver {
+	readonly #fault: Error
+	#removals = 0
+
+	constructor(fault: Error) {
+		super()
+		this.#fault = fault
+	}
+
+	override delete(table: string, key: Key, options?: OperationOptions): Promise<boolean> {
+		if (table === 'accountReps') {
+			this.#removals += 1
+			if (this.#removals === 2) throw this.#fault
+		}
+		return super.delete(table, key, options)
+	}
+}
+
+export function buildRelationDatabase(
+	name?: string,
+	driver: DriverInterface = createMemoryDriver(),
+): DatabaseInterface {
 	return createDatabase({
-		driver: createMemoryDriver(),
+		driver,
 		...(name === undefined ? {} : { name }),
 		tables: {
 			accounts: { id: stringShape(), name: stringShape() },
@@ -663,7 +691,7 @@ export function buildRelationManager(
 	database: DatabaseInterface = buildRelationDatabase(),
 ): RelationManagerInterface {
 	return createRelationManager({
-		database,
+		storage: database,
 		relations: {
 			accounts: {
 				contacts: hasMany('accountId'),
