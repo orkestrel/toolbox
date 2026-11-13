@@ -388,6 +388,55 @@ describe('workspaceToolShape — the operation-discriminated union', () => {
 	})
 })
 
+describe('workspaceToolShape — each operation declares exactly its members', () => {
+	const contract = createContract(workspaceToolShape)
+
+	it('pins every arm to its members and its required members, with no other member admitted', () => {
+		const anyOf = contract.schema.anyOf
+		const arms: readonly unknown[] = Array.isArray(anyOf) ? anyOf : []
+		const readings = arms.map((arm) => {
+			const properties = isRecord(arm) ? arm.properties : undefined
+			const operation = isRecord(properties) ? properties.operation : undefined
+			const required = isRecord(arm) && Array.isArray(arm.required) ? [...arm.required] : []
+			return [
+				isRecord(operation) && Array.isArray(operation.enum) ? operation.enum[0] : undefined,
+				isRecord(properties) ? Object.keys(properties).sort() : [],
+				required.sort(),
+				isRecord(arm) ? arm.additionalProperties : undefined,
+			]
+		})
+
+		expect(readings).toEqual([
+			['read', ['operation', 'path'], ['operation', 'path'], false],
+			['list', ['operation'], ['operation'], false],
+			['has', ['operation', 'path'], ['operation', 'path'], false],
+			[
+				'search',
+				['limit', 'operation', 'query', 'regex', 'sensitive'],
+				['operation', 'query'],
+				false,
+			],
+			[
+				'replace',
+				['limit', 'operation', 'query', 'regex', 'replacement', 'sensitive'],
+				['operation', 'query', 'replacement'],
+				false,
+			],
+			['write', ['content', 'operation', 'path'], ['content', 'operation', 'path'], false],
+			[
+				'splice',
+				['content', 'fromColumn', 'fromLine', 'operation', 'path', 'toColumn', 'toLine'],
+				['content', 'fromColumn', 'fromLine', 'operation', 'path', 'toColumn', 'toLine'],
+				false,
+			],
+			['prepend', ['content', 'operation', 'path'], ['content', 'operation', 'path'], false],
+			['append', ['content', 'operation', 'path'], ['content', 'operation', 'path'], false],
+			['move', ['from', 'operation', 'to'], ['from', 'operation', 'to'], false],
+			['remove', ['operation', 'path'], ['operation', 'path'], false],
+		])
+	})
+})
+
 describe('workspaceToolShape — a name the workspace cannot address refuses', () => {
 	const contract = createContract(workspaceToolShape)
 

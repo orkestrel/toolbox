@@ -1789,6 +1789,18 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 		expect(other.started).toBe(0)
 	})
 
+	it('a missing options object throws a typed refusal at construction', () => {
+		const registry = createAgentRegistry({
+			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
+		})
+		const error = captureError(() => Reflect.apply(createAgentTool, undefined, [registry]))
+
+		expect(isToolboxError(error) ? [error.code, error.context] : error).toEqual([
+			'TOOL',
+			{ received: 'undefined' },
+		])
+	})
+
 	it('a depth that is not a nonnegative safe integer throws at construction', () => {
 		const registry = createAgentRegistry({
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },

@@ -46,6 +46,7 @@ import {
 	isFunction,
 	isNonNegativeInteger,
 	isNumber,
+	isRecord,
 	isString,
 	parseJSONValue,
 	preview,
@@ -734,6 +735,13 @@ export function createAgentTool(
 	registry: AgentRegistryInterface,
 	options: AgentToolOptions,
 ): ToolInterface {
+	if (!isRecord(options)) {
+		throw new ToolboxError(
+			'TOOL',
+			`agent tool options must be an object that names the child's provider; received ${preview(options)}`,
+			{ received: preview(options) },
+		)
+	}
 	const contract: ContractInterface<AgentToolArguments> = createContract(agentToolShape)
 	const depth = options.depth ?? 0
 	if (!isNonNegativeInteger(depth) || !Number.isSafeInteger(depth)) {
