@@ -30,6 +30,7 @@ import {
 	FAULT_TEXT_LIMIT,
 	isArray,
 	isObject,
+	isRecord,
 	matchesExactKeys,
 	preview,
 	renderList,
@@ -706,16 +707,19 @@ export function resolveBound(value: number | undefined, fallback: number, subjec
  * holds a `workspace` key and is not one.
  *
  * @remarks
- * A value that is no object, or an object with no own `workspace` key, is no Agent caller and reads
- * as `undefined`. An object that holds that key must own exactly `workspace` and `files`, and the
- * copy built from one read of each, its `files` array copied once, must pass `isAgentCaller`
- * (`@orkestrel/agent`). Anything else refuses, an object whose keys or members cannot be read
- * included, so a malformed caller never falls back to the host's selection. The returned copy is
- * frozen, and no later read of the caller can change what the call acts on.
+ * A value that is no object, or an object that holds no `workspace` key, own or inherited, is no
+ * Agent caller and reads as `undefined`. An object that holds that key must be a plain record
+ * (`isRecord`, `@orkestrel/contract`) that owns exactly `workspace` and `files`, and the copy built
+ * from one read of each, its `files` array copied once, must pass `isAgentCaller`
+ * (`@orkestrel/agent`). Anything else refuses: a class instance, a caller whose members sit on its
+ * prototype, and an object whose keys or members cannot be read. A malformed caller never falls
+ * back to the host's selection. Each member is read once into the frozen copy the call uses, so a
+ * member that answers differently on a later read is accepted as that one reading and cannot change
+ * what the call acts on.
  *
  * @param value - The `caller` member of the call's `ToolContext`
  * @returns A frozen copy of the caller when it is an `AgentCaller`, otherwise `undefined`
- * @throws {ToolboxError} Thrown with code `TOOL` when the value holds a `workspace` key and is no `AgentCaller`
+ * @throws {ToolboxError} Thrown with code `TOOL` when the value holds a `workspace` key, own or inherited, and is no `AgentCaller`
  *
  * @example
  * ```ts
@@ -730,23 +734,26 @@ export function resolveBound(value: number | undefined, fallback: number, subjec
 export function readToolCaller(value: unknown): AgentCaller | undefined {
 	if (!isObject(value)) return undefined
 	const read = attempt(() => {
-		if (!Object.hasOwn(value, 'workspace')) return undefined
+		if (!('workspace' in value)) return { claimed: false, caller: undefined }
+		if (!isRecord(value) || !matchesExactKeys(value, ['workspace', 'files'])) {
+			return { claimed: true, caller: undefined }
+		}
 		const files: unknown = Reflect.get(value, 'files')
 		return {
-			exact: matchesExactKeys(value, ['workspace', 'files']),
+			claimed: true,
 			caller: Object.freeze({
 				workspace: Reflect.get(value, 'workspace'),
 				files: isArray(files) ? Object.freeze([...files]) : files,
 			}),
 		}
 	})
-	if (read.success) {
-		if (read.value === undefined) return undefined
-		if (read.value.exact && isAgentCaller(read.value.caller)) return read.value.caller
+	if (read.success && !read.value.claimed) return undefined
+	if (read.success && read.value.caller !== undefined && isAgentCaller(read.value.caller)) {
+		return read.value.caller
 	}
 	throw new ToolboxError(
 		'TOOL',
-		'context.caller holds a "workspace" key and is no AgentCaller; an AgentCaller owns exactly "workspace" (a workspace or undefined) and "files" (an array of paths or undefined), so this call reads and edits nothing',
+		'context.caller holds a "workspace" key and is no AgentCaller; an AgentCaller is a plain record that owns exactly "workspace" (a workspace or undefined) and "files" (an array of paths or undefined), so this call reads and edits nothing',
 	)
 }
 

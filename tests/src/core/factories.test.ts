@@ -66,6 +66,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { captureError, createRecorder, waitForAbort, waitForDelay } from '@orkestrel/test'
 import {
 	buildAgentDesk,
+	buildInheritedCallers,
+	CallerInstance,
 	buildDatabaseStoreWithTable,
 	collectOwnStrings,
 	collectWorkspaceText,
@@ -73,6 +75,8 @@ import {
 	createDeskTurn,
 	DESK_OPERATIONS,
 	DESK_TEXT,
+	LOOKALIKE_PATHS,
+	LOOKALIKE_SEED,
 	matchesFileIdentity,
 	ORDERS_SEED,
 	PATH_CALLS,
@@ -1891,6 +1895,27 @@ describe('createWorkspaceTool — an Agent caller selects the workspace', () => 
 			),
 		).toBe(DESK_TEXT.orders)
 	})
+
+	it('T.12 a caller that holds workspace through a class instance or its prototype refuses every operation', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager())
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		for (const caller of [
+			new CallerInstance(desk.returns, undefined),
+			new CallerInstance(desk.returns, ['returns.txt']),
+			...buildInheritedCallers(desk.returns),
+		]) {
+			for (const { args } of DESK_OPERATIONS) {
+				const error = await readToolboxRejection(
+					Promise.resolve().then(() => tool.execute(args, createCallerToolContext(caller))),
+				)
+				expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+				expect(error instanceof Error ? error.message : '').toContain('AgentCaller')
+			}
+		}
+		expect(collectWorkspaceText(desk.orders)).toEqual(ORDERS_SEED)
+		expect(collectWorkspaceText(desk.returns)).toEqual(RETURNS_SEED)
+		expect(desk.manager.count).toBe(2)
+	})
 })
 
 describe('createWorkspaceTool — an Agent caller`s files list bounds every operation', () => {
@@ -2018,6 +2043,59 @@ describe('createWorkspaceTool — an Agent caller`s files list bounds every oper
 		expect(
 			await tool.execute({ operation: 'replace', query: 'Refund', replacement: 'Return' }, context),
 		).toEqual({ occurrences: 0, files: 0 })
+		expect(matchesFileIdentity(desk.returns.files(), files)).toBe(true)
+	})
+
+	it('T.6 a path that only resembles a listed path refuses, and the file at it keeps its value', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager(), { returns: LOOKALIKE_SEED })
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({
+			workspace: desk.returns,
+			files: ['notes.md', 'draft.md'],
+		})
+		const files = desk.returns.files()
+		for (const path of LOOKALIKE_PATHS) {
+			for (const call of PATH_CALLS) {
+				const error = await readToolboxRejection(
+					Promise.resolve().then(() => tool.execute({ ...call, path }, context)),
+				)
+				expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			}
+		}
+		expect(matchesFileIdentity(desk.returns.files(), files)).toBe(true)
+	})
+
+	it('T.8 list leaves out every file at a path that only resembles a listed one', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager(), { returns: LOOKALIKE_SEED })
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({
+			workspace: desk.returns,
+			files: ['notes.md', 'draft.md'],
+		})
+		expect(await tool.execute({ operation: 'list' }, context)).toEqual([
+			{ path: 'notes.md', state: 'created', size: 13, lines: 1, kind: 'text' },
+		])
+	})
+
+	it('T.10 move refuses a lookalike source or target, and the files keep their values', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager(), { returns: LOOKALIKE_SEED })
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({
+			workspace: desk.returns,
+			files: ['notes.md', 'draft.md'],
+		})
+		const files = desk.returns.files()
+		for (const path of LOOKALIKE_PATHS) {
+			for (const [from, to] of [
+				[path, 'draft.md'],
+				['notes.md', path],
+			]) {
+				const error = await readToolboxRejection(
+					Promise.resolve().then(() => tool.execute({ operation: 'move', from, to }, context)),
+				)
+				expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			}
+		}
 		expect(matchesFileIdentity(desk.returns.files(), files)).toBe(true)
 	})
 })

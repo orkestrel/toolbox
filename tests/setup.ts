@@ -1226,8 +1226,9 @@ export function buildShiftingCaller(reads: RecorderInterface<readonly []>): obje
 }
 
 /**
- * Builds objects that hold a `workspace` key and whose keys or members cannot be read: a throwing
- * `files` getter, a throwing `ownKeys` trap, a throwing own-property trap, and a revoked `Proxy`.
+ * Builds objects whose `workspace` key cannot be ruled out or whose keys or members cannot be read: a
+ * throwing `files` getter, a throwing `ownKeys` trap, a throwing own-property trap over a target that
+ * holds `workspace`, a throwing `has` trap, and a revoked `Proxy`.
  */
 export function buildUnreadableCallers(workspace: WorkspaceInterface): readonly object[] {
 	const revoked = Proxy.revocable({}, {})
@@ -1248,13 +1249,74 @@ export function buildUnreadableCallers(workspace: WorkspaceInterface): readonly 
 			},
 		),
 		new Proxy(
-			{},
+			{ workspace, files: undefined },
 			{
 				getOwnPropertyDescriptor() {
 					throw new Error('unreadable')
 				},
 			},
 		),
+		new Proxy(
+			{},
+			{
+				has() {
+					throw new Error('unreadable')
+				},
+			},
+		),
 		revoked.proxy,
+	]
+}
+
+/**
+ * Holds paths that resemble the listed `notes.md` and are other paths: a leading `./` and `../`, a
+ * trailing slash, a leading space, a fullwidth letter, a combining accent, a longer path it
+ * prefixes, other letter cases, and a path that walks back to it.
+ */
+export const LOOKALIKE_PATHS: readonly string[] = Object.freeze([
+	'./notes.md',
+	'../notes.md',
+	'sub/../notes.md',
+	'notes.md/',
+	' notes.md',
+	'ｎotes.md',
+	'nótes.md',
+	'notes.md.bak',
+	'NOTES.md',
+	'Notes.md',
+])
+
+/** Holds the listed `notes.md`, a hidden `secret.md`, and a file at each of {@link LOOKALIKE_PATHS}. */
+export const LOOKALIKE_SEED: Readonly<Record<string, string>> = Object.freeze({
+	...SECRET_SEED,
+	...Object.fromEntries(LOOKALIKE_PATHS.map((path) => [path, `Lookalike at ${path}.`])),
+})
+
+/** Holds an Agent caller's members as own fields of a class instance, which `isRecord` refuses. */
+export class CallerInstance {
+	readonly workspace: WorkspaceInterface | undefined
+	readonly files: readonly string[] | undefined
+
+	constructor(workspace: WorkspaceInterface | undefined, files: readonly string[] | undefined) {
+		this.workspace = workspace
+		this.files = files
+	}
+}
+
+/**
+ * Builds callers that hold `workspace` and `files` only through their prototype: inherited data
+ * members, and getters on the prototype.
+ */
+export function buildInheritedCallers(workspace: WorkspaceInterface): readonly object[] {
+	return [
+		Object.create({ workspace, files: ['returns.txt'] }),
+		Object.create({
+			get workspace() {
+				return workspace
+			},
+			get files() {
+				return undefined
+			},
+		}),
 	]
 }

@@ -67,7 +67,12 @@ import {
 import { DatabaseError } from '@orkestrel/database'
 import { RelationError } from '@orkestrel/relation'
 import { describe, expect, it } from 'vitest'
-import { buildShiftingCaller, buildUnreadableCallers } from '../../setup.js'
+import {
+	buildInheritedCallers,
+	buildShiftingCaller,
+	buildUnreadableCallers,
+	CallerInstance,
+} from '../../setup.js'
 
 // tests/src/core/helpers.test.ts — mirrors src/core/helpers.ts. Pure, deterministic
 // synthesis (AGENTS' no-mocks rule: real inputs, no mocks): the ancestry tag namespacing, the
@@ -664,10 +669,6 @@ describe('readToolCaller', () => {
 		{ label: 'a number', value: 7 },
 		{ label: 'an empty record', value: {} },
 		{ label: 'a record with no workspace key', value: { subject: 'reader' } },
-		{
-			label: 'a record whose workspace key is inherited',
-			value: Object.create({ workspace: undefined, files: undefined }),
-		},
 	])('reads $label as no Agent caller', ({ value }) => {
 		expect(readToolCaller(value)).toBeUndefined()
 	})
@@ -690,6 +691,10 @@ describe('readToolCaller', () => {
 			{ workspace: returns, files: null },
 			{ workspace: returns, files: undefined, subject: 'reader' },
 			...buildUnreadableCallers(returns),
+			new CallerInstance(returns, ['notes.md']),
+			new CallerInstance(undefined, undefined),
+			Object.create({ workspace: undefined, files: undefined }),
+			...buildInheritedCallers(returns),
 		]) {
 			const error = captureError(() => readToolCaller(value))
 			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
