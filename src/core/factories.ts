@@ -13,6 +13,7 @@ import type {
 	AgentFunction,
 	AgentFunctionOptions,
 	WorkflowAgents,
+	AgentToolArguments,
 	AgentToolOptions,
 	AnswerToolOptions,
 	DatabaseDefinition,
@@ -569,13 +570,10 @@ export function createWorkflowTool(
  * manager's active workspace, returning the plain result.
  *
  * @remarks
- * Manager-driven: every edit / read op (read / list / has / search / replace / write / splice /
- * prepend / append / move / remove) targets `manager.active`, so the model edits whichever
- * workspace is active and a host can re-point it (`WorkspaceManagerInterface.switch`) between
- * turns. The registry ops make the model self-sufficient: `workspaces` lists the registered
- * workspaces (each `{ id, files, active }`) so it can discover an id, and `switch` re-points the
- * active workspace by id (lenient — an unknown id is a no-op reporting `switched: false`, never a
- * throw).
+ * Manager-driven: every op (read / list / has / search / replace / write / splice / prepend /
+ * append / move / remove) targets `manager.active`, so the model edits whichever workspace is
+ * active. The host re-points `active` through `WorkspaceManagerInterface.switch` between runs, and
+ * the tool holds no operation that lists or selects a workspace.
  *
  * No-active rule (the ergonomic seam): an op that can create the file it names (write / prepend /
  * append) run when `manager.active` is `undefined` auto-creates and activates a default workspace
@@ -620,23 +618,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 		contract: workspaceToolShape,
 		execute(args) {
 			const op = requireToolCall(contract, args)
-			// Registry ops act on the manager, not a workspace — handle them first.
-			if (op.operation === 'workspaces') {
-				const activeId = manager.active?.id
-				return manager.workspaces().map((workspace) => ({
-					id: workspace.id,
-					files: workspace.count,
-					active: workspace.id === activeId,
-				}))
-			}
-			if (op.operation === 'switch') {
-				const switched = manager.switch(op.id)
-				// Lenient: an unknown id leaves `active` unchanged and reports `switched: false`.
-				return switched === undefined
-					? { id: op.id, switched: false }
-					: { id: switched.id, switched: true, files: switched.count }
-			}
-			// Edit and read ops target the active workspace. An op that can create its file auto-creates
+			// Every op targets the active workspace. An op that can create its file auto-creates
 			// and activates a default workspace when none is active (the no-active ergonomic seam), an op
 			// on a file that must exist refuses, and a pure-read op returns the empty result.
 			const active = manager.active
@@ -712,19 +694,18 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
  *
  * @remarks
  * The universal tool-handler contract: the Tool door holds the call args to
- * {@link import('./shapers.js').agentToolShape}, refusing a malformed call with a `ToolError`
+ * {@link import('./shapers.js').agentToolShape}, refusing a malformed call — one carrying
+ * `provider`, `tools`, `system`, or any member besides `task` included — with a `ToolError`
  * carrying code `ARGUMENTS`. The handler assembles an `AgentJobInput` (`task` seeds the
- * sub-agent's conversation as a single `user` message; `provider` / `tools` / `system` fall
- * back to the tool's own {@link import('./types.js').AgentToolOptions} defaults, and `authority` is
- * the tool's own, never the call's), rehydrates the sub-agent through
- * `registry.build`, runs it with `agent.generate()`, and returns the settled
- * `AgentResult.content` string (the sub-agent's final text). A missing / unresolvable `provider`, or
- * tools with no configured `authority`, throws a typed `TOOL`
- * {@link import('./errors.js').ToolboxError}; a delegation that would exceed
+ * sub-agent's conversation as a single `user` message; `provider`, `tools`, `system`, and
+ * `authority` are the host's, fixed in {@link import('./types.js').AgentToolOptions}), rehydrates the
+ * sub-agent through `registry.build`, runs it with `agent.generate()`, and returns the settled
+ * `AgentResult.content` string (the sub-agent's final text). A delegation that would exceed
  * {@link import('./constants.js').AGENT_TOOL_DEPTH}, or re-enter an already-delegated agent (a
- * cycle), throws a typed `DEPTH` {@link import('./errors.js').ToolboxError}, each isolated
- * by the `ToolManagerInterface` into the canonical tool result's top-level `error`. A `depth` that
- * is not a nonnegative safe integer throws `TOOL` at construction.
+ * cycle), throws a typed `DEPTH` {@link import('./errors.js').ToolboxError}, isolated by the
+ * `ToolManagerInterface` into the canonical tool result's top-level `error`. A `depth` that is not
+ * a nonnegative safe integer, or a non-empty `tools` list with no `authority`, throws `TOOL` at
+ * construction.
  *
  * `AgentInterface` (`@orkestrel/agent`) exposes no teardown method — a bound sub-agent's
  * lifetime is the single `generate()` call this handler awaits; there is nothing to release
@@ -733,7 +714,7 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
  *
  * @param registry - The `AgentRegistryInterface` a delegated job resolves against (providers,
  *   tools, authorities, schedulers, and the `build` rehydration seam)
- * @param options - Delegation defaults, depth/ancestry bookkeeping, and advertised overrides
+ * @param options - The fixed sub-agent, depth/ancestry bookkeeping, and advertised overrides
  *   (see {@link import('./types.js').AgentToolOptions})
  * @returns A `ToolInterface` (named {@link import('./constants.js').AGENT_TOOL_NAME} by default)
  *
@@ -751,10 +732,10 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
  */
 export function createAgentTool(
 	registry: AgentRegistryInterface,
-	options?: AgentToolOptions,
+	options: AgentToolOptions,
 ): ToolInterface {
-	const contract = createContract(agentToolShape)
-	const depth = options?.depth ?? 0
+	const contract: ContractInterface<AgentToolArguments> = createContract(agentToolShape)
+	const depth = options.depth ?? 0
 	if (!isNonNegativeInteger(depth) || !Number.isSafeInteger(depth)) {
 		throw new ToolboxError(
 			'TOOL',
@@ -762,22 +743,23 @@ export function createAgentTool(
 			{ received: preview(depth) },
 		)
 	}
-	const ancestry = options?.ancestry ?? []
+	const tools = options.tools
+	if (tools !== undefined && tools.length > 0 && options.authority === undefined) {
+		throw new ToolboxError(
+			'TOOL',
+			'agent tool names tools and no authority to decide their calls; set authority, or set tools: [] to delegate with none',
+			{ tools: [...tools] },
+		)
+	}
+	const ancestry = options.ancestry ?? []
+	const provider = options.provider
 	return createTool({
-		name: options?.name ?? AGENT_TOOL_NAME,
-		description: options?.description ?? AGENT_TOOL_DESCRIPTION,
+		name: options.name ?? AGENT_TOOL_NAME,
+		description: options.description ?? AGENT_TOOL_DESCRIPTION,
 		summary: AGENT_TOOL_SUMMARY,
 		contract: agentToolShape,
 		async execute(args) {
 			const call = requireToolCall(contract, args)
-			const provider = call.provider ?? options?.provider
-			if (provider === undefined) {
-				throw new ToolboxError(
-					'TOOL',
-					'no provider resolved for the delegated agent; send provider as a registered provider key',
-					{ task: call.task },
-				)
-			}
 			if (depth + 1 > AGENT_TOOL_DEPTH) {
 				throw new ToolboxError(
 					'DEPTH',
@@ -789,28 +771,19 @@ export function createAgentTool(
 			if (ancestry.includes(tag)) {
 				throw new ToolboxError(
 					'DEPTH',
-					`agent ${preview(provider)} is already an ancestor (cycle); send another provider, or carry out this task without delegating`,
+					`agent ${preview(provider)} is already an ancestor (cycle); carry out this task without delegating`,
 					{ provider, ancestry: [...ancestry] },
 				)
 			}
-			const tools = call.tools ?? options?.tools
-			if (tools !== undefined && tools.length > 0 && options?.authority === undefined) {
-				throw new ToolboxError(
-					'TOOL',
-					'this agent tool has no authority to decide tool calls, so its sub-agent can load no tools; send tools: [] to delegate with none, or have the host set authority on this tool',
-					{ provider, tools: [...tools] },
-				)
-			}
-			const system = call.system ?? options?.system
 			const agent = registry.build({
 				provider,
 				messages: [{ role: 'user', content: call.task }],
-				...(system === undefined ? {} : { system }),
+				...(options.system === undefined ? {} : { system: options.system }),
 				...(tools === undefined ? {} : { tools }),
-				...(options?.authority === undefined ? {} : { authority: options.authority }),
+				...(options.authority === undefined ? {} : { authority: options.authority }),
 			})
 			const result = await agent.generate()
-			if (options?.store !== undefined) {
+			if (options.store !== undefined) {
 				const active = agent.context.conversations.active
 				if (active !== undefined) await options.store.set(active.snapshot())
 			}

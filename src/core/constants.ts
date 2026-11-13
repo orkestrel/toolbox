@@ -31,7 +31,7 @@ export const AGENT_TOOL_DEPTH = 8
  * Holds the lean {@link import('@orkestrel/tool').ToolInterface.summary}
  * {@link import('./factories.js').createAgentTool} advertises in place of
  * {@link AGENT_TOOL_DESCRIPTION} — one sentence offering sub-agent delegation and pointing at
- * `describe` for the optional overrides.
+ * `describe` for the full description.
  *
  * @remarks
  * A `ToolManagerInterface.definitions()` call (`@orkestrel/tool`) advertises
@@ -39,21 +39,18 @@ export const AGENT_TOOL_DEPTH = 8
  * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const AGENT_TOOL_SUMMARY =
-	"Delegate a task to a sub-agent and return its result; each call runs one sub-agent turn to completion. Call describe('agent') for the optional provider/tools/system overrides."
+	"Delegate a task to a sub-agent and return its result; each call runs one sub-agent turn to completion. Call describe('agent') for the full description."
 
 /**
  * Holds the description {@link import('./factories.js').createAgentTool} advertises — a short guide
- * covering the required task and optional provider, tools, and system overrides.
+ * covering the one field a call sends, `task`, and that the host fixes the sub-agent.
  */
 export const AGENT_TOOL_DESCRIPTION = [
 	'Delegate a task to a sub-agent and return its result. Every call runs ONE sub-agent turn to completion.',
 	'',
-	'Required:',
-	'  task     - the instructions the sub-agent carries out.',
-	'Optional overrides (default to the values this tool was configured with):',
-	'  provider - the registry key of the model/provider the sub-agent runs against.',
-	'  tools    - registry keys of the tools loaded into the sub-agent (replaces the default list, not merged).',
-	"  system   - a system prompt seeding the sub-agent's context (replaces the default).",
+	'Send one field:',
+	'  task - the instructions the sub-agent carries out.',
+	'The host fixes the sub-agent: its model, its tools, and its system text. A call carrying any other field is refused.',
 	'Example:',
 	JSON.stringify({
 		task: 'Summarize the attached notes in three bullet points.',
@@ -196,7 +193,7 @@ export const WORKSPACE_TOOL_EXAMPLE: WorkspaceOperation = Object.freeze({
  * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const WORKSPACE_TOOL_SUMMARY =
-	"Read and edit files in a workspace — one operation per call (read, write, list, search, replace, splice, move, remove, plus workspace switching), chosen by the 'operation' field. Call describe('workspace') for the full operation list and fields."
+	"Read and edit files in a workspace — one operation per call (read, write, list, search, replace, splice, move, remove), chosen by the 'operation' field. Call describe('workspace') for the full operation list and fields."
 
 /**
  * Holds the description {@link import('./factories.js').createWorkspaceTool} advertises — the
@@ -208,7 +205,7 @@ export const WORKSPACE_TOOL_SUMMARY =
  */
 export const WORKSPACE_TOOL_DESCRIPTION = [
 	'Read and edit files in a workspace. Every call is ONE operation, chosen by the "operation" field.',
-	'All file operations act on the ACTIVE workspace; use "workspaces" then "switch" to move between workspaces.',
+	'All file operations act on the ACTIVE workspace, which the host selects.',
 	'',
 	'Operations (each takes the fields listed):',
 	'- read     { "operation": "read", "path": "<file>" } — return the file\'s text, or null when the path holds no text.',
@@ -222,8 +219,6 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
 	'- append   { "operation": "append", "path": "<file>", "content": "<text>" } — add content to the end of the file.',
 	'- move     { "operation": "move", "from": "<file>", "to": "<file>" } — rename / move a file.',
 	'- remove   { "operation": "remove", "path": "<file>" } — delete a file.',
-	'- workspaces { "operation": "workspaces" } — list the workspaces you can switch between (each id, file count, active).',
-	'- switch   { "operation": "switch", "id": "<id>" } — make the workspace with that id active (ids come from "workspaces").',
 	'',
 	'Notes: lines and columns are 1-based (column 1 is the first character). "regex" defaults to false (a literal substring), "sensitive" defaults to true (case-sensitive). "search"/"replace"/"splice" act only on text files. With no active workspace, "write", "prepend", and "append" create one, and "replace", "splice", "move", and "remove" refuse.',
 	'',

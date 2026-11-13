@@ -43,7 +43,7 @@ import type {
 } from '@src/core'
 import type { JSONRecord } from '@orkestrel/contract'
 import type { TimerHandler, TerminalManagerInterface } from '@orkestrel/terminal'
-import type { ToolContext, ToolResult } from '@orkestrel/tool'
+import type { ToolContext, ToolDefinition, ToolResult } from '@orkestrel/tool'
 import type {
 	WorkflowDefinition,
 	WorkflowRegistry,
@@ -324,9 +324,13 @@ export class RecordingWorkflowStore implements WorkflowStoreInterface {
 // delta and RETURNS the result, honouring `signal` so an abort mid-stream throws a
 // `ProviderAbortError` carrying the accumulated partial (a genuine cancel-fold proof).
 
-/** Represents one recorded `generate` or `stream` call on a {@link ScriptedProvider}. */
+/**
+ * Represents one recorded `generate` or `stream` call on a {@link ScriptedProvider}: its messages
+ * and the names of the tool definitions it carried, empty when it carried none.
+ */
 export interface ScriptedCall {
 	readonly messages: readonly Message[]
+	readonly tools: readonly string[]
 }
 
 /**
@@ -348,7 +352,7 @@ export interface ScriptedProviderOptions {
 export interface ScriptedProviderInterface extends ProviderInterface {
 	/** How many `stream` calls have started in total. */
 	readonly started: number
-	/** Each call's `messages`, in order. */
+	/** Each call's `messages` and tool names, in order. */
 	readonly calls: readonly ScriptedCall[]
 }
 
@@ -392,8 +396,12 @@ export class ScriptedProvider implements ScriptedProviderInterface {
 	async *stream(
 		messages: readonly Message[],
 		signal: AbortSignal,
+		tools?: readonly ToolDefinition[],
 	): AsyncGenerator<ProviderDelta, ProviderResult> {
-		this.#calls.push({ messages: [...messages] })
+		this.#calls.push({
+			messages: [...messages],
+			tools: (tools ?? []).map((definition) => definition.name),
+		})
 		this.#started += 1
 		if (signal.aborted) throw new ProviderAbortError({ content: '' })
 		if (this.#delay > 0) await waitForDelay(this.#delay)
@@ -407,8 +415,12 @@ export class ScriptedProvider implements ScriptedProviderInterface {
 		return turn
 	}
 
-	async generate(messages: readonly Message[], signal: AbortSignal): Promise<ProviderResult> {
-		const generator = this.stream(messages, signal)
+	async generate(
+		messages: readonly Message[],
+		signal: AbortSignal,
+		tools?: readonly ToolDefinition[],
+	): Promise<ProviderResult> {
+		const generator = this.stream(messages, signal, tools)
 		while (true) {
 			const step = await generator.next()
 			if (step.done) return step.value
@@ -804,6 +816,24 @@ export function buildDatabaseStoreWithTable(): {
 	const table: TableInterface<DatabaseDefinitionRow> = database.table('definitions')
 	return { store: new DatabaseDefinitionStore(table), table }
 }
+
+/**
+ * Holds the operations the workspace tool's contract declares, in declaration order: the
+ * `expected` list its refusal of an undeclared operation carries.
+ */
+export const WORKSPACE_TOOL_OPERATIONS: readonly string[] = Object.freeze([
+	'read',
+	'list',
+	'has',
+	'search',
+	'replace',
+	'write',
+	'splice',
+	'prepend',
+	'append',
+	'move',
+	'remove',
+])
 
 /** Seeds a workspace with one text file and one binary PNG file for the `list` projection proofs. */
 export function buildWorkspaceSeed(): readonly FileInterface[] {

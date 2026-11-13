@@ -204,7 +204,8 @@ export interface WorkflowToolOptions {
  *
  * @remarks
  * - `manager` — drive this manager directly (its `active` workspace is what every edit / read
- *   operation targets). Takes priority over `store` when the caller supplies `manager` and `store`.
+ *   operation targets, and the host alone moves `active`). Takes priority over `store` when the
+ *   caller supplies `manager` and `store`.
  * - `store` — construct a manager over this durable {@link WorkspaceStoreInterface} (through
  *   `@orkestrel/workspace`'s `createWorkspaceManager`) — used only when `manager` is omitted.
  *   The store only backs the manager's own `open` / `save` operations: the tool's edits are
@@ -225,7 +226,7 @@ export interface WorkspaceToolOptions {
 /**
  * Represents one operation an agent invokes through
  * {@link import('./factories.js').createWorkspaceTool} — a flat, descriptive tagged union over the
- * workspace edit, read, and navigation actions, discriminated by the `operation` literal (a
+ * workspace edit and read actions, discriminated by the `operation` literal (a
  * discriminant is named for its axis — the action being performed — never `kind`).
  *
  * @remarks
@@ -235,11 +236,8 @@ export interface WorkspaceToolOptions {
  * lever: a range edit is the flat integers of the `'splice'` arm (`fromLine` /
  * `fromColumn` / `toLine` / `toColumn`), reassembled into a 1-based `Range`
  * (`@orkestrel/workspace`)
- * by `rangeOf`, never a nested `{ start, end }`. Each edit / read arm maps onto exactly one
- * `WorkspaceInterface` call against the manager's active workspace; the registry arms
- * (`switch` / `workspaces`) drive the {@link WorkspaceManagerInterface} pointer instead —
- * `workspaces` lists the workspaces the model can move between, and `switch` re-points which one
- * the edit / read arms target.
+ * by `rangeOf`, never a nested `{ start, end }`. Every arm maps onto exactly one
+ * `WorkspaceInterface` call against the manager's active workspace, which the host selects.
  */
 export type WorkspaceOperation =
 	/** Reads a whole text file's text by `path` from the active workspace (a binary / absent path — or no active workspace — yields `null`). */
@@ -306,28 +304,23 @@ export type WorkspaceOperation =
 	| { readonly operation: 'move'; readonly from: string; readonly to: string }
 	/** Removes the file at `path` from the workspace. */
 	| { readonly operation: 'remove'; readonly path: string }
-	/** Lists the workspaces the model can move between — each `{ id, files, active }` — so it can choose an `id` to `switch` to. */
-	| { readonly operation: 'workspaces' }
-	/** Re-points the manager's active workspace to the one with `id` (an unknown `id` is a lenient no-op). The edit / read arms target the active workspace from then on. */
-	| { readonly operation: 'switch'; readonly id: string }
 
 /**
- * Represents the options for {@link import('./factories.js').createAgentTool} — the sub-agent delegation
- * defaults, the nesting-depth / cycle guard bookkeeping, and the advertised tool overrides.
+ * Represents the options for {@link import('./factories.js').createAgentTool} — the sub-agent the
+ * tool delegates to, fixed by the host, the nesting-depth / cycle guard bookkeeping, and the
+ * advertised tool overrides.
  *
  * @remarks
+ * The host fixes the sub-agent here: a call carries its `task` alone, so a model never chooses the
+ * provider, the tools, or the system text of the agent it delegates to.
  * - `name` / `description` — advertised tool overrides; default to
  *   {@link import('./constants.js').AGENT_TOOL_NAME} / {@link import('./constants.js').AGENT_TOOL_DESCRIPTION}.
- * - `provider` — the default registry provider key used when a call omits `provider`; a call
- *   that supplies its own `provider` overrides this. One of `provider` (here or per-call) must
- *   resolve, or the handler throws a typed `TOOL` {@link import('./errors.js').ToolboxError}.
- * - `tools` — the default registry tool-name list loaded into the delegated sub-agent; a
- *   per-call `tools` list overrides (never merges with) this default.
- * - `system` — the default system prompt seeding the sub-agent's context; a per-call `system`
- *   overrides this.
+ * - `provider` — the registry key of the provider every delegated sub-agent runs against.
+ * - `tools` — the registry keys of the tools loaded into every delegated sub-agent. Default: none.
+ * - `system` — the system prompt seeding every delegated sub-agent's context. Default: none.
  * - `authority` — the registry key of the authority that decides the delegated sub-agent's tool
- *   calls. A host's choice, never the call's. Tools named with no `authority` refuse before
- *   `registry.build` runs, because an agent with tools needs one.
+ *   calls. A non-empty `tools` list with no `authority` throws a typed `TOOL`
+ *   {@link import('./errors.js').ToolboxError} at construction, because an agent with tools needs one.
  * - `depth` — this invocation's nesting depth, a nonnegative safe integer (default `0`); a delegated
  *   sub-agent that itself calls this tool again runs at `depth + 1`, bounded by
  *   {@link import('./constants.js').AGENT_TOOL_DEPTH}. Any other value throws at construction.
@@ -349,7 +342,7 @@ export type WorkspaceOperation =
 export interface AgentToolOptions {
 	readonly name?: string
 	readonly description?: string
-	readonly provider?: string
+	readonly provider: string
 	readonly tools?: readonly string[]
 	readonly system?: string
 	readonly authority?: string
@@ -359,20 +352,16 @@ export interface AgentToolOptions {
 }
 
 /**
- * Represents the flat args {@link import('./factories.js').createAgentTool} accepts — a delegated
- * `task` plus the minimal optional `AgentJobInput` (`@orkestrel/agent`) fields a caller may
- * override per-call.
+ * Represents the flat args {@link import('./factories.js').createAgentTool} accepts — the delegated
+ * `task` alone.
  *
  * @remarks
  * `task` becomes the seed user message in the sub-agent's rehydrated conversation
- * (`AgentJobInput.messages`). `provider` / `tools` / `system` shadow the tool's own
- * {@link AgentToolOptions} defaults for this one call when supplied.
+ * (`AgentJobInput.messages`). {@link AgentToolOptions} fixes everything else the sub-agent runs
+ * with, so a call that carries any other member refuses.
  */
 export interface AgentToolArguments {
 	readonly task: string
-	readonly provider?: string
-	readonly tools?: readonly string[]
-	readonly system?: string
 }
 
 /**

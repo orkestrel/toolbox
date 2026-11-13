@@ -65,32 +65,14 @@ export const answerToolShape = unionShape(
  * {@link import('./factories.js').createAgentTool}'s advertised `parameters`.
  *
  * @remarks
- * `task` is the only required field (a non-empty string); `provider` / `tools` / `system`
- * are per-call overrides of the tool's own configured defaults.
+ * `task` is the only field (a non-empty string). The shape is exact, so a call carrying
+ * `provider`, `tools`, `system`, or any other member refuses.
  */
 export const agentToolShape = objectShape({
 	task: stringShape({
 		min: 1,
 		description: 'The instructions the sub-agent carries out.',
 	}),
-	provider: optionalShape(
-		stringShape({
-			min: 1,
-			description:
-				'Registry key of the provider to run the sub-agent against (overrides the default).',
-		}),
-	),
-	tools: optionalShape(
-		arrayShape(stringShape({ min: 1 }), {
-			description:
-				'Registry keys of the tools loaded into the sub-agent (replaces the default list).',
-		}),
-	),
-	system: optionalShape(
-		stringShape({
-			description: "A system prompt seeding the sub-agent's context (overrides the default).",
-		}),
-	),
 })
 
 /**
@@ -238,7 +220,7 @@ export const workflowStepsShape = objectShape({
 
 /**
  * Describes the shape of a {@link import('./types.js').WorkspaceOperation} — a descriptive tagged union
- * over the workspace edit, read, and navigation operations, discriminated by the `operation`
+ * over the workspace edit and read operations, discriminated by the `operation`
  * literal (never a bare `kind`). Each variant leads with its `operation`
  * discriminant then its flat fields, every field through `stringShape` / `optionalShape` /
  * `integerShape({ min: 1 })` / `booleanShape`, each carrying a strong field-level `description`.
@@ -248,9 +230,7 @@ export const workflowStepsShape = objectShape({
  * automatically ({@link import('./factories.js').createWorkspaceTool} types the result to the
  * hand-written {@link import('./types.js').WorkspaceOperation}). `limit` and the `'splice'`
  * caret components are positive integers (`integerShape({ min: 1 })`); `regex` / `sensitive`
- * are `optionalShape(booleanShape(...))`. The registry arms — `workspaces` (list the
- * workspaces the model can move between) and `switch` (re-point the active one by `id`) — let a
- * model discover then choose which workspace the edit / read arms target.
+ * are `optionalShape(booleanShape(...))`.
  */
 export const workspaceToolShape = unionShape(
 	objectShape({
@@ -370,21 +350,6 @@ export const workspaceToolShape = unionShape(
 	objectShape({
 		operation: literalShape(['remove'], { description: 'Delete a file from the workspace.' }),
 		path: stringShape({ min: 1, description: 'The path of the file to remove.' }),
-	}),
-	objectShape({
-		operation: literalShape(['workspaces'], {
-			description:
-				'List the workspaces you can move between (each id, file count, and whether it is active), so you can pick an id to switch to.',
-		}),
-	}),
-	objectShape({
-		operation: literalShape(['switch'], {
-			description:
-				'Switch the active workspace to the one with this id (get ids from the "workspaces" operation). Edit and read operations then target it.',
-		}),
-		id: stringShape({
-			description: 'The id of the workspace to make active (from the "workspaces" listing).',
-		}),
 	}),
 )
 

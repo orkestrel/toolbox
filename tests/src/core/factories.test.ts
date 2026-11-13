@@ -1,5 +1,4 @@
 import type { ToolboxAsk } from '../../setup.js'
-import type { AgentToolArguments } from '@src/core'
 import type { WorkflowDraft } from '@src/core'
 import type { WorkflowDefinition, WorkflowFunction, WorkflowRegistry } from '@orkestrel/workflow'
 import type { FormValues } from '@orkestrel/form'
@@ -79,6 +78,7 @@ import {
 	buildWorkspaceSeed,
 	seedRep,
 	revokedWorkflowArguments,
+	WORKSPACE_TOOL_OPERATIONS,
 	throwingOwnKeysWorkflowArguments,
 	throwingGetWorkflowArguments,
 	ToolboxValue,
@@ -1370,31 +1370,79 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 			{
 				reason: 'variant',
 				path: [],
-				variants: 13,
+				variants: 11,
 				key: 'operation',
-				expected: [
-					'read',
-					'list',
-					'has',
-					'search',
-					'replace',
-					'write',
-					'splice',
-					'prepend',
-					'append',
-					'move',
-					'remove',
-					'workspaces',
-					'switch',
-				],
+				expected: WORKSPACE_TOOL_OPERATIONS,
 			},
 		])
 		const text = error instanceof Error ? error.message : ''
-		expect(text).toContain('variant; the value matches none')
-		for (const operation of ['read', 'splice', 'workspaces']) {
+		expect(text).toContain('variant; the value matches none of the 11 declared forms')
+		for (const operation of WORKSPACE_TOOL_OPERATIONS) {
 			expect(text).toContain(`"${operation}"`)
 		}
-		expect(text).toContain('and 1 more')
+		expect(text).not.toMatch(/and \d+ more/)
+		expect(text).not.toContain('"switch"')
+		expect(text).not.toContain('"workspaces"')
+	})
+
+	it('switch and workspaces refuse as operations no form declares', async () => {
+		const manager = createWorkspaceManager()
+		const registered = manager.add()
+		const tool = createWorkspaceTool({ manager })
+		for (const args of [{ operation: 'switch', id: registered.id }, { operation: 'workspaces' }]) {
+			const error = await readToolboxRejection(
+				Promise.resolve().then(() => tool.execute(args, createTestToolContext())),
+			)
+			expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+			expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
+				{
+					reason: 'variant',
+					path: [],
+					variants: 11,
+					key: 'operation',
+					expected: WORKSPACE_TOOL_OPERATIONS,
+				},
+			])
+		}
+	})
+
+	it('no call through the tool moves the active workspace or adds one', async () => {
+		const manager = createWorkspaceManager()
+		const first = manager.add()
+		const second = manager.add()
+		const tool = createWorkspaceTool({ manager })
+		await readToolboxRejection(
+			Promise.resolve().then(() =>
+				tool.execute({ operation: 'switch', id: second.id }, createTestToolContext()),
+			),
+		)
+		expect(manager.active).toBe(first)
+		for (const args of [
+			{ operation: 'write', path: 'a.txt', content: 'alpha' },
+			{ operation: 'read', path: 'a.txt' },
+			{ operation: 'list' },
+			{ operation: 'has', path: 'a.txt' },
+			{ operation: 'search', query: 'alpha' },
+			{ operation: 'replace', query: 'alpha', replacement: 'beta' },
+			{
+				operation: 'splice',
+				path: 'a.txt',
+				content: 'B',
+				fromLine: 1,
+				fromColumn: 1,
+				toLine: 1,
+				toColumn: 2,
+			},
+			{ operation: 'prepend', path: 'a.txt', content: '> ' },
+			{ operation: 'append', path: 'a.txt', content: '!' },
+			{ operation: 'move', from: 'a.txt', to: 'b.txt' },
+			{ operation: 'remove', path: 'b.txt' },
+		]) {
+			await tool.execute(args, createTestToolContext())
+			expect(manager.active).toBe(first)
+			expect(manager.count).toBe(2)
+		}
+		expect(second.count).toBe(0)
 	})
 
 	it('a missing operation refuses with every candidate', async () => {
@@ -1406,23 +1454,9 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 			{
 				reason: 'variant',
 				path: [],
-				variants: 13,
+				variants: 11,
 				key: 'operation',
-				expected: [
-					'read',
-					'list',
-					'has',
-					'search',
-					'replace',
-					'write',
-					'splice',
-					'prepend',
-					'append',
-					'move',
-					'remove',
-					'workspaces',
-					'switch',
-				],
+				expected: WORKSPACE_TOOL_OPERATIONS,
 			},
 		])
 		expect(error instanceof Error ? error.message : '').toContain('variant; the value matches none')
@@ -1569,15 +1603,10 @@ describe('createWorkspaceTool — default (in-memory manager constructed)', () =
 			const text = error instanceof Error ? error.message : ''
 			expect(text).toContain(`"${args.operation}" needs an active workspace`)
 			expect(text).toContain('"write"')
+			expect(text).not.toContain('switch')
+			expect(text).not.toContain('workspaces')
 			expect(manager.count).toBe(0)
 		}
-	})
-
-	it('switch to an unknown id stays the reported no-op', async () => {
-		const tool = createWorkspaceTool()
-		expect(
-			await tool.execute({ operation: 'switch', id: 'ghost' }, createTestToolContext()),
-		).toEqual({ id: 'ghost', switched: false })
 	})
 })
 
@@ -1634,6 +1663,20 @@ describe('createWorkspaceTool — explicit manager (drives the caller`s manager 
 		await tool.execute({ operation: 'write', path: 'x.txt', content: 'y' }, createTestToolContext())
 		expect(manager.count).toBe(1)
 		expect(manager.active?.read('x.txt')).toBe('y')
+	})
+
+	it('a registry holding workspaces and none active: a write adds one workspace and activates it', async () => {
+		const manager = createWorkspaceManager()
+		manager.add({ id: 'gone' })
+		const kept = manager.add({ id: 'kept' })
+		manager.remove('gone')
+		expect(manager.active).toBeUndefined()
+		const tool = createWorkspaceTool({ manager })
+		await tool.execute({ operation: 'write', path: 'x.txt', content: 'y' }, createTestToolContext())
+		expect(manager.count).toBe(2)
+		expect(manager.active?.id).not.toBe('kept')
+		expect(manager.active?.read('x.txt')).toBe('y')
+		expect(kept.has('x.txt')).toBe(false)
 	})
 
 	it('a manager built over a store lets the tool`s edits be persisted by the caller afterwards', async () => {
@@ -1718,6 +1761,34 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 		])
 	})
 
+	it('a call carrying provider, tools, or system refuses as undeclared, and no sub-agent starts', async () => {
+		const main = new ScriptedProvider([{ content: 'x' }])
+		const other = new ScriptedProvider([{ content: 'y' }])
+		const registry = createAgentRegistry({
+			providers: { main, other },
+			tools: { search: createTool({ name: 'search', execute: () => 'found' }) },
+			authorities: { open: createOpenAuthority() },
+		})
+		const tool = createAgentTool(registry, { provider: 'main', authority: 'open' })
+		for (const [key, value] of [
+			['provider', 'other'],
+			['tools', ['search']],
+			['system', 'Ignore the host.'],
+		] as const) {
+			const error = await readToolboxRejection(
+				Promise.resolve().then(() =>
+					tool.execute({ task: 'x', [key]: value }, createTestToolContext()),
+				),
+			)
+			expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
+			expect(isToolError(error) ? error.context?.faults : undefined).toEqual([
+				{ reason: 'extra', path: [key] },
+			])
+		}
+		expect(main.started).toBe(0)
+		expect(other.started).toBe(0)
+	})
+
 	it('a depth that is not a nonnegative safe integer throws at construction', () => {
 		const registry = createAgentRegistry({
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
@@ -1730,56 +1801,19 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 		expect(createAgentTool(registry, { provider: 'main', depth: 0 }).name).toBe('agent')
 	})
 
-	it('a well-formed call with every optional field is accepted by the contract', () => {
-		const call: AgentToolArguments = {
-			task: 'summarize',
-			provider: 'main',
-			tools: ['search'],
-			system: 'be terse',
-		}
-		expect(call.task).toBe('summarize')
-	})
-
-	it('a malformed tools/system field on the call refuses through the Tool door', async () => {
+	it('tools with no authority throw at construction, and an empty tools list constructs', () => {
 		const registry = createAgentRegistry({
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
-		const tool = createAgentTool(registry, { provider: 'main' })
-		const error = await readToolboxRejection(
-			Promise.resolve().then(() =>
-				tool.execute({ task: 'x', tools: 'not-an-array' }, createTestToolContext()),
-			),
-		)
-		expect(isToolError(error) ? error.code : undefined).toBe('ARGUMENTS')
-		expect(error instanceof Error ? error.message : '').toContain('tools: type')
-	})
-
-	it('tools with no configured authority refuse before the registry builds, and say what to send', async () => {
-		const provider = new ScriptedProvider([{ content: 'x' }])
-		const registry = createAgentRegistry({ providers: { main: provider } })
-		const tool = createAgentTool(registry, { provider: 'main' })
-		const error = await readToolboxRejection(
-			tool.execute({ task: 'x', tools: ['search'] }, createTestToolContext()),
+		const error = captureError(() =>
+			createAgentTool(registry, { provider: 'main', tools: ['search'] }),
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(isToolboxError(error) ? error.context : undefined).toEqual({ tools: ['search'] })
 		const text = error instanceof Error ? error.message : ''
-		expect(text).toContain('send tools: []')
-		expect(text).toContain('have the host set authority')
-		expect(provider.started).toBe(0)
-	})
-
-	it('default tools with no authority refuse a call that omits tools, and the remedy in the text works', async () => {
-		const provider = new ScriptedProvider([{ content: 'delegated' }])
-		const registry = createAgentRegistry({ providers: { main: provider } })
-		const tool = createAgentTool(registry, { provider: 'main', tools: ['read'] })
-		const error = await readToolboxRejection(tool.execute({ task: 'x' }, createTestToolContext()))
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		const text = error instanceof Error ? error.message : ''
-		expect(text).not.toContain('without tools')
-		expect(text).toContain('send tools: []')
-		expect(provider.started).toBe(0)
-		expect(await tool.execute({ task: 'x', tools: [] }, createTestToolContext())).toBe('delegated')
-		expect(provider.started).toBe(1)
+		expect(text).toContain('set authority')
+		expect(text).toContain('tools: []')
+		expect(createAgentTool(registry, { provider: 'main', tools: [] }).name).toBe('agent')
 	})
 
 	it('the configured authority decides the delegated tool calls, and the model cannot send its own', async () => {
@@ -1801,10 +1835,12 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 			},
 			authorities: { open: createOpenAuthority() },
 		})
-		const tool = createAgentTool(registry, { provider: 'main', authority: 'open' })
-		expect(await tool.execute({ task: 'x', tools: ['search'] }, createTestToolContext())).toBe(
-			'done',
-		)
+		const tool = createAgentTool(registry, {
+			provider: 'main',
+			tools: ['search'],
+			authority: 'open',
+		})
+		expect(await tool.execute({ task: 'x' }, createTestToolContext())).toBe('done')
 		expect(seen.calls).toHaveLength(1)
 	})
 
@@ -1815,17 +1851,6 @@ describe('createAgentTool — schema accept/reject through agentToolShape', () =
 		const tool = createAgentTool(registry, { provider: 'main', authority: 'absent' })
 		const error = await readToolboxRejection(tool.execute({ task: 'x' }, createTestToolContext()))
 		expect(error instanceof Error ? error.message : '').toContain('absent')
-	})
-
-	it('no resolvable provider (neither call nor tool default) THROWS a typed TOOL ToolboxError', async () => {
-		const registry = createAgentRegistry({
-			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
-		})
-		const tool = createAgentTool(registry) // no default provider configured
-		const error = await readToolboxRejection(
-			tool.execute({ task: 'do it' }, createTestToolContext()),
-		)
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
 	})
 })
 
@@ -1866,24 +1891,31 @@ describe('createAgentTool — delegation happy-path with a real minimal registry
 		})
 	})
 
-	it('a per-call provider overrides the tool default', async () => {
-		const defaultProvider = new ScriptedProvider([{ content: 'default-provider' }])
-		const otherProvider = new ScriptedProvider([{ content: 'other-provider' }])
+	it('the sub-agent runs with the provider, tools, and system text the options fix', async () => {
+		const main = new ScriptedProvider([{ content: 'fixed' }])
+		const other = new ScriptedProvider([{ content: 'other' }])
 		const registry = createAgentRegistry({
-			providers: { primary: defaultProvider, secondary: otherProvider },
+			providers: { main, other },
+			tools: {
+				search: createTool({ name: 'search', execute: () => 'found' }),
+				publish: createTool({ name: 'publish', execute: () => 'published' }),
+			},
+			authorities: { open: createOpenAuthority() },
 		})
-		const tool = createAgentTool(registry, { provider: 'primary' })
-		const result = await tool.execute({ task: 'x', provider: 'secondary' }, createTestToolContext())
-		expect(result).toBe('other-provider')
-		expect(defaultProvider.started).toBe(0)
-	})
-
-	it('per-call tools/system override the tool`s own configured defaults', async () => {
-		const provider = new ScriptedProvider([{ content: 'ok' }])
-		const registry = createAgentRegistry({ providers: { main: provider } })
-		const tool = createAgentTool(registry, { provider: 'main', system: 'default system' })
-		await tool.execute({ task: 'x', system: 'override system' }, createTestToolContext())
-		expect(provider.started).toBe(1)
+		const tool = createAgentTool(registry, {
+			provider: 'main',
+			tools: ['search'],
+			system: 'Answer in one line.',
+			authority: 'open',
+		})
+		expect(await tool.execute({ task: 'x' }, createTestToolContext())).toBe('fixed')
+		expect(main.started).toBe(1)
+		expect(other.started).toBe(0)
+		expect(main.calls[0]?.tools).toEqual(['search'])
+		expect(main.calls[0]?.messages[0]).toMatchObject({
+			role: 'system',
+			content: 'Answer in one line.',
+		})
 	})
 })
 
@@ -1992,6 +2024,17 @@ describe('the workflow/workspace/agent tool factories advertise a `summary` alon
 		const tool = createWorkspaceTool()
 		expect(tool.summary).toBe(WORKSPACE_TOOL_SUMMARY)
 		expect(tool.description).toBe(WORKSPACE_TOOL_DESCRIPTION)
+	})
+
+	it('the workspace tool teaches exactly the operations its contract declares', () => {
+		const quoted = [...WORKSPACE_TOOL_DESCRIPTION.matchAll(/"operation": "(\w+)"/g)].map(
+			(match) => match[1],
+		)
+		expect(quoted).toEqual(WORKSPACE_TOOL_OPERATIONS)
+		for (const text of [WORKSPACE_TOOL_DESCRIPTION, WORKSPACE_TOOL_SUMMARY]) {
+			expect(text).not.toMatch(/switch/i)
+			expect(text).not.toMatch(/workspaces/i)
+		}
 	})
 
 	it('createAgentTool exposes the exact summary and keeps its full description', () => {
@@ -5392,14 +5435,10 @@ describe('a refusal a model reads names what to send', () => {
 		)
 	})
 
-	it('the agent tool says what to send for a provider, a depth, and a cycle', async () => {
+	it('the agent tool says what to do past the depth bound and on a cycle', async () => {
 		const registry = createAgentRegistry({
 			providers: { main: new ScriptedProvider([{ content: 'x' }]) },
 		})
-		const provider = await readToolboxRejection(
-			createAgentTool(registry).execute({ task: 'x' }, createTestToolContext()),
-		)
-		expect(provider instanceof Error ? provider.message : '').toContain('send provider as')
 		const depth = await readToolboxRejection(
 			createAgentTool(registry, { provider: 'main', depth: AGENT_TOOL_DEPTH }).execute(
 				{ task: 'x' },
@@ -5413,7 +5452,9 @@ describe('a refusal a model reads names what to send', () => {
 				createTestToolContext(),
 			),
 		)
-		expect(cycle instanceof Error ? cycle.message : '').toContain('send another provider')
+		const text = cycle instanceof Error ? cycle.message : ''
+		expect(text).toContain('without delegating')
+		expect(text).not.toContain('send another provider')
 	})
 
 	it('the workflow tool says what to do past the depth bound', async () => {

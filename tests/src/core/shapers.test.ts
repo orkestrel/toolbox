@@ -136,16 +136,11 @@ describe('agentToolShape — createAgentTool call args', () => {
 		expectTypeOf<Infer<typeof agentToolShape>>().toEqualTypeOf<AgentToolArguments>()
 	})
 
-	it('is() accepts a task-only call and a call with every optional field', () => {
+	it('is() accepts a task-only call and refuses a call carrying provider, tools, or system', () => {
 		expect(contract.is({ task: 'do the thing' })).toBe(true)
-		expect(
-			contract.is({
-				task: 'do the thing',
-				provider: 'openai',
-				tools: ['search'],
-				system: 'be terse',
-			}),
-		).toBe(true)
+		expect(contract.is({ task: 'do the thing', provider: 'openai' })).toBe(false)
+		expect(contract.is({ task: 'do the thing', tools: ['search'] })).toBe(false)
+		expect(contract.is({ task: 'do the thing', system: 'be terse' })).toBe(false)
 	})
 
 	it('is() rejects a missing or empty task', () => {
@@ -153,15 +148,8 @@ describe('agentToolShape — createAgentTool call args', () => {
 		expect(contract.is({ task: '' })).toBe(false)
 	})
 
-	it('is() rejects a wrong-typed optional field', () => {
-		expect(contract.is({ task: 'x', provider: 42 })).toBe(false)
-		expect(contract.is({ task: 'x', tools: 'not-an-array' })).toBe(false)
-		expect(contract.is({ task: 'x', tools: [''] })).toBe(false)
-		expect(contract.is({ task: 'x', system: 42 })).toBe(false)
-	})
-
 	it('parse() returns the value unchanged for a valid call, undefined for an invalid one', () => {
-		const call = { task: 'x', provider: 'p' }
+		const call = { task: 'x' }
 		expect(contract.parse(call)).toEqual(call)
 		expect(contract.parse({})).toBeUndefined()
 	})
@@ -172,15 +160,10 @@ describe('agentToolShape — createAgentTool call args', () => {
 		expect(contract.parse(generated)).toEqual(generated)
 	})
 
-	it('the compiled JSON Schema requires task and marks it non-empty', () => {
+	it('the compiled JSON Schema declares task alone, required', () => {
 		expect(contract.schema.type).toBe('object')
 		const properties = contract.schema.properties
-		expect(isRecord(properties) ? Object.keys(properties).sort() : []).toEqual([
-			'provider',
-			'system',
-			'task',
-			'tools',
-		])
+		expect(isRecord(properties) ? Object.keys(properties) : []).toEqual(['task'])
 		expect(contract.schema.required).toEqual(['task'])
 	})
 })
@@ -320,8 +303,6 @@ describe('workspaceToolShape — the operation-discriminated union', () => {
 		['append', { operation: 'append', path: 'a.ts', content: 'x' }],
 		['move', { operation: 'move', from: 'a.ts', to: 'b.ts' }],
 		['remove', { operation: 'remove', path: 'a.ts' }],
-		['workspaces', { operation: 'workspaces' }],
-		['switch', { operation: 'switch', id: 'w1' }],
 	]
 
 	for (const [label, value] of valid) {
@@ -333,8 +314,10 @@ describe('workspaceToolShape — the operation-discriminated union', () => {
 		})
 	}
 
-	it('is() rejects an unknown operation literal', () => {
+	it('is() rejects an operation literal no form declares, switch and workspaces included', () => {
 		expect(contract.is({ operation: 'destroy', path: 'a.ts' })).toBe(false)
+		expect(contract.is({ operation: 'switch', id: 'w1' })).toBe(false)
+		expect(contract.is({ operation: 'workspaces' })).toBe(false)
 	})
 
 	it('is() rejects a missing operation, or a variant missing its required field', () => {

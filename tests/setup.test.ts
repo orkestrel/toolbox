@@ -160,6 +160,18 @@ describe('setup', () => {
 		expect(provider.calls).toHaveLength(3)
 	})
 
+	it('ScriptedProvider records the tool names each call carried, and none for a call without tools', async () => {
+		const provider = new ScriptedProvider([{ content: 'ok' }])
+
+		await provider.generate([], new AbortController().signal, [
+			{ name: 'search' },
+			{ name: 'read' },
+		])
+		await provider.generate([], new AbortController().signal)
+
+		expect(provider.calls.map((call) => call.tools)).toEqual([['search', 'read'], []])
+	})
+
 	it('ScriptedProvider honours an already-aborted signal with a ProviderAbortError partial', async () => {
 		const provider = new ScriptedProvider([{ content: 'unreached' }])
 		const controller = new AbortController()

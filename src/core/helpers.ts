@@ -721,7 +721,7 @@ export function requireActiveWorkspace(
 	if (active !== undefined) return active
 	throw new ToolboxError(
 		'TOOL',
-		`operation ${preview(operation)} needs an active workspace and none is; call "write" to create one, or "workspaces" then "switch"`,
+		`operation ${preview(operation)} needs an active workspace and none is; call "write" to create one`,
 		{ operation },
 	)
 }
