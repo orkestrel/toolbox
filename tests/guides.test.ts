@@ -72,13 +72,18 @@ await new GuideCommand({
 		isIndexMap,
 		isPrimaryMap,
 		isTableSpec,
+		isToolboxError,
 		isWorkflowLineage,
+		createWorkspaceTool,
 		limitRefusal,
 		normalizeLineage,
+		readToolCaller,
 		renderCandidates,
-		requireActiveWorkspace,
+		requireListedPath,
 		requireToolCall,
+		requireToolWorkspace,
 		resolveBound,
+		resolveToolWorkspace,
 		tagAgent,
 		tagWorkflow,
 	} = await import('@src/core')
@@ -240,7 +245,14 @@ await new GuideCommand({
 			expect(resolveBound(25, 100, 'database limit')).toBe(25)
 			const manager = createWorkspaceManager()
 			const workspace = manager.add()
-			expect(requireActiveWorkspace(manager, 'remove')).toBe(workspace)
+			expect(resolveToolWorkspace(manager, undefined)).toBe(workspace)
+			expect(requireToolWorkspace(workspace, undefined, 'remove')).toBe(workspace)
+			expect(readToolCaller({ subject: 'reader' })).toBeUndefined()
+			expect(() => readToolCaller({ workspace: 'returns' })).toThrow('no AgentCaller')
+			expect(requireListedPath(['notes.md'], 'notes.md')).toBeUndefined()
+			expect(() => requireListedPath(['notes.md'], 'secret.md')).toThrow(
+				'path "secret.md" is outside the files this run reaches;',
+			)
 			expect(describeDefinitionRefusal('shop', [{ reason: 'extra', path: ['keys'] }])).toContain(
 				'database "shop" holds a definition this version refuses (extra key "keys" at the root;',
 			)
@@ -249,6 +261,54 @@ await new GuideCommand({
 			)
 			expect(renderCandidates(['read', 'list'])).toBe('"read", "list"')
 			expect(limitRefusal('x'.repeat(5000)).length).toBe(2048)
+		})
+
+		it('the run-workspace fence reads, refuses, and keeps the active workspace as it claims', async () => {
+			const manager = createWorkspaceManager()
+			const orders = manager.add({ id: 'orders' })
+			const returns = manager.add({ id: 'returns' })
+			returns.write('notes.md', 'Refund noted.')
+			returns.write('secret.md', 'The vault code is 7731.')
+			const tool = createWorkspaceTool({ manager })
+			const signal = new AbortController().signal
+			const caller = { workspace: returns, files: ['notes.md'] }
+			expect(await tool.execute({ operation: 'read', path: 'notes.md' }, { signal, caller })).toBe(
+				'Refund noted.',
+			)
+			expect(
+				await tool.execute({ operation: 'search', query: 'code' }, { signal, caller }),
+			).toEqual([])
+			const hidden = await Promise.resolve()
+				.then(() => tool.execute({ operation: 'read', path: 'secret.md' }, { signal, caller }))
+				.then(
+					() => undefined,
+					(error: unknown) => error,
+				)
+			expect(isToolboxError(hidden) ? hidden.code : undefined).toBe('TOOL')
+			expect(hidden instanceof Error ? hidden.message : '').toContain(
+				'path "secret.md" is outside the files this run reaches;',
+			)
+			const none = { workspace: undefined, files: undefined }
+			expect(
+				await tool.execute({ operation: 'read', path: 'notes.md' }, { signal, caller: none }),
+			).toBeNull()
+			const copy = createWorkspaceManager().add({ id: 'returns' })
+			const foreign = await Promise.resolve()
+				.then(() =>
+					tool.execute(
+						{ operation: 'list' },
+						{ signal, caller: { workspace: copy, files: undefined } },
+					),
+				)
+				.then(
+					() => undefined,
+					(error: unknown) => error,
+				)
+			expect(isToolboxError(foreign) ? foreign.code : undefined).toBe('TOOL')
+			expect(foreign instanceof Error ? foreign.message : '').toContain(
+				"the run's workspace is not one this tool's manager holds;",
+			)
+			expect(manager.active).toBe(orders)
 		})
 
 		it('the endpoint-bridge fence returns the row its comment claims', async () => {

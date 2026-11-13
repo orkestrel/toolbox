@@ -33,6 +33,10 @@ const result = await tools.execute({
 })
 ```
 
+Under `@orkestrel/agent`, register the workspace tool over the agent's own registry,
+`createWorkspaceTool({ manager: agent.context.workspaces })`. Each call then acts on the
+workspace the run shows and reaches only the files the run's scope lists.
+
 Core tools are published from `@orkestrel/toolbox`; terminal route integration is
 published from `@orkestrel/toolbox/server`.
 

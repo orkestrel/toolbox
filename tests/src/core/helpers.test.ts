@@ -10,7 +10,7 @@ import {
 	stringShape,
 	unionShape,
 } from '@orkestrel/contract'
-import { captureError } from '@orkestrel/test'
+import { captureError, createRecorder } from '@orkestrel/test'
 import { isToolError } from '@orkestrel/tool'
 import { createWorkspaceManager } from '@orkestrel/workspace'
 import type { QueryInput } from '@orkestrel/database'
@@ -29,8 +29,11 @@ import {
 	describeDefinitionRefusal,
 	limitRefusal,
 	renderCandidates,
-	requireActiveWorkspace,
+	readToolCaller,
+	requireListedPath,
 	requireToolCall,
+	requireToolWorkspace,
+	resolveToolWorkspace,
 	resolveBound,
 	clampQuery,
 	completeDraft,
@@ -64,6 +67,7 @@ import {
 import { DatabaseError } from '@orkestrel/database'
 import { RelationError } from '@orkestrel/relation'
 import { describe, expect, it } from 'vitest'
+import { buildShiftingCaller, buildUnreadableCallers } from '../../setup.js'
 
 // tests/src/core/helpers.test.ts — mirrors src/core/helpers.ts. Pure, deterministic
 // synthesis (AGENTS' no-mocks rule: real inputs, no mocks): the ancestry tag namespacing, the
@@ -633,17 +637,154 @@ describe('resolveBound', () => {
 	})
 })
 
-describe('requireActiveWorkspace', () => {
-	it('returns the active workspace and refuses with what to call when none is active', () => {
+describe('readToolCaller', () => {
+	it('returns a frozen copy of an AgentCaller, its files copied once', () => {
 		const manager = createWorkspaceManager()
-		const error = captureError(() => requireActiveWorkspace(manager, 'remove'))
-		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
-		expect(error instanceof Error ? error.message : '').toContain(
-			'"remove" needs an active workspace',
+		const returns = manager.add({ id: 'returns' })
+		const files = ['notes.md']
+		const read = readToolCaller({ workspace: returns, files })
+		expect(read).toEqual({ workspace: returns, files: ['notes.md'] })
+		expect(read?.workspace).toBe(returns)
+		expect(read?.files).not.toBe(files)
+		expect(Object.isFrozen(read)).toBe(true)
+		expect(Object.isFrozen(read?.files)).toBe(true)
+		expect(readToolCaller({ workspace: undefined, files: undefined })).toEqual({
+			workspace: undefined,
+			files: undefined,
+		})
+		expect(
+			readToolCaller(Object.assign(Object.create(null), { workspace: undefined, files: [] })),
+		).toEqual({ workspace: undefined, files: [] })
+	})
+
+	it.each([
+		{ label: 'undefined', value: undefined },
+		{ label: 'null', value: null },
+		{ label: 'a string', value: 'returns' },
+		{ label: 'a number', value: 7 },
+		{ label: 'an empty record', value: {} },
+		{ label: 'a record with no workspace key', value: { subject: 'reader' } },
+		{
+			label: 'a record whose workspace key is inherited',
+			value: Object.create({ workspace: undefined, files: undefined }),
+		},
+	])('reads $label as no Agent caller', ({ value }) => {
+		expect(readToolCaller(value)).toBeUndefined()
+	})
+
+	it('reads each member once, so a member that changes between reads cannot change the call', () => {
+		const reads = createRecorder<readonly []>()
+		expect(readToolCaller(buildShiftingCaller(reads))?.files).toEqual(['notes.md'])
+		expect(reads.calls).toHaveLength(1)
+	})
+
+	it('refuses an object that holds a workspace key and is no AgentCaller, and throws nothing else', () => {
+		const returns = createWorkspaceManager().add({ id: 'returns' })
+		for (const value of [
+			{ workspace: 'returns' },
+			{ workspace: undefined },
+			{ workspace: returns },
+			{ workspace: null, files: undefined },
+			{ workspace: returns, files: 'notes.md' },
+			{ workspace: returns, files: [7] },
+			{ workspace: returns, files: null },
+			{ workspace: returns, files: undefined, subject: 'reader' },
+			...buildUnreadableCallers(returns),
+		]) {
+			const error = captureError(() => readToolCaller(value))
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(error instanceof Error ? error.message : '').toContain(
+				'holds a "workspace" key and is no AgentCaller',
+			)
+		}
+	})
+})
+
+describe('resolveToolWorkspace', () => {
+	it('picks the active workspace with no caller, the caller`s registered workspace, or none', () => {
+		const manager = createWorkspaceManager()
+		const orders = manager.add({ id: 'orders' })
+		const returns = manager.add({ id: 'returns' })
+		expect(resolveToolWorkspace(manager, undefined)).toBe(orders)
+		expect(resolveToolWorkspace(manager, { workspace: returns, files: undefined })).toBe(returns)
+		expect(resolveToolWorkspace(manager, { workspace: undefined, files: ['notes.md'] })).toBe(
+			undefined,
 		)
-		expect(manager.count).toBe(0)
-		const workspace = manager.add()
-		expect(requireActiveWorkspace(manager, 'remove')).toBe(workspace)
+		expect(resolveToolWorkspace(createWorkspaceManager(), undefined)).toBeUndefined()
+	})
+
+	it('refuses a workspace the manager does not hold by identity, naming the remedy', () => {
+		const manager = createWorkspaceManager()
+		const returns = manager.add({ id: 'returns' })
+		const other = createWorkspaceManager().add({ id: 'returns' })
+		for (const workspace of [other, new Proxy(returns, {})]) {
+			const error = captureError(() =>
+				resolveToolWorkspace(manager, { workspace, files: undefined }),
+			)
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			const text = error instanceof Error ? error.message : ''
+			expect(text).toContain("the run's workspace is not one this tool's manager holds")
+			expect(text).toContain('createWorkspaceTool({ manager: agent.context.workspaces })')
+		}
+		manager.remove('returns')
+		expect(
+			isToolboxError(
+				captureError(() => resolveToolWorkspace(manager, { workspace: returns, files: undefined })),
+			),
+		).toBe(true)
+	})
+})
+
+describe('requireToolWorkspace', () => {
+	it('returns the workspace and refuses none with what the caller can do', () => {
+		const workspace = createWorkspaceManager().add()
+		expect(requireToolWorkspace(workspace, undefined, 'remove')).toBe(workspace)
+		const host = captureError(() => requireToolWorkspace(undefined, undefined, 'remove'))
+		expect(isToolboxError(host) ? host.code : undefined).toBe('TOOL')
+		expect(host instanceof Error ? host.message : '').toBe(
+			'operation "remove" needs an active workspace and none is; call "write" to create one',
+		)
+		const run = captureError(() =>
+			requireToolWorkspace(undefined, { workspace: undefined, files: undefined }, 'write'),
+		)
+		expect(isToolboxError(run) ? run.code : undefined).toBe('TOOL')
+		expect(run instanceof Error ? run.message : '').toBe(
+			'operation "write" needs a workspace and the run shows none; the host selects the workspace a run shows',
+		)
+	})
+})
+
+describe('requireListedPath', () => {
+	it('admits every path with no list and a listed path under one', () => {
+		expect(requireListedPath(undefined, 'secret.md')).toBeUndefined()
+		expect(requireListedPath(['notes.md', 'draft.md'], 'draft.md')).toBeUndefined()
+	})
+
+	it('refuses an unlisted path naming it and the listed paths, and an empty list reaches none', () => {
+		const error = captureError(() => requireListedPath(['notes.md', 'draft.md'], 'secret.md'))
+		expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		expect(error instanceof Error ? error.message : '').toBe(
+			'path "secret.md" is outside the files this run reaches; name one of "notes.md", "draft.md"',
+		)
+		expect(captureError(() => requireListedPath([], 'notes.md'))).toMatchObject({
+			message: 'path "notes.md" is outside the files this run reaches; this run reaches no file',
+		})
+		expect(captureError(() => requireListedPath(['notes.md'], 'Notes.md'))).toBeInstanceOf(
+			ToolboxError,
+		)
+	})
+
+	it('bounds an untrusted path and a long list in the refusal', () => {
+		const error = captureError(() =>
+			requireListedPath(
+				Array.from({ length: 50 }, (_, index) => `${'x'.repeat(200)}${index}.md`),
+				`${'y'.repeat(5000)}\nforged`,
+			),
+		)
+		const text = error instanceof Error ? error.message : ''
+		expect(text.length).toBeLessThanOrEqual(FAULT_TEXT_LIMIT)
+		expect(text).not.toContain('\nforged')
+		expect(text).toContain('more')
 	})
 })
 

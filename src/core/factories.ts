@@ -32,7 +32,7 @@ import type {
 	WorkspaceToolOptions,
 } from './types.js'
 import type { DatabaseInterface, DriverInterface, TableInterface } from '@orkestrel/database'
-import { agentResultToJSON } from '@orkestrel/agent'
+import { agentResultToJSON, filterAllowList } from '@orkestrel/agent'
 import { createWorkspaceManager, isTextContent, rangeOf } from '@orkestrel/workspace'
 import { createTool, ToolError } from '@orkestrel/tool'
 import {
@@ -114,13 +114,16 @@ import {
 	limitRefusal,
 	normalizeLineage,
 	normalizeQuery,
+	readToolCaller,
 	renderCandidates,
-	requireActiveWorkspace,
+	requireListedPath,
 	requireToolCall,
+	requireToolWorkspace,
 	resolveBound,
 	resolveLimit,
 	resolveRelationManager,
 	resolveRelationModel,
+	resolveToolWorkspace,
 	summarizeWorkflow,
 	tagAgent,
 	tagWorkflow,
@@ -568,27 +571,40 @@ export function createWorkflowTool(
  * Builds an LLM-callable workspace-editing tool — it advertises the `operation`-discriminated union
  * ({@link import('./shapers.js').workspaceToolShape}) as its `parameters`, and its handler parses
  * the model-supplied args against that contract and dispatches the matched operation against the
- * manager's active workspace, returning the plain result.
+ * one workspace the call acts on, returning the plain result.
  *
  * @remarks
- * Manager-driven: every op (read / list / has / search / replace / write / splice / prepend /
- * append / move / remove) targets `manager.active`, so the model edits whichever workspace is
- * active. The host re-points `active` through `WorkspaceManagerInterface.switch` between runs, and
- * the tool holds no operation that lists or selects a workspace.
+ * One workspace for each call: every op (read / list / has / search / replace / write / splice /
+ * prepend / append / move / remove) acts on the workspace the call's `context.caller` selects. Under
+ * `@orkestrel/agent` that caller is an `AgentCaller`, read through
+ * {@link import('./helpers.js').readToolCaller}: the call acts on its `workspace` only when that is
+ * the very instance this tool's manager holds ({@link import('./helpers.js').resolveToolWorkspace}),
+ * so register the tool over the agent's `context.workspaces`; a run that shows no workspace reads
+ * nothing and edits nothing; and a caller value that holds a `workspace` key and is no `AgentCaller`
+ * refuses with a `TOOL` `ToolboxError`. With no Agent caller the call acts on `manager.active`,
+ * which the host alone moves through `WorkspaceManagerInterface.switch`. The tool holds no operation
+ * that lists or selects a workspace.
  *
- * No-active rule (the ergonomic seam): an op that can create the file it names (write / prepend /
- * append) run when `manager.active` is `undefined` auto-creates and activates a default workspace
- * (`manager.add()`) so the model can start writing; an op that edits a file that must already exist
- * (splice / move / remove / replace) refuses with a `TOOL` `ToolboxError` and creates none; a
- * pure-read op (read / list / has / search) against no active workspace returns the empty result
- * (`null` / `[]` / `false`), never creating one and never throwing.
+ * Files list: under an Agent caller whose `files` is defined, every op reaches the listed paths
+ * alone. A path-named op (read / has / write / splice / prepend / append / remove, and both paths of
+ * move) refuses any other path with one `TOOL` text whether or not a file sits there
+ * ({@link import('./helpers.js').requireListedPath}); list returns the listed files; search and
+ * replace pass the list as `@orkestrel/workspace`'s `paths` option, so a file outside it is never
+ * scanned and never rewritten.
+ *
+ * No-workspace rule: with no Agent caller and no active workspace, an op that can create the file it
+ * names (write / prepend / append) creates and activates a default workspace (`manager.add()`) so the
+ * model can start writing. Every other edit, and every edit under an Agent caller that shows no
+ * workspace, refuses with a `TOOL` `ToolboxError` and creates none
+ * ({@link import('./helpers.js').requireToolWorkspace}). A pure-read op (read / list / has / search)
+ * with no workspace returns the empty result (`null` / `[]` / `false`), never creating one.
  *
  * The Tool door enforces the operation union through `contract`, repairing lossless scalar leaves
  * and refusing malformed args with a `ToolError` carrying code `ARGUMENTS`. A selected operation
  * reports its own faults; an unknown operation reports a bounded summary of alternatives.
  * The handler then `switch`es on `op.operation` and returns the plain result
- * — letting a `WorkspaceError` raised by the live workspace (`MISSING` / `MODALITY` / `PATTERN` /
- * `RANGE`) propagate uncaught. `read` returns `null` for a path that holds no text, because JSON
+ * — letting a `WorkspaceError` raised by the live workspace (`MISSING` / `MODALITY` / `PATHS` /
+ * `PATTERN` / `RANGE`) propagate uncaught. `read` returns `null` for a path that holds no text, because JSON
  * tells that from an empty file. The range edit is the flat `'splice'` op: its flat caret integers are
  * reassembled into a `Range` (`@orkestrel/workspace`) by `rangeOf` and fed to the workspace's
  * ranged `write`.
@@ -617,72 +633,85 @@ export function createWorkspaceTool(options?: WorkspaceToolOptions): ToolInterfa
 		description: options?.description ?? WORKSPACE_TOOL_DESCRIPTION,
 		summary: WORKSPACE_TOOL_SUMMARY,
 		contract: workspaceToolShape,
-		execute(args) {
+		execute(args, context) {
 			const op = requireToolCall(contract, args)
-			// Every op targets the active workspace. An op that can create its file auto-creates
-			// and activates a default workspace when none is active (the no-active ergonomic seam), an op
-			// on a file that must exist refuses, and a pure-read op returns the empty result.
-			const active = manager.active
+			// One workspace and one files list for the whole call: the Agent caller's, accepted by
+			// identity, else `manager.active` with no list. A path-named op checks the list first.
+			const caller = readToolCaller(context.caller)
+			const workspace = resolveToolWorkspace(manager, caller)
+			const files = caller?.files
 			switch (op.operation) {
 				case 'read':
-					return active?.read(op.path) ?? null
+					requireListedPath(files, op.path)
+					return workspace?.read(op.path) ?? null
 				case 'list':
-					return (active?.files() ?? []).map((file) => ({
-						path: file.path,
-						state: file.state,
-						size: file.size,
-						lines: file.lines,
-						kind: isTextContent(file.content) ? 'text' : 'binary',
-					}))
+					return filterAllowList(files, workspace?.files() ?? [], (file) => file.path).map(
+						(file) => ({
+							path: file.path,
+							state: file.state,
+							size: file.size,
+							lines: file.lines,
+							kind: isTextContent(file.content) ? 'text' : 'binary',
+						}),
+					)
 				case 'has':
-					return active?.has(op.path) ?? false
+					requireListedPath(files, op.path)
+					return workspace?.has(op.path) ?? false
 				case 'search':
 					return (
-						active?.search(op.query, {
+						workspace?.search(op.query, {
 							...(op.regex === undefined ? {} : { regex: op.regex }),
 							...(op.sensitive === undefined ? {} : { sensitive: op.sensitive }),
 							...(op.limit === undefined ? {} : { limit: op.limit }),
+							...(files === undefined ? {} : { paths: files }),
 						}) ?? []
 					)
-				case 'replace': {
-					const workspace = requireActiveWorkspace(manager, op.operation)
-					return workspace.replace(op.query, op.replacement, {
-						...(op.regex === undefined ? {} : { regex: op.regex }),
-						...(op.sensitive === undefined ? {} : { sensitive: op.sensitive }),
-						...(op.limit === undefined ? {} : { limit: op.limit }),
-					})
-				}
-				case 'write': {
-					const workspace = active ?? manager.add()
-					workspace.write(op.path, op.content)
-					return { path: op.path, state: workspace.file(op.path)?.state }
+				case 'replace':
+					return requireToolWorkspace(workspace, caller, op.operation).replace(
+						op.query,
+						op.replacement,
+						{
+							...(op.regex === undefined ? {} : { regex: op.regex }),
+							...(op.sensitive === undefined ? {} : { sensitive: op.sensitive }),
+							...(op.limit === undefined ? {} : { limit: op.limit }),
+							...(files === undefined ? {} : { paths: files }),
+						},
+					)
+				case 'write':
+				case 'prepend':
+				case 'append': {
+					requireListedPath(files, op.path)
+					// With no Agent caller and none active, the op creates and activates a workspace; a
+					// run that shows none edits nothing, because a workspace made here sits outside its ceiling.
+					const target =
+						caller === undefined && workspace === undefined
+							? manager.add()
+							: requireToolWorkspace(workspace, caller, op.operation)
+					if (op.operation === 'write') target.write(op.path, op.content)
+					else if (op.operation === 'prepend') target.prepend(op.path, op.content)
+					else target.append(op.path, op.content)
+					return { path: op.path, state: target.file(op.path)?.state }
 				}
 				case 'splice': {
-					const workspace = requireActiveWorkspace(manager, op.operation)
-					workspace.write(
+					requireListedPath(files, op.path)
+					const target = requireToolWorkspace(workspace, caller, op.operation)
+					target.write(
 						op.path,
 						op.content,
 						rangeOf(op.fromLine, op.fromColumn, op.toLine, op.toColumn),
 					)
-					return { path: op.path, state: workspace.file(op.path)?.state }
-				}
-				case 'prepend': {
-					const workspace = active ?? manager.add()
-					workspace.prepend(op.path, op.content)
-					return { path: op.path, state: workspace.file(op.path)?.state }
-				}
-				case 'append': {
-					const workspace = active ?? manager.add()
-					workspace.append(op.path, op.content)
-					return { path: op.path, state: workspace.file(op.path)?.state }
+					return { path: op.path, state: target.file(op.path)?.state }
 				}
 				case 'move': {
-					const workspace = requireActiveWorkspace(manager, op.operation)
-					return { from: op.from, to: op.to, moved: workspace.move(op.from, op.to) }
+					requireListedPath(files, op.from)
+					requireListedPath(files, op.to)
+					const target = requireToolWorkspace(workspace, caller, op.operation)
+					return { from: op.from, to: op.to, moved: target.move(op.from, op.to) }
 				}
 				case 'remove': {
-					const workspace = requireActiveWorkspace(manager, op.operation)
-					return { path: op.path, removed: workspace.remove(op.path) }
+					requireListedPath(files, op.path)
+					const target = requireToolWorkspace(workspace, caller, op.operation)
+					return { path: op.path, removed: target.remove(op.path) }
 				}
 			}
 		},

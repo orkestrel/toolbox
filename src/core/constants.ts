@@ -205,11 +205,11 @@ export const WORKSPACE_TOOL_SUMMARY =
  */
 export const WORKSPACE_TOOL_DESCRIPTION = [
 	'Read and edit files in a workspace. Every call is ONE operation, chosen by the "operation" field.',
-	'All file operations act on the ACTIVE workspace, which the host selects.',
+	'All file operations act on one workspace, which the host selects.',
 	'',
 	'Operations (each takes the fields listed):',
 	'- read     { "operation": "read", "path": "<file>" } — return the file\'s text, or null when the path holds no text.',
-	'- list     { "operation": "list" } — list every file in the active workspace (path, state, size, lines, kind).',
+	'- list     { "operation": "list" } — list every file you can reach in the workspace (path, state, size, lines, kind).',
 	'- has      { "operation": "has", "path": "<file>" } — whether the file exists.',
 	'- search   { "operation": "search", "query": "<text>", "regex"?: bool, "sensitive"?: bool, "limit"?: int } — find lines matching the query across all files.',
 	'- replace  { "operation": "replace", "query": "<text>", "replacement": "<text>", "regex"?: bool, "sensitive"?: bool, "limit"?: int } — replace matches across all files.',
@@ -220,7 +220,7 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
 	'- move     { "operation": "move", "from": "<file>", "to": "<file>" } — rename / move a file.',
 	'- remove   { "operation": "remove", "path": "<file>" } — delete a file.',
 	'',
-	'Notes: lines and columns are 1-based (column 1 is the first character). "regex" defaults to false (a literal substring), "sensitive" defaults to true (case-sensitive). "search"/"replace"/"splice" act only on text files. With no active workspace, "write", "prepend", and "append" create one, and "replace", "splice", "move", and "remove" refuse.',
+	'Notes: lines and columns are 1-based (column 1 is the first character). "regex" defaults to false (a literal substring), "sensitive" defaults to true (case-sensitive). "search"/"replace"/"splice" act only on text files. With no workspace, "read", "list", "has", and "search" return empty results and every edit refuses, unless the host lets "write", "prepend", and "append" create one. When the host limits the files, every operation reaches those paths alone and refuses any other path.',
 	'',
 	'Example — write a file:',
 	JSON.stringify(WORKSPACE_TOOL_EXAMPLE),

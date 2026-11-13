@@ -203,9 +203,10 @@ export interface WorkflowToolOptions {
  * constructs a manager over `@orkestrel/workspace`'s in-memory store.
  *
  * @remarks
- * - `manager` — drive this manager directly (its `active` workspace is what every edit / read
- *   operation targets, and the host alone moves `active`). Takes priority over `store` when the
- *   caller supplies `manager` and `store`.
+ * - `manager` — drive this manager directly. A call with no Agent caller acts on its `active`
+ *   workspace, which the host alone moves, and a call under `@orkestrel/agent` acts on the run's
+ *   workspace only when it is an instance this manager holds, so pass the agent's
+ *   `context.workspaces`. Takes priority over `store` when the caller supplies `manager` and `store`.
  * - `store` — construct a manager over this durable {@link WorkspaceStoreInterface} (through
  *   `@orkestrel/workspace`'s `createWorkspaceManager`) — used only when `manager` is omitted.
  *   The store only backs the manager's own `open` / `save` operations: the tool's edits are
@@ -237,14 +238,14 @@ export interface WorkspaceToolOptions {
  * `fromColumn` / `toLine` / `toColumn`), reassembled into a 1-based `Range`
  * (`@orkestrel/workspace`)
  * by `rangeOf`, never a nested `{ start, end }`. Every arm maps onto exactly one
- * `WorkspaceInterface` call against the manager's active workspace, which the host selects.
+ * `WorkspaceInterface` call against the one workspace the host selects for the call.
  */
 export type WorkspaceOperation =
-	/** Reads a whole text file's text by `path` from the active workspace (a binary / absent path — or no active workspace — yields `null`). */
+	/** Reads a whole text file's text by `path` from the workspace (a binary / absent path — or no workspace — yields `null`). */
 	| { readonly operation: 'read'; readonly path: string }
-	/** Lists every file in the active workspace (path / state / size / lines / kind summaries); `[]` when no workspace is active. */
+	/** Lists every file the call reaches in the workspace (path / state / size / lines / kind summaries); `[]` when there is no workspace. */
 	| { readonly operation: 'list' }
-	/** Reports whether a file exists at `path` in the active workspace (`false` when no workspace is active). */
+	/** Reports whether a file exists at `path` in the workspace (`false` when there is no workspace). */
 	| { readonly operation: 'has'; readonly path: string }
 	/**
 	 * Scans every text file for `query`, returning each hit (the path, the 1-based line and column, and the line).
@@ -371,7 +372,9 @@ export interface AgentToolArguments {
  * @remarks
  * `TOOL` — package-owned resolution or configuration failures, including unknown tools, terminals,
  * databases, drivers, relation managers, or models; invalid prompt choices or include paths;
- * disabled readonly mutations; and invalid construction options. Malformed call arguments are a
+ * disabled readonly mutations; invalid construction options; and, for the workspace tool, a
+ * malformed Agent caller, a run's workspace its manager does not hold, an edit with no workspace,
+ * and a path outside the caller's files list. Malformed call arguments are a
  * `ToolError` with code `ARGUMENTS` (`@orkestrel/tool`), carrying `context.faults`.
  * `DEPTH` — the delegation would exceed {@link import('./constants.js').AGENT_TOOL_DEPTH}, or
  * the resolved agent is already an ancestor (a cycle).

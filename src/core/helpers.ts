@@ -8,6 +8,7 @@ import type {
 } from '@orkestrel/relation'
 import type { QueryInput } from '@orkestrel/database'
 import type { WorkspaceInterface, WorkspaceManagerInterface } from '@orkestrel/workspace'
+import type { AgentCaller } from '@orkestrel/agent'
 import type {
 	ToolboxErrorCode,
 	ClampedQuery,
@@ -22,16 +23,19 @@ import { isRelationError } from '@orkestrel/relation'
 import type { AuditFault, ContractInterface, JSONRecord, JSONSchema } from '@orkestrel/contract'
 import {
 	admitValue,
+	attempt,
 	createContract,
 	describeFaults,
 	extractPath,
 	FAULT_TEXT_LIMIT,
+	isArray,
 	isObject,
+	matchesExactKeys,
 	preview,
 	renderList,
 	schemaToShape,
 } from '@orkestrel/contract'
-import { isPositiveSafeInteger } from '@orkestrel/agent'
+import { isAgentCaller, isPositiveSafeInteger } from '@orkestrel/agent'
 import { ToolError } from '@orkestrel/tool'
 import { ToolboxError } from './errors.js'
 import { isWorkflowLineage } from './validators.js'
@@ -695,34 +699,159 @@ export function resolveBound(value: number | undefined, fallback: number, subjec
 	)
 }
 
+// === Workspace tool caller
+
 /**
- * Reads the active workspace for an operation that edits a file that must already exist, or refuses.
+ * Reads the caller a workspace tool call carries as an owned `AgentCaller`, refusing a value that
+ * holds a `workspace` key and is not one.
+ *
+ * @remarks
+ * A value that is no object, or an object with no own `workspace` key, is no Agent caller and reads
+ * as `undefined`. An object that holds that key must own exactly `workspace` and `files`, and the
+ * copy built from one read of each, its `files` array copied once, must pass `isAgentCaller`
+ * (`@orkestrel/agent`). Anything else refuses, an object whose keys or members cannot be read
+ * included, so a malformed caller never falls back to the host's selection. The returned copy is
+ * frozen, and no later read of the caller can change what the call acts on.
+ *
+ * @param value - The `caller` member of the call's `ToolContext`
+ * @returns A frozen copy of the caller when it is an `AgentCaller`, otherwise `undefined`
+ * @throws {ToolboxError} Thrown with code `TOOL` when the value holds a `workspace` key and is no `AgentCaller`
+ *
+ * @example
+ * ```ts
+ * import { readToolCaller } from '@src/core'
+ *
+ * readToolCaller(undefined) // undefined
+ * readToolCaller({ subject: 'reader' }) // undefined
+ * readToolCaller({ workspace: undefined, files: ['notes.md'] }) // { workspace: undefined, files: ['notes.md'] }
+ * readToolCaller({ workspace: 'returns' }) // throws ToolboxError ('TOOL')
+ * ```
+ */
+export function readToolCaller(value: unknown): AgentCaller | undefined {
+	if (!isObject(value)) return undefined
+	const read = attempt(() => {
+		if (!Object.hasOwn(value, 'workspace')) return undefined
+		const files: unknown = Reflect.get(value, 'files')
+		return {
+			exact: matchesExactKeys(value, ['workspace', 'files']),
+			caller: Object.freeze({
+				workspace: Reflect.get(value, 'workspace'),
+				files: isArray(files) ? Object.freeze([...files]) : files,
+			}),
+		}
+	})
+	if (read.success) {
+		if (read.value === undefined) return undefined
+		if (read.value.exact && isAgentCaller(read.value.caller)) return read.value.caller
+	}
+	throw new ToolboxError(
+		'TOOL',
+		'context.caller holds a "workspace" key and is no AgentCaller; an AgentCaller owns exactly "workspace" (a workspace or undefined) and "files" (an array of paths or undefined), so this call reads and edits nothing',
+	)
+}
+
+/**
+ * Resolves the workspace a workspace tool call acts on: the Agent caller's workspace when it is an
+ * instance the tool's manager holds, `undefined` for a run that shows none, and the manager's
+ * active workspace when no Agent caller is present.
+ *
+ * @remarks
+ * The caller's workspace is compared by identity with the manager's own workspaces and never read,
+ * so a value that crossed a wire, a copy, or a `Proxy` object over a registered workspace refuses
+ * rather than selecting one.
  *
  * @param manager - The manager the workspace tool drives
- * @param operation - The operation that needs an active workspace
- * @returns The active workspace
- * @throws {ToolboxError} Thrown with code `TOOL` when no workspace is active, and creates none
+ * @param caller - The caller {@link readToolCaller} read, or `undefined` when the call has no Agent caller
+ * @returns The workspace the call acts on, or `undefined` when it acts on none
+ * @throws {ToolboxError} Thrown with code `TOOL` when the caller's workspace is not one the manager holds
  *
  * @example
  * ```ts
  * import { createWorkspaceManager } from '@orkestrel/workspace'
- * import { requireActiveWorkspace } from '@src/core'
+ * import { resolveToolWorkspace } from '@src/core'
  *
  * const manager = createWorkspaceManager()
- * const workspace = manager.add()
- * requireActiveWorkspace(manager, 'remove') === workspace // true
+ * const orders = manager.add({ id: 'orders' })
+ * const returns = manager.add({ id: 'returns' })
+ * resolveToolWorkspace(manager, undefined) === orders // true
+ * resolveToolWorkspace(manager, { workspace: returns, files: undefined }) === returns // true
+ * resolveToolWorkspace(manager, { workspace: undefined, files: undefined }) // undefined
  * ```
  */
-export function requireActiveWorkspace(
+export function resolveToolWorkspace(
 	manager: WorkspaceManagerInterface,
-	operation: string,
-): WorkspaceInterface {
-	const active = manager.active
-	if (active !== undefined) return active
+	caller: AgentCaller | undefined,
+): WorkspaceInterface | undefined {
+	if (caller === undefined) return manager.active
+	const workspace = caller.workspace
+	if (workspace === undefined || manager.workspaces().includes(workspace)) return workspace
 	throw new ToolboxError(
 		'TOOL',
-		`operation ${preview(operation)} needs an active workspace and none is; call "write" to create one`,
+		"the run's workspace is not one this tool's manager holds; register the workspace tool over the agent's context.workspaces, as createWorkspaceTool({ manager: agent.context.workspaces }) does",
+	)
+}
+
+/**
+ * Returns the workspace an operation that needs one acts on, or refuses with what the caller can do.
+ *
+ * @param workspace - The workspace {@link resolveToolWorkspace} resolved, or `undefined`
+ * @param caller - The Agent caller, or `undefined` when the call has none
+ * @param operation - The operation that needs a workspace
+ * @returns The workspace
+ * @throws {ToolboxError} Thrown with code `TOOL` when `workspace` is `undefined`, and creates none
+ *
+ * @example
+ * ```ts
+ * import { createWorkspaceManager } from '@orkestrel/workspace'
+ * import { requireToolWorkspace } from '@src/core'
+ *
+ * const workspace = createWorkspaceManager().add()
+ * requireToolWorkspace(workspace, undefined, 'remove') === workspace // true
+ * requireToolWorkspace(undefined, undefined, 'remove') // throws ToolboxError ('TOOL')
+ * ```
+ */
+export function requireToolWorkspace(
+	workspace: WorkspaceInterface | undefined,
+	caller: AgentCaller | undefined,
+	operation: string,
+): WorkspaceInterface {
+	if (workspace !== undefined) return workspace
+	throw new ToolboxError(
+		'TOOL',
+		caller === undefined
+			? `operation ${preview(operation)} needs an active workspace and none is; call "write" to create one`
+			: `operation ${preview(operation)} needs a workspace and the run shows none; the host selects the workspace a run shows`,
 		{ operation },
+	)
+}
+
+/**
+ * Refuses a path the caller's files list omits, with one text whether or not a file sits there.
+ *
+ * @remarks
+ * `files` is three-way: `undefined` admits every path, `[]` admits none, and a list admits its
+ * members. The refusal names the path and at most `REFUSAL_LIST_LIMIT` of the listed paths, each
+ * encoded and length-capped, and never says whether the workspace holds the path.
+ *
+ * @param files - The caller's files list, or `undefined` when it states none
+ * @param path - The path an operation names
+ * @throws {ToolboxError} Thrown with code `TOOL` when `files` is defined and omits `path`
+ *
+ * @example
+ * ```ts
+ * import { requireListedPath } from '@src/core'
+ *
+ * requireListedPath(undefined, 'secret.md') // returns
+ * requireListedPath(['notes.md'], 'notes.md') // returns
+ * requireListedPath(['notes.md'], 'secret.md') // throws ToolboxError ('TOOL')
+ * ```
+ */
+export function requireListedPath(files: readonly string[] | undefined, path: string): void {
+	if (files === undefined || files.includes(path)) return
+	throw new ToolboxError(
+		'TOOL',
+		`path ${preview(path)} is outside the files this run reaches; ${files.length === 0 ? 'this run reaches no file' : `name one of ${renderCandidates(files)}`}`,
+		{ path },
 	)
 }
 

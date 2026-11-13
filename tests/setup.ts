@@ -13,12 +13,20 @@ import {
 	isIndexMap,
 	isDatabaseDefinition,
 } from '@src/core'
-import { isRecord, booleanShape, numberShape, stringShape, rawShape } from '@orkestrel/contract'
+import {
+	isArray,
+	isRecord,
+	booleanShape,
+	numberShape,
+	stringShape,
+	rawShape,
+} from '@orkestrel/contract'
 import type { FieldControl, FormSchema, FormValues } from '@orkestrel/form'
+import type { RecorderInterface } from '@orkestrel/test'
 import type { RelationManagerInterface } from '@orkestrel/relation'
 import { belongsTo, createRelationManager, hasMany, hasThrough } from '@orkestrel/relation'
-import { createToolManager } from '@orkestrel/tool'
-import { WORKFLOW_TOOL_NAME, DatabaseDefinitionStore } from '@src/core'
+import { createToolManager, ToolManager } from '@orkestrel/tool'
+import { WORKFLOW_TOOL_NAME, DatabaseDefinitionStore, createWorkspaceTool } from '@src/core'
 import type {
 	AgentInterface,
 	AgentResult,
@@ -43,7 +51,7 @@ import type {
 } from '@src/core'
 import type { JSONRecord } from '@orkestrel/contract'
 import type { TimerHandler, TerminalManagerInterface } from '@orkestrel/terminal'
-import type { ToolContext, ToolDefinition, ToolResult } from '@orkestrel/tool'
+import type { ToolCall, ToolContext, ToolDefinition, ToolResult } from '@orkestrel/tool'
 import type {
 	WorkflowDefinition,
 	WorkflowRegistry,
@@ -51,10 +59,14 @@ import type {
 	WorkflowSnapshot,
 	WorkflowStoreInterface,
 } from '@orkestrel/workflow'
-import { createAgent, createAuthority, ProviderAbortError } from '@orkestrel/agent'
+import { createAgent, createAuthority, createScope, ProviderAbortError } from '@orkestrel/agent'
 import { createDatabase, createMemoryDriver, MemoryDriver } from '@orkestrel/database'
 import { createWorkflowRunner } from '@orkestrel/workflow'
-import type { FileInterface } from '@orkestrel/workspace'
+import type {
+	FileInterface,
+	WorkspaceInterface,
+	WorkspaceManagerInterface,
+} from '@orkestrel/workspace'
 import { createBinaryContent, createFile, createTextContent } from '@orkestrel/workspace'
 import { waitForDelay } from '@orkestrel/test'
 
@@ -899,4 +911,350 @@ export function buildToolboxContractCases() {
 		...row,
 		direction: (value: unknown) => !row.wire.is(value) || row.guard(value),
 	}))
+}
+
+// ── Workspace desk: the workspace tool under an Agent caller ─────────────────
+
+/** Holds the text each desk file carries, named for the proof that reads it. */
+export const DESK_TEXT = Object.freeze({
+	orders: 'Order 42 is paid.',
+	returns: 'Return 7 is open.',
+	ledger: 'Status: open.',
+	drop: 'Drop me.',
+	secret: 'Refund held. The vault code is 7731.',
+	notes: 'Refund noted.',
+	note: 'Refund approved.',
+	closed: 'Status: closed.',
+	written: 'Written by B.',
+	code: '7731',
+})
+
+/** Holds the files the desk's `orders` workspace starts with, in insertion order. */
+export const ORDERS_SEED: Readonly<Record<string, string>> = Object.freeze({
+	'orders.txt': DESK_TEXT.orders,
+	'ledger.txt': DESK_TEXT.ledger,
+	'drop.txt': DESK_TEXT.drop,
+})
+
+/** Holds the files the desk's `returns` workspace starts with, in insertion order. */
+export const RETURNS_SEED: Readonly<Record<string, string>> = Object.freeze({
+	'returns.txt': DESK_TEXT.returns,
+	'ledger.txt': DESK_TEXT.ledger,
+	'drop.txt': DESK_TEXT.drop,
+})
+
+/** Holds a hidden file before a listed one, each holding `Refund`, for the files-list proofs. */
+export const SECRET_SEED: Readonly<Record<string, string>> = Object.freeze({
+	'secret.md': DESK_TEXT.secret,
+	'notes.md': DESK_TEXT.notes,
+})
+
+/** Represents the desk: a registry holding `orders`, active, and `returns`. */
+export interface WorkspaceDesk {
+	readonly manager: WorkspaceManagerInterface
+	readonly orders: WorkspaceInterface
+	readonly returns: WorkspaceInterface
+}
+
+/** Represents the files each desk workspace starts with; each defaults to its desk seed. */
+export interface WorkspaceDeskSeeds {
+	readonly orders?: Readonly<Record<string, string>>
+	readonly returns?: Readonly<Record<string, string>>
+}
+
+/**
+ * Adds the desk to `manager`: `orders` first, so it is active, then `returns`, each written with
+ * its seed in insertion order.
+ *
+ * @param manager - The registry the desk is added to, empty
+ * @param seeds - The files each workspace starts with. Default: {@link ORDERS_SEED} and {@link RETURNS_SEED}
+ * @returns The registry and its two workspaces
+ */
+export function seedWorkspaceDesk(
+	manager: WorkspaceManagerInterface,
+	seeds?: WorkspaceDeskSeeds,
+): WorkspaceDesk {
+	const orders = manager.add({ id: 'orders' })
+	for (const [path, text] of Object.entries(seeds?.orders ?? ORDERS_SEED)) orders.write(path, text)
+	const returns = manager.add({ id: 'returns' })
+	for (const [path, text] of Object.entries(seeds?.returns ?? RETURNS_SEED)) {
+		returns.write(path, text)
+	}
+	return { manager, orders, returns }
+}
+
+/** Collects each file of a workspace as its path mapped to its text, `null` for a binary file. */
+export function collectWorkspaceText(
+	workspace: WorkspaceInterface,
+): Readonly<Record<string, string | null>> {
+	return Object.fromEntries(
+		workspace.files().map((file) => [file.path, workspace.read(file.path) ?? null]),
+	)
+}
+
+/** Checks whether two file lists hold the same file values by identity, in order. */
+export function matchesFileIdentity(
+	left: readonly FileInterface[],
+	right: readonly FileInterface[],
+): boolean {
+	return left.length === right.length && left.every((file, index) => file === right[index])
+}
+
+/**
+ * Creates the context a direct workspace tool call receives from a caller: a never-aborted signal
+ * and `caller`, which is always an own key, `undefined` included.
+ *
+ * @param caller - The value the context carries as `caller`
+ * @returns The context
+ */
+export function createCallerToolContext(caller: unknown): ToolContext {
+	return { signal: new AbortController().signal, caller }
+}
+
+/** Represents one workspace tool call on the desk's `returns`, its result, and the files after it. */
+export interface DeskOperationCase {
+	readonly args: Readonly<Record<string, unknown>>
+	readonly result: unknown
+	readonly files: Readonly<Record<string, string | null>>
+}
+
+/** Holds one call for each workspace tool operation on the desk's `returns`, in declaration order. */
+export const DESK_OPERATIONS: readonly DeskOperationCase[] = Object.freeze([
+	{
+		args: { operation: 'read', path: 'returns.txt' },
+		result: DESK_TEXT.returns,
+		files: RETURNS_SEED,
+	},
+	{
+		args: { operation: 'list' },
+		result: [
+			{ path: 'returns.txt', state: 'created', size: 17, lines: 1, kind: 'text' },
+			{ path: 'ledger.txt', state: 'created', size: 13, lines: 1, kind: 'text' },
+			{ path: 'drop.txt', state: 'created', size: 8, lines: 1, kind: 'text' },
+		],
+		files: RETURNS_SEED,
+	},
+	{ args: { operation: 'has', path: 'returns.txt' }, result: true, files: RETURNS_SEED },
+	{
+		args: { operation: 'search', query: 'Return 7' },
+		result: [{ path: 'returns.txt', line: 1, column: 1, length: 8, content: DESK_TEXT.returns }],
+		files: RETURNS_SEED,
+	},
+	{
+		args: { operation: 'replace', query: 'open', replacement: 'closed' },
+		result: { occurrences: 2, files: 2 },
+		files: {
+			'returns.txt': 'Return 7 is closed.',
+			'ledger.txt': DESK_TEXT.closed,
+			'drop.txt': DESK_TEXT.drop,
+		},
+	},
+	{
+		args: { operation: 'write', path: 'note.txt', content: DESK_TEXT.note },
+		result: { path: 'note.txt', state: 'created' },
+		files: { ...RETURNS_SEED, 'note.txt': DESK_TEXT.note },
+	},
+	{
+		args: {
+			operation: 'splice',
+			path: 'returns.txt',
+			content: '8',
+			fromLine: 1,
+			fromColumn: 8,
+			toLine: 1,
+			toColumn: 9,
+		},
+		result: { path: 'returns.txt', state: 'modified' },
+		files: { ...RETURNS_SEED, 'returns.txt': 'Return 8 is open.' },
+	},
+	{
+		args: { operation: 'prepend', path: 'returns.txt', content: '> ' },
+		result: { path: 'returns.txt', state: 'modified' },
+		files: { ...RETURNS_SEED, 'returns.txt': `> ${DESK_TEXT.returns}` },
+	},
+	{
+		args: { operation: 'append', path: 'returns.txt', content: ' Refund held.' },
+		result: { path: 'returns.txt', state: 'modified' },
+		files: { ...RETURNS_SEED, 'returns.txt': `${DESK_TEXT.returns} Refund held.` },
+	},
+	{
+		args: { operation: 'move', from: 'returns.txt', to: 'archive.txt' },
+		result: { from: 'returns.txt', to: 'archive.txt', moved: true },
+		files: {
+			'ledger.txt': DESK_TEXT.ledger,
+			'drop.txt': DESK_TEXT.drop,
+			'archive.txt': DESK_TEXT.returns,
+		},
+	},
+	{
+		args: { operation: 'remove', path: 'drop.txt' },
+		result: { path: 'drop.txt', removed: true },
+		files: { 'returns.txt': DESK_TEXT.returns, 'ledger.txt': DESK_TEXT.ledger },
+	},
+])
+
+/** Holds each path-named workspace tool call, its `path` the placeholder `PATH` a proof replaces. */
+export const PATH_CALLS: ReadonlyArray<Readonly<Record<string, unknown>>> = Object.freeze([
+	{ operation: 'read', path: 'PATH' },
+	{ operation: 'has', path: 'PATH' },
+	{ operation: 'write', path: 'PATH', content: DESK_TEXT.note },
+	{
+		operation: 'splice',
+		path: 'PATH',
+		content: 'x',
+		fromLine: 1,
+		fromColumn: 1,
+		toLine: 1,
+		toColumn: 1,
+	},
+	{ operation: 'prepend', path: 'PATH', content: '> ' },
+	{ operation: 'append', path: 'PATH', content: '!' },
+	{ operation: 'remove', path: 'PATH' },
+])
+
+/** Records the context each `execute` call carries, then runs the call on the real registry. */
+export class RecordingToolManager extends ToolManager {
+	readonly #contexts: Array<ToolContext | undefined> = []
+
+	/** Each `execute` call's context, in call order. */
+	get contexts(): ReadonlyArray<ToolContext | undefined> {
+		return [...this.#contexts]
+	}
+
+	override execute(call: ToolCall, context?: ToolContext): Promise<ToolResult>
+	override execute(
+		calls: readonly ToolCall[],
+		context?: ToolContext,
+	): Promise<readonly ToolResult[]>
+	override execute(
+		input: ToolCall | readonly ToolCall[],
+		context?: ToolContext,
+	): Promise<ToolResult> | Promise<readonly ToolResult[]> {
+		this.#contexts.push(context)
+		return isArray<ToolCall>(input) ? super.execute(input, context) : super.execute(input, context)
+	}
+}
+
+/** Represents a real agent over the desk, its scripted provider, and its recording tool registry. */
+export interface AgentDesk extends WorkspaceDesk {
+	readonly agent: AgentInterface
+	readonly provider: ScriptedProvider
+	readonly tools: RecordingToolManager
+}
+
+/**
+ * Represents the options of {@link buildAgentDesk}.
+ *
+ * @remarks
+ * `workspaces` and `files` are the scope's lists; `workspaces` defaults to both desk workspaces,
+ * and an omitted `files` states no list. `seeds` defaults to the desk seeds.
+ */
+export interface AgentDeskOptions {
+	readonly workspaces?: readonly string[]
+	readonly files?: readonly string[]
+	readonly seeds?: WorkspaceDeskSeeds
+}
+
+/**
+ * Builds a real agent over the desk with the built-in `switch`, an open authority, and the real
+ * workspace tool registered over the agent's own workspace registry.
+ *
+ * @param turns - The scripted provider's turns
+ * @param options - The scope's lists and the desk seeds
+ * @returns The agent, its provider and tool registry, and the desk
+ */
+export function buildAgentDesk(
+	turns: readonly ProviderResult[],
+	options?: AgentDeskOptions,
+): AgentDesk {
+	const provider = new ScriptedProvider(turns)
+	const tools = new RecordingToolManager()
+	const agent = createAgent(provider, {
+		tools,
+		builtins: ['switch'],
+		authority: createOpenAuthority(),
+		scope: createScope({
+			name: 'desk',
+			workspaces: options?.workspaces ?? ['orders', 'returns'],
+			...(options?.files === undefined ? {} : { files: options.files }),
+		}),
+	})
+	const desk = seedWorkspaceDesk(agent.context.workspaces, options?.seeds)
+	tools.add(createWorkspaceTool({ manager: desk.manager }))
+	return { ...desk, agent, provider, tools }
+}
+
+/** Renders a recorded provider call's message texts as one text, one message per line. */
+export function renderRequestText(call: ScriptedCall | undefined): string {
+	return (call?.messages ?? [])
+		.map((message) => (typeof message.content === 'string' ? message.content : ''))
+		.join('\n')
+}
+
+/** Creates a scripted provider turn that calls each named tool with its arguments, in order. */
+export function createDeskTurn(
+	...calls: ReadonlyArray<readonly [name: string, args: Readonly<Record<string, unknown>>]>
+): ProviderResult {
+	return {
+		content: '',
+		tools: calls.map(([name, args], index) => ({ id: `${name}-${index}`, name, arguments: args })),
+	}
+}
+
+/** Collects every string reachable from a value through its own keys, key names included, to a depth. */
+export function collectOwnStrings(value: unknown, depth: number): readonly string[] {
+	if (typeof value === 'string') return [value]
+	if (depth === 0 || value === null || typeof value !== 'object') return []
+	return Reflect.ownKeys(value).flatMap((key) => [
+		...(typeof key === 'string' ? [key] : []),
+		...collectOwnStrings(Reflect.get(value, key), depth - 1),
+	])
+}
+
+/**
+ * Builds an Agent caller whose `files` getter records each read on `reads` and returns a list on the
+ * first read and text on every later one.
+ */
+export function buildShiftingCaller(reads: RecorderInterface<readonly []>): object {
+	return {
+		workspace: undefined,
+		get files() {
+			reads.handler()
+			return reads.calls.length === 1 ? ['notes.md'] : 'notes.md'
+		},
+	}
+}
+
+/**
+ * Builds objects that hold a `workspace` key and whose keys or members cannot be read: a throwing
+ * `files` getter, a throwing `ownKeys` trap, a throwing own-property trap, and a revoked `Proxy`.
+ */
+export function buildUnreadableCallers(workspace: WorkspaceInterface): readonly object[] {
+	const revoked = Proxy.revocable({}, {})
+	revoked.revoke()
+	return [
+		{
+			workspace,
+			get files() {
+				throw new Error('unreadable')
+			},
+		},
+		new Proxy(
+			{ workspace, files: undefined },
+			{
+				ownKeys() {
+					throw new Error('unreadable')
+				},
+			},
+		),
+		new Proxy(
+			{},
+			{
+				getOwnPropertyDescriptor() {
+					throw new Error('unreadable')
+				},
+			},
+		),
+		revoked.proxy,
+	]
 }

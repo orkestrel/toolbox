@@ -3,7 +3,16 @@ import type { WorkflowDraft } from '@src/core'
 import type { WorkflowDefinition, WorkflowFunction, WorkflowRegistry } from '@orkestrel/workflow'
 import type { FormValues } from '@orkestrel/form'
 import { createForm } from '@orkestrel/form'
-import { createAgent, createAgentRegistry, createMemoryConversationStore } from '@orkestrel/agent'
+import type { ToolCall, ToolContext, ToolResult } from '@orkestrel/tool'
+import type { WorkspaceInterface } from '@orkestrel/workspace'
+import {
+	createAgent,
+	createAgentRegistry,
+	createConversation,
+	createMemoryConversationStore,
+	isAgentCaller,
+	WORKSPACE_SECTION_HEADER,
+} from '@orkestrel/agent'
 import { createMemoryWorkspaceStore, createWorkspaceManager } from '@orkestrel/workspace'
 import { createTool, createToolManager, isToolError } from '@orkestrel/tool'
 import { isRecord, numberShape, objectShape, stringShape } from '@orkestrel/contract'
@@ -56,7 +65,21 @@ import { RelationError } from '@orkestrel/relation'
 import { afterEach, describe, expect, it } from 'vitest'
 import { captureError, createRecorder, waitForAbort, waitForDelay } from '@orkestrel/test'
 import {
+	buildAgentDesk,
 	buildDatabaseStoreWithTable,
+	collectOwnStrings,
+	collectWorkspaceText,
+	createCallerToolContext,
+	createDeskTurn,
+	DESK_OPERATIONS,
+	DESK_TEXT,
+	matchesFileIdentity,
+	ORDERS_SEED,
+	PATH_CALLS,
+	renderRequestText,
+	RETURNS_SEED,
+	SECRET_SEED,
+	seedWorkspaceDesk,
 	buildRelationDatabase,
 	JunctionFaultDriver,
 	createNestedWorkflow,
@@ -1722,6 +1745,512 @@ describe('createWorkspaceTool — precedence: manager wins when BOTH manager and
 		// `store` was NOT used to build the tool's manager — a fresh manager over it has nothing.
 		const overStore = createWorkspaceManager({ store })
 		expect(overStore.count).toBe(0)
+	})
+})
+
+// ── createWorkspaceTool — the run's workspace and files list, through `context.caller` ──
+
+describe('createWorkspaceTool — an Agent caller selects the workspace', () => {
+	it.each(DESK_OPERATIONS)(
+		'T.1 $args.operation acts on the caller`s workspace and leaves orders and the active pointer alone',
+		async ({ args, result, files }) => {
+			const desk = seedWorkspaceDesk(createWorkspaceManager())
+			const tool = createWorkspaceTool({ manager: desk.manager })
+			const context = createCallerToolContext({ workspace: desk.returns, files: undefined })
+			expect(await tool.execute(args, context)).toEqual(result)
+			expect(collectWorkspaceText(desk.returns)).toEqual(files)
+			expect(collectWorkspaceText(desk.orders)).toEqual(ORDERS_SEED)
+			expect(desk.manager.active).toBe(desk.orders)
+		},
+	)
+
+	it.each([
+		{ label: 'a context with no caller', caller: false, value: undefined },
+		{ label: 'a caller with no workspace key', caller: true, value: { subject: 'reader' } },
+	])(
+		'T.2 $label acts on the active workspace, the no-active rule included',
+		async ({ caller, value }) => {
+			const context = caller ? createCallerToolContext(value) : createTestToolContext()
+			const desk = seedWorkspaceDesk(createWorkspaceManager())
+			const tool = createWorkspaceTool({ manager: desk.manager })
+			expect(
+				await tool.execute(
+					{ operation: 'write', path: 'note.txt', content: DESK_TEXT.note },
+					context,
+				),
+			).toEqual({ path: 'note.txt', state: 'created' })
+			expect(desk.orders.read('note.txt')).toBe(DESK_TEXT.note)
+			expect(desk.returns.has('note.txt')).toBe(false)
+			const empty = createWorkspaceManager()
+			const fresh = createWorkspaceTool({ manager: empty })
+			await fresh.execute(
+				{ operation: 'write', path: 'note.txt', content: DESK_TEXT.note },
+				context,
+			)
+			expect(empty.count).toBe(1)
+			expect(empty.active?.read('note.txt')).toBe(DESK_TEXT.note)
+		},
+	)
+
+	it('T.3 a caller`s workspace is accepted by identity alone, for every operation', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager())
+		const other = createWorkspaceManager().add({ id: 'returns' })
+		other.write('returns.txt', DESK_TEXT.returns)
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const callers = [
+			{ workspace: 'returns' },
+			{ workspace: { id: 'returns' } },
+			{ workspace: other },
+			{ workspace: { id: 'returns' }, files: undefined },
+			{ workspace: other, files: undefined },
+			{ workspace: new Proxy(desk.returns, {}), files: undefined },
+		]
+		for (const caller of callers) {
+			for (const { args } of DESK_OPERATIONS) {
+				const error = await readToolboxRejection(
+					Promise.resolve().then(() => tool.execute(args, createCallerToolContext(caller))),
+				)
+				expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			}
+		}
+		expect(collectWorkspaceText(desk.orders)).toEqual(ORDERS_SEED)
+		expect(collectWorkspaceText(desk.returns)).toEqual(RETURNS_SEED)
+		expect(collectWorkspaceText(other)).toEqual({ 'returns.txt': DESK_TEXT.returns })
+		expect(desk.manager.count).toBe(2)
+		const error = await readToolboxRejection(
+			Promise.resolve().then(() =>
+				tool.execute(
+					{ operation: 'list' },
+					createCallerToolContext({ workspace: other, files: undefined }),
+				),
+			),
+		)
+		const text = error instanceof Error ? error.message : ''
+		expect(text).toContain("not one this tool's manager holds")
+		expect(text).toContain('context.workspaces')
+	})
+
+	it('T.4 a run that shows no workspace reads nothing and edits nothing', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager())
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({ workspace: undefined, files: undefined })
+		expect(await tool.execute({ operation: 'read', path: 'orders.txt' }, context)).toBeNull()
+		expect(await tool.execute({ operation: 'list' }, context)).toEqual([])
+		expect(await tool.execute({ operation: 'has', path: 'orders.txt' }, context)).toBe(false)
+		expect(await tool.execute({ operation: 'search', query: 'Order' }, context)).toEqual([])
+		const edits = DESK_OPERATIONS.filter(
+			({ args }) => !['read', 'list', 'has', 'search'].includes(String(args.operation)),
+		)
+		expect(edits.map(({ args }) => args.operation)).toEqual([
+			'replace',
+			'write',
+			'splice',
+			'prepend',
+			'append',
+			'move',
+			'remove',
+		])
+		for (const { args } of edits) {
+			const error = await readToolboxRejection(
+				Promise.resolve().then(() => tool.execute(args, context)),
+			)
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			const text = error instanceof Error ? error.message : ''
+			expect(text).toContain(`"${String(args.operation)}" needs a workspace`)
+			expect(text).not.toContain('"write" to create')
+		}
+		expect(collectWorkspaceText(desk.orders)).toEqual(ORDERS_SEED)
+		expect(collectWorkspaceText(desk.returns)).toEqual(RETURNS_SEED)
+		expect(desk.manager.count).toBe(2)
+		expect(desk.manager.active).toBe(desk.orders)
+	})
+
+	it('T.12 a malformed Agent caller refuses every operation, and a caller with no workspace key keeps the host`s selection', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager())
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		for (const caller of [
+			{ workspace: desk.returns },
+			{ workspace: desk.returns, files: 'notes.md' },
+			{ workspace: 'returns' },
+		]) {
+			for (const { args } of DESK_OPERATIONS) {
+				const error = await readToolboxRejection(
+					Promise.resolve().then(() => tool.execute(args, createCallerToolContext(caller))),
+				)
+				expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+				expect(error instanceof Error ? error.message : '').toContain('AgentCaller')
+			}
+		}
+		expect(collectWorkspaceText(desk.orders)).toEqual(ORDERS_SEED)
+		expect(collectWorkspaceText(desk.returns)).toEqual(RETURNS_SEED)
+		expect(desk.manager.count).toBe(2)
+		expect(
+			await tool.execute(
+				{ operation: 'read', path: 'orders.txt' },
+				createCallerToolContext({ subject: 'reader' }),
+			),
+		).toBe(DESK_TEXT.orders)
+	})
+})
+
+describe('createWorkspaceTool — an Agent caller`s files list bounds every operation', () => {
+	it('T.6 a path outside the list refuses with one text, whether or not a file sits there', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager(), { returns: SECRET_SEED })
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({
+			workspace: desk.returns,
+			files: ['notes.md', 'draft.md'],
+		})
+		const files = desk.returns.files()
+		for (const call of PATH_CALLS) {
+			const [present, absent] = await Promise.all(
+				['secret.md', 'ghost.md'].map((path) =>
+					readToolboxRejection(
+						Promise.resolve().then(() => tool.execute({ ...call, path }, context)),
+					),
+				),
+			)
+			expect(isToolboxError(present) ? present.code : undefined).toBe('TOOL')
+			expect(isToolboxError(absent) ? absent.code : undefined).toBe('TOOL')
+			const text = present instanceof Error ? present.message : ''
+			expect(text).toContain('"secret.md"')
+			expect(text).toContain('"notes.md", "draft.md"')
+			expect(text.replace('"secret.md"', '"ghost.md"')).toBe(
+				absent instanceof Error ? absent.message : undefined,
+			)
+		}
+		expect(matchesFileIdentity(desk.returns.files(), files)).toBe(true)
+		expect(desk.returns.count).toBe(2)
+		expect(desk.manager.count).toBe(2)
+	})
+
+	it('T.7 a listed path is read and written, and a write creates an absent listed path', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager(), { returns: SECRET_SEED })
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({
+			workspace: desk.returns,
+			files: ['notes.md', 'draft.md'],
+		})
+		expect(await tool.execute({ operation: 'read', path: 'notes.md' }, context)).toBe(
+			DESK_TEXT.notes,
+		)
+		expect(
+			await tool.execute(
+				{ operation: 'write', path: 'draft.md', content: DESK_TEXT.note },
+				context,
+			),
+		).toEqual({ path: 'draft.md', state: 'created' })
+		expect(desk.returns.read('draft.md')).toBe(DESK_TEXT.note)
+	})
+
+	it('T.8 list returns the listed files alone', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager(), { returns: SECRET_SEED })
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({
+			workspace: desk.returns,
+			files: ['notes.md', 'draft.md'],
+		})
+		expect(await tool.execute({ operation: 'list' }, context)).toEqual([
+			{ path: 'notes.md', state: 'created', size: 13, lines: 1, kind: 'text' },
+		])
+	})
+
+	it('T.9 search and replace stay inside the list, and a hidden file keeps its value', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager(), { returns: SECRET_SEED })
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({
+			workspace: desk.returns,
+			files: ['notes.md', 'draft.md'],
+		})
+		const secret = desk.returns.file('secret.md')
+		expect(await tool.execute({ operation: 'search', query: 'Refund', limit: 1 }, context)).toEqual(
+			[{ path: 'notes.md', line: 1, column: 1, length: 6, content: DESK_TEXT.notes }],
+		)
+		expect(
+			await tool.execute({ operation: 'replace', query: 'Refund', replacement: 'Return' }, context),
+		).toEqual({ occurrences: 1, files: 1 })
+		expect(desk.returns.file('secret.md')).toBe(secret)
+		expect(desk.returns.read('notes.md')).toBe('Return noted.')
+	})
+
+	it('T.10 move needs both paths listed', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager(), { returns: SECRET_SEED })
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({
+			workspace: desk.returns,
+			files: ['notes.md', 'draft.md'],
+		})
+		const files = desk.returns.files()
+		for (const [from, to] of [
+			['secret.md', 'draft.md'],
+			['notes.md', 'ghost.md'],
+			['secret.md', 'ghost.md'],
+		]) {
+			const error = await readToolboxRejection(
+				Promise.resolve().then(() => tool.execute({ operation: 'move', from, to }, context)),
+			)
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+		}
+		expect(matchesFileIdentity(desk.returns.files(), files)).toBe(true)
+		expect(
+			await tool.execute({ operation: 'move', from: 'notes.md', to: 'draft.md' }, context),
+		).toEqual({ from: 'notes.md', to: 'draft.md', moved: true })
+		expect(desk.returns.read('draft.md')).toBe(DESK_TEXT.notes)
+	})
+
+	it('T.11 an empty list refuses every path and empties list, search, and replace', async () => {
+		const desk = seedWorkspaceDesk(createWorkspaceManager(), { returns: SECRET_SEED })
+		const tool = createWorkspaceTool({ manager: desk.manager })
+		const context = createCallerToolContext({ workspace: desk.returns, files: [] })
+		const files = desk.returns.files()
+		for (const args of [
+			...PATH_CALLS.map((call) => ({ ...call, path: 'notes.md' })),
+			{ operation: 'move', from: 'notes.md', to: 'draft.md' },
+		]) {
+			const error = await readToolboxRejection(
+				Promise.resolve().then(() => tool.execute(args, context)),
+			)
+			expect(isToolboxError(error) ? error.code : undefined).toBe('TOOL')
+			expect(error instanceof Error ? error.message : '').toContain('reaches no file')
+		}
+		expect(await tool.execute({ operation: 'list' }, context)).toEqual([])
+		expect(await tool.execute({ operation: 'search', query: 'Refund' }, context)).toEqual([])
+		expect(
+			await tool.execute({ operation: 'replace', query: 'Refund', replacement: 'Return' }, context),
+		).toEqual({ occurrences: 0, files: 0 })
+		expect(matchesFileIdentity(desk.returns.files(), files)).toBe(true)
+	})
+})
+
+describe('createWorkspaceTool — under a real agent, the tool acts on the run`s workspace and files list', () => {
+	it('P.1 one conversation: after switch, write, replace, and remove change returns, and each edit renders next', async () => {
+		const desk = buildAgentDesk([
+			createDeskTurn(['switch', { workspace: 'returns' }]),
+			createDeskTurn([
+				'workspace',
+				{ operation: 'write', path: 'note.txt', content: DESK_TEXT.note },
+			]),
+			createDeskTurn(
+				['workspace', { operation: 'replace', query: 'open', replacement: 'closed' }],
+				['workspace', { operation: 'remove', path: 'drop.txt' }],
+			),
+			{ content: 'done' },
+		])
+		const active = createRecorder<readonly [WorkspaceInterface | undefined]>()
+		desk.agent.emitter.on('turn', () => active.handler(desk.manager.active))
+		desk.agent.emitter.on('tool', () => active.handler(desk.manager.active))
+		await desk.agent.generate({ prompt: { content: 'Open the returns and note the refund.' } })
+		expect(collectWorkspaceText(desk.returns)).toEqual({
+			'returns.txt': 'Return 7 is closed.',
+			'ledger.txt': DESK_TEXT.closed,
+			'note.txt': DESK_TEXT.note,
+		})
+		expect(collectWorkspaceText(desk.orders)).toEqual(ORDERS_SEED)
+		expect(active.calls).toHaveLength(8)
+		expect(active.calls.every(([workspace]) => workspace === desk.orders)).toBe(true)
+		expect(desk.provider.calls).toHaveLength(4)
+		expect(renderRequestText(desk.provider.calls[0])).toContain(DESK_TEXT.orders)
+		for (const call of desk.provider.calls.slice(1)) {
+			expect(renderRequestText(call)).toContain('Return 7 is')
+			expect(renderRequestText(call)).not.toContain(DESK_TEXT.orders)
+		}
+		expect(renderRequestText(desk.provider.calls[1])).not.toContain(DESK_TEXT.note)
+		expect(renderRequestText(desk.provider.calls[2])).toContain(DESK_TEXT.note)
+		expect(renderRequestText(desk.provider.calls[2])).not.toContain(DESK_TEXT.closed)
+		expect(renderRequestText(desk.provider.calls[3])).toContain(DESK_TEXT.closed)
+	})
+
+	it('P.2 two conversations: after A switched, B renders and writes orders, and A never reads B`s write', async () => {
+		const desk = buildAgentDesk([
+			createDeskTurn(['switch', { workspace: 'returns' }]),
+			{ content: 'A done' },
+			createDeskTurn([
+				'workspace',
+				{ operation: 'write', path: 'note.txt', content: DESK_TEXT.written },
+			]),
+			{ content: 'B done' },
+			{ content: 'A again' },
+		])
+		const first = createConversation()
+		const second = createConversation()
+		await desk.agent.generate({ conversation: first, prompt: { content: 'Open the returns.' } })
+		await desk.agent.generate({ conversation: second, prompt: { content: 'Write the note.' } })
+		await desk.agent.generate({ conversation: first, prompt: { content: 'Read the returns.' } })
+		expect(desk.provider.calls).toHaveLength(5)
+		expect(renderRequestText(desk.provider.calls[2])).toContain(DESK_TEXT.orders)
+		expect(renderRequestText(desk.provider.calls[2])).not.toContain(DESK_TEXT.returns)
+		expect(desk.orders.read('note.txt')).toBe(DESK_TEXT.written)
+		expect(desk.returns.has('note.txt')).toBe(false)
+		expect(renderRequestText(desk.provider.calls[4])).toContain(DESK_TEXT.returns)
+		expect(renderRequestText(desk.provider.calls[4])).not.toContain(DESK_TEXT.written)
+		expect(desk.manager.active).toBe(desk.orders)
+	})
+
+	it('P.3 the run option: under workspace returns, the write lands in returns and active stays orders', async () => {
+		const desk = buildAgentDesk([
+			createDeskTurn([
+				'workspace',
+				{ operation: 'write', path: 'note.txt', content: DESK_TEXT.note },
+			]),
+			{ content: 'done' },
+		])
+		await desk.agent.generate({ workspace: 'returns', prompt: { content: 'Note the refund.' } })
+		expect(desk.returns.read('note.txt')).toBe(DESK_TEXT.note)
+		expect(desk.orders.has('note.txt')).toBe(false)
+		expect(desk.manager.active).toBe(desk.orders)
+		expect(renderRequestText(desk.provider.calls[1])).toContain(DESK_TEXT.note)
+	})
+
+	it('P.4 the host`s move: after manager.switch, the write lands in returns and the next request renders it', async () => {
+		const desk = buildAgentDesk([
+			createDeskTurn([
+				'workspace',
+				{ operation: 'write', path: 'note.txt', content: DESK_TEXT.note },
+			]),
+			{ content: 'done' },
+		])
+		desk.manager.switch('returns')
+		await desk.agent.generate({ prompt: { content: 'Note the refund.' } })
+		expect(desk.returns.read('note.txt')).toBe(DESK_TEXT.note)
+		expect(desk.orders.has('note.txt')).toBe(false)
+		expect(renderRequestText(desk.provider.calls[0])).not.toContain(DESK_TEXT.note)
+		expect(renderRequestText(desk.provider.calls[1])).toContain(DESK_TEXT.note)
+	})
+
+	it('P.5 each host execution`s context holds signal and caller, the shown instance, and no conversation id', async () => {
+		const desk = buildAgentDesk([
+			createDeskTurn(['workspace', { operation: 'read', path: 'orders.txt' }]),
+			createDeskTurn(['switch', { workspace: 'returns' }]),
+			createDeskTurn(['workspace', { operation: 'read', path: 'returns.txt' }]),
+			{ content: 'done' },
+		])
+		const conversation = createConversation()
+		await desk.agent.generate({ conversation, prompt: { content: 'Read both.' } })
+		expect(collectOwnStrings({ caller: { conversation: conversation.id } }, 4)).toContain(
+			conversation.id,
+		)
+		const contexts = desk.tools.contexts
+		expect(contexts).toHaveLength(2)
+		for (const context of contexts) {
+			expect(context === undefined ? [] : Reflect.ownKeys(context)).toEqual(['signal', 'caller'])
+			expect(isAgentCaller(context?.caller)).toBe(true)
+			expect(collectOwnStrings(context, 4)).not.toContain(conversation.id)
+		}
+		const [before, after] = contexts.map((context) =>
+			isAgentCaller(context?.caller) ? context.caller.workspace : undefined,
+		)
+		expect(before).toBe(desk.orders)
+		expect(after).toBe(desk.returns)
+	})
+
+	it('P.6 the context a handler receives is the object Agent passed to the host manager', async () => {
+		const seen = createRecorder<readonly [ToolContext]>()
+		const desk = buildAgentDesk([createDeskTurn(['inspect', {}]), { content: 'done' }])
+		desk.tools.add(
+			createTool({
+				name: 'inspect',
+				description: 'Records its context.',
+				execute: (_args, context) => {
+					seen.handler(context)
+					return 'ok'
+				},
+			}),
+		)
+		await desk.agent.generate({ prompt: { content: 'Inspect.' } })
+		expect(seen.calls).toHaveLength(1)
+		expect(desk.tools.contexts).toHaveLength(1)
+		expect(seen.calls[0]?.[0]).toBe(desk.tools.contexts[0])
+	})
+
+	it.each([
+		{
+			label: 'switch then write',
+			turn: createDeskTurn(
+				['switch', { workspace: 'returns' }],
+				['workspace', { operation: 'write', path: 'note.txt', content: DESK_TEXT.note }],
+			),
+		},
+		{
+			label: 'write then switch',
+			turn: createDeskTurn(
+				['workspace', { operation: 'write', path: 'note.txt', content: DESK_TEXT.note }],
+				['switch', { workspace: 'returns' }],
+			),
+		},
+	])(
+		'P.7 same turn, $label: the switch succeeds, the write lands in orders, and the next request renders returns',
+		async ({ turn }) => {
+			const desk = buildAgentDesk([turn, { content: 'done' }])
+			const results = createRecorder<readonly [ToolCall, ToolResult]>()
+			desk.agent.emitter.on('tool', results.handler)
+			await desk.agent.generate({ prompt: { content: 'Open the returns and note the refund.' } })
+			expect(results.calls.map(([call, result]) => [call.name, result.success]).sort()).toEqual([
+				['switch', true],
+				['workspace', true],
+			])
+			expect(desk.orders.read('note.txt')).toBe(DESK_TEXT.note)
+			expect(desk.returns.has('note.txt')).toBe(false)
+			expect(renderRequestText(desk.provider.calls[1])).toContain(DESK_TEXT.returns)
+			expect(renderRequestText(desk.provider.calls[1])).not.toContain(DESK_TEXT.orders)
+		},
+	)
+
+	it('P.8 the ceiling: with returns alone listed and orders active, the run renders, reads, and edits no workspace', async () => {
+		const desk = buildAgentDesk(
+			[
+				createDeskTurn(
+					['workspace', { operation: 'write', path: 'note.txt', content: DESK_TEXT.note }],
+					['workspace', { operation: 'read', path: 'orders.txt' }],
+				),
+				{ content: 'done' },
+			],
+			{ workspaces: ['returns'] },
+		)
+		const results = createRecorder<readonly [ToolCall, ToolResult]>()
+		desk.agent.emitter.on('tool', results.handler)
+		await desk.agent.generate({ prompt: { content: 'Note the refund.' } })
+		const request = renderRequestText(desk.provider.calls[0])
+		expect(request).not.toMatch(new RegExp(`^${WORKSPACE_SECTION_HEADER}$`, 'm'))
+		expect(request).not.toContain(DESK_TEXT.orders)
+		expect(request).not.toContain(DESK_TEXT.returns)
+		const [write, read] = results.calls.map(([, result]) => result)
+		expect(write?.success).toBe(false)
+		expect(read?.success === true ? read.value : 'refused').toBeNull()
+		expect(collectWorkspaceText(desk.orders)).toEqual(ORDERS_SEED)
+		expect(desk.manager.count).toBe(2)
+	})
+
+	it('P.9 a hidden file stays hidden end to end', async () => {
+		const desk = buildAgentDesk(
+			[
+				createDeskTurn(['workspace', { operation: 'read', path: 'secret.md' }]),
+				createDeskTurn(
+					['workspace', { operation: 'search', query: DESK_TEXT.code }],
+					['workspace', { operation: 'replace', query: DESK_TEXT.code, replacement: '0000' }],
+				),
+				createDeskTurn([
+					'workspace',
+					{ operation: 'write', path: 'secret.md', content: DESK_TEXT.note },
+				]),
+				createDeskTurn(['workspace', { operation: 'move', from: 'secret.md', to: 'notes.md' }]),
+				{ content: 'done' },
+			],
+			{ files: ['notes.md'], seeds: { orders: SECRET_SEED } },
+		)
+		const secret = desk.orders.file('secret.md')
+		const results = createRecorder<readonly [ToolCall, ToolResult]>()
+		desk.agent.emitter.on('tool', results.handler)
+		await desk.agent.generate({ prompt: { content: 'Read the vault.' } })
+		expect(desk.provider.calls).toHaveLength(5)
+		expect(renderRequestText(desk.provider.calls[0])).toContain(DESK_TEXT.notes)
+		for (const call of desk.provider.calls) {
+			expect(renderRequestText(call)).not.toContain(DESK_TEXT.code)
+		}
+		expect(results.calls).toHaveLength(5)
+		for (const [, result] of results.calls) {
+			expect(JSON.stringify(result)).not.toContain(DESK_TEXT.code)
+		}
+		expect(desk.orders.file('secret.md')).toBe(secret)
 	})
 })
 
