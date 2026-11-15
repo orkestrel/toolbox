@@ -51,6 +51,7 @@ export const AGENT_TOOL_DESCRIPTION = [
 	'Send one field:',
 	'  task - the instructions the sub-agent carries out.',
 	'The host fixes the sub-agent: its model, its tools, and its system text. A call carrying any other field is refused.',
+	'Arguments admit lossless repair alone: a number or boolean field accepts its exact text ("5" reads as 5, "true" as true), and a text field accepts a finite number; any other mismatch is refused, and the refusal names every fault.',
 	'Example:',
 	JSON.stringify({
 		task: 'Summarize the attached notes in three bullet points.',
@@ -157,6 +158,7 @@ export const WORKFLOW_TOOL_DESCRIPTION = [
 	'ADVANCED — the full nested form, for multi-task phases or explicit ids. A workflow has phases; a phase has tasks; a task may have a "behavior" (a registered behavior name); omitting it creates a JSON-null no-op:',
 	JSON.stringify(WORKFLOW_TOOL_NESTED_EXAMPLE),
 	'In the nested form you may omit any "id"/"name" and they are filled in positionally; a provided one is kept.',
+	'Arguments admit lossless repair alone: a number or boolean field accepts its exact text ("5" reads as 5, "true" as true), and a text field accepts a finite number; any other mismatch is refused, and the refusal names every fault.',
 ].join('\n')
 
 /**
@@ -221,6 +223,7 @@ export const WORKSPACE_TOOL_DESCRIPTION = [
 	'- remove   { "operation": "remove", "path": "<file>" } — delete a file.',
 	'',
 	'Notes: lines and columns are 1-based (column 1 is the first character). "regex" defaults to false (a literal substring), "sensitive" defaults to true (case-sensitive). "search"/"replace"/"splice" act only on text files. With no workspace, "read", "list", "has", and "search" return empty results and every edit refuses, unless the host lets "write", "prepend", and "append" create one. When the host limits the files, every operation reaches those paths alone and refuses any other path.',
+	'Arguments admit lossless repair alone: a number or boolean field accepts its exact text ("5" reads as 5, "true" as true), and a text field accepts a finite number; any other mismatch is refused, and the refusal names every fault.',
 	'',
 	'Example — write a file:',
 	JSON.stringify(WORKSPACE_TOOL_EXAMPLE),
@@ -255,7 +258,7 @@ export const DESCRIBE_TOOL_SUMMARY = 'Return the full description of a named reg
  * schema or multi-step protocol to teach.
  */
 export const DESCRIBE_TOOL_DESCRIPTION =
-	'Return the full description of a registered tool by its name. Required: name - the registered tool name (see another tool listing for available names).'
+	'Return the full description of a registered tool by its name. Required: name - the registered tool name (see another tool listing for available names). Arguments admit lossless repair alone: a text field accepts a finite number; any other mismatch is refused, and the refusal names every fault.'
 
 /**
  * Holds the name {@link import('./factories.js').createPromptTool} advertises by default, `'ask'` —
@@ -289,6 +292,7 @@ export const PROMPT_TOOL_DESCRIPTION = [
 	'  to     - the terminal name to ask.',
 	'  schema - an @orkestrel/form schema: each field declares `control` and `name`, plus optional `label`, `rule`, `default`, and `choices`; `fields` is an ordered array and each `name` must be unique.',
 	'The result is one values object keyed by those field names. A cycle or expired form fails with a typed error.',
+	'Arguments admit lossless repair alone: a number or boolean field accepts its exact text ("5" reads as 5, "true" as true), and a text field accepts a finite number; any other mismatch is refused, and the refusal names every fault.',
 	'Example:',
 	JSON.stringify({
 		to: 'reviewer',
@@ -333,6 +337,7 @@ export const ANSWER_TOOL_DESCRIPTION = [
 	'Operations:',
 	'- pending { "operation": "pending" } — list every form addressed to this terminal (id, from, schema).',
 	'- answer  { "operation": "answer", "id": "<form id>", "values": { "<field name>": <field value> } } — answer every required field with the value its control accepts.',
+	'Arguments admit lossless repair alone: a number or boolean field accepts its exact text ("5" reads as 5, "true" as true), and a text field accepts a finite number; any other mismatch is refused, and the refusal names every fault.',
 	'Example — list pending forms:',
 	JSON.stringify({ operation: 'pending' }),
 	'Example — answer one:',
@@ -358,7 +363,7 @@ export const DATABASE_TOOL_NAME = 'database'
  * the full text stays retrievable through {@link import('./factories.js').createDescribeTool}.
  */
 export const DATABASE_TOOL_SUMMARY =
-	"Create and query a database — one operation per call (create, tables, get, records, count, aggregate, add, set, update, remove, destroy), chosen by the 'operation' field. Call describe('database') for the full operation list, the query form, and the column DSL."
+	"Create and query a database — one operation per call (create, tables, get, records, count, aggregate, add, set, update, remove, destroy), chosen by the 'operation' field. Every row and query value must match its column's declared type, and a refusal names every fault. Call describe('database') for the full operation list, the query form, and the column DSL."
 
 /**
  * Holds the description {@link import('./factories.js').createDatabaseTool} advertises — a
@@ -376,7 +381,7 @@ export const DATABASE_TOOL_DESCRIPTION = [
 	'',
 	'Operations (each takes the fields listed):',
 	'- create    { "operation": "create", "id": "<database id>", "tables": { "<table>": { "columns": { "<column>": "string" | "integer" | "number" | "boolean" | { "primitive": "string", "optional": true } } } }, "primary"?: { "<table>": "<column>" }, "indexes"?: { "<table>": [["<column>"]] }, "version"?: <number> } — define a new database.',
-	'- tables    { "operation": "tables", "id": "<database id>" } — list a database\'s table names.',
+	'- tables    { "operation": "tables", "id": "<database id>" } — list each table with its primary key and its columns\' declared types.',
 	'- get       { "operation": "get", "id": "<database id>", "table": "<table>", "key": "<row key>" } — fetch one row by its primary key.',
 	'- records   { "operation": "records", "id": "<database id>", "table": "<table>", "query"?: <Query> } — list rows matching a query.',
 	'- count     { "operation": "count", "id": "<database id>", "table": "<table>", "query"?: <Query> } — count rows matching a query.',
@@ -384,13 +389,17 @@ export const DATABASE_TOOL_DESCRIPTION = [
 	'- add       { "operation": "add", "id": "<database id>", "table": "<table>", "row": { ... } } — insert a row (fails on a duplicate key).',
 	'- set       { "operation": "set", "id": "<database id>", "table": "<table>", "row": { ... } } — upsert a row.',
 	'- update    { "operation": "update", "id": "<database id>", "table": "<table>", "key": "<row key>", "changes": { ... } } — patch an existing row.',
-	'- remove    { "operation": "remove", "id": "<database id>", "table": "<table>", "key": "<row key>" } — delete a row by key.',
+	'- remove    { "operation": "remove", "id": "<database id>", "table": "<table>", "key": "<row key>" } — delete a row by key, or several with an array key; replies { "removed": true } only when every key held a row.',
 	'- destroy   { "operation": "destroy", "id": "<database id>" } — drop a database entirely.',
 	'',
 	'Query form — SERIALIZED, never fluent. A condition is a flat object; "values" is ALWAYS an array, even for one value:',
 	'  { "conditions": [ { "column": "age", "operator": "from", "values": [18], "connector": "and" } ], "order"?: [...], "offset"?: 0, "limit"?: 100 }',
 	'  operators: equals, not, above, below, from, to, between, like, glob, starts, ends, any, none, absent, present.',
+	'  "like", "glob", "starts", and "ends" take one string and read a string column. "like" matches % as any run and _ as one character, folding A-Z case; "glob" matches * as any run and ? as one character, preserving case.',
 	'  "connector" joins this condition to the next ("and" | "or"); omit on the last condition.',
+	'',
+	'Values are STRICT: each value in "row", "changes", and a condition\'s "values" must match its column\'s declared type, as "tables" reports, so "36" never fills an integer column. A refused write or query names every fault; correct them all and call again.',
+	'The other fields admit lossless repair alone: "limit": "5" reads as 5; any other mismatch is refused, and the refusal names every fault.',
 	'',
 	'Column DSL (used by "create" "tables"): a column is either a bare primitive string ("string" | "integer" | "number" | "boolean"), or { "primitive": "<primitive>", "optional": true } when the column may be absent from a row.',
 	'Schema configuration is creation-time only. Evolve a schema by opening a newly configured target-version database over a versioned persistent driver; reconciliation requires paired metadata/stamp capabilities.',
@@ -474,6 +483,7 @@ export const RELATION_TOOL_DESCRIPTION = [
 	'- links  { "operation": "links", "model": "<model>", "key": "<row key>", "relation": "<relation>" } — list every key linked to a row through a "through" relation.',
 	'',
 	'"include" is a FLAT dot-path array (not nested objects) — each string names a chain of relations to attach, up to the configured depth cap. Example: "contacts.account" attaches each row\'s contacts, and each contact\'s account.',
+	'Arguments admit lossless repair alone: a number or boolean field accepts its exact text ("5" reads as 5, "true" as true), and a text field accepts a finite number; any other mismatch is refused, and the refusal names every fault.',
 	'Example — load a row with two levels of relations:',
 	JSON.stringify({ operation: 'load', model: 'orders', key: '1', include: ['contacts.account'] }),
 ].join('\n')
@@ -535,6 +545,7 @@ export const INFER_TOOL_DESCRIPTION = [
 	'               populates for a non-coercible mismatch (a wrong type normalization cannot fix,',
 	'               a missing required key, an out-of-enum value); checks never throw, regardless of',
 	'               candidate shape.',
+	'Arguments admit lossless repair alone: a boolean field accepts its exact text ("true" reads as true); any other mismatch is refused, and the refusal names every fault.',
 	'Example (no candidates):',
 	`  in:  ${JSON.stringify({
 		samples: [

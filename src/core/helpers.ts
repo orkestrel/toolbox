@@ -22,7 +22,6 @@ import { isDatabaseError } from '@orkestrel/database'
 import { isRelationError } from '@orkestrel/relation'
 import type { AuditFault, ContractInterface, JSONRecord, JSONSchema } from '@orkestrel/contract'
 import {
-	admitValue,
 	attempt,
 	createContract,
 	describeFaults,
@@ -34,6 +33,7 @@ import {
 	matchesExactKeys,
 	preview,
 	renderList,
+	repairValue,
 	schemaToShape,
 } from '@orkestrel/contract'
 import { isAgentCaller, isPositiveSafeInteger } from '@orkestrel/agent'
@@ -600,7 +600,8 @@ export function limitRefusal(text: string): string {
  * Reads a call's arguments through a compiled contract, or refuses them with what to send.
  *
  * @remarks
- * Uses the contract admission door and translates refusals to tool errors.
+ * Admits through `@orkestrel/contract`'s `repairValue` function, so a lossless leaf repair applies
+ * (`'3'` reaches a number slot as `3`), and translates refusals to tool errors.
  * Tools with object and union roots enforce `createTool`'s `contract` and use this helper to type
  * the parsed arguments. The workflow tool uses this door under `strict: false` because it accepts
  * several authoring forms while advertising the flat form.
@@ -621,7 +622,7 @@ export function limitRefusal(text: string): string {
  * ```
  */
 export function requireToolCall<T>(contract: ContractInterface<T>, value: unknown): T {
-	const read = admitValue(contract, value)
+	const read = repairValue(contract, value)
 	if (!read.success) {
 		if (read.error.cause === undefined)
 			throw buildArgumentRefusal(contract.schema, value, read.error.faults)

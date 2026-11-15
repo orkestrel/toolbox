@@ -84,10 +84,10 @@
 	},
 	"dependencies": {
 		"@orkestrel/agent": "^0.0.44",
-		"@orkestrel/contract": "^0.0.23",
-		"@orkestrel/database": "^0.0.24",
+		"@orkestrel/contract": "^0.0.24",
+		"@orkestrel/database": "^0.0.26",
 		"@orkestrel/form": "^0.0.18",
-		"@orkestrel/relation": "^0.0.22",
+		"@orkestrel/relation": "^0.0.24",
 		"@orkestrel/server": "^0.0.27",
 		"@orkestrel/terminal": "^0.0.26",
 		"@orkestrel/tool": "^0.0.23",

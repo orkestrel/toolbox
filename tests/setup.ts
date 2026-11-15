@@ -676,7 +676,7 @@ export function buildItemsHandle(): DatabaseInterface {
 	})
 }
 
-/** Injects a fault on the second junction deletion while retaining real memory storage. */
+/** Injects a fault on the first junction deletion while retaining real memory storage. */
 export class JunctionFaultDriver extends MemoryDriver {
 	readonly #fault: Error
 	#removals = 0
@@ -686,12 +686,24 @@ export class JunctionFaultDriver extends MemoryDriver {
 		this.#fault = fault
 	}
 
-	override delete(table: string, key: Key, options?: OperationOptions): Promise<boolean> {
+	override delete(table: string, key: Key, options?: OperationOptions): Promise<boolean>
+	override delete(
+		table: string,
+		keys: readonly Key[],
+		options?: OperationOptions,
+	): Promise<readonly boolean[]>
+	override delete(
+		table: string,
+		target: Key | readonly Key[],
+		options?: OperationOptions,
+	): Promise<boolean | readonly boolean[]> {
 		if (table === 'accountReps') {
 			this.#removals += 1
-			if (this.#removals === 2) throw this.#fault
+			if (this.#removals === 1) throw this.#fault
 		}
-		return super.delete(table, key, options)
+		return isArray(target)
+			? super.delete(table, target, options)
+			: super.delete(table, target, options)
 	}
 }
 

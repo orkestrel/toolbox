@@ -432,7 +432,8 @@ export const keyShape = unionShape(
 
 /** Describes a loose row — a flat object of column name to JSON value. */
 export const rowShape = recordShape(jsonShape(), {
-	description: 'A row as a flat object of column name to value.',
+	description:
+		"A row as a flat object of column name to value; each value must match its column's declared type, as the tables operation reports.",
 })
 
 /**
@@ -471,7 +472,8 @@ export const conditionShape = objectShape({
 		{ description: 'The comparison operator.' },
 	),
 	values: arrayShape(jsonShape(), {
-		description: 'The operand values the operator needs (always an array, even for one value).',
+		description:
+			"The operand values the operator needs (always an array, even for one value); each must match the column's declared type.",
 	}),
 	connector: optionalShape(
 		literalShape(['and', 'or'], {
@@ -527,7 +529,9 @@ export const databaseToolShape = unionShape(
 		),
 	}),
 	objectShape({
-		operation: literalShape(['tables'], { description: "List a database's table names." }),
+		operation: literalShape(['tables'], {
+			description: "List each table with its primary key and its columns' declared types.",
+		}),
 		id: stringShape({ min: 1, description: 'The database id.' }),
 	}),
 	objectShape({
@@ -560,27 +564,37 @@ export const databaseToolShape = unionShape(
 	}),
 	objectShape({
 		operation: literalShape(['add'], {
-			description: 'Insert one or more rows (fails on a duplicate key).',
+			description:
+				"Insert one or more rows (fails on a duplicate key); each value must match its column's declared type, and a refusal names every fault.",
 		}),
 		id: stringShape({ min: 1, description: 'The database id.' }),
 		table: stringShape({ min: 1, description: 'The table name.' }),
 		row: rowsShape,
 	}),
 	objectShape({
-		operation: literalShape(['set'], { description: 'Upsert one or more rows.' }),
+		operation: literalShape(['set'], {
+			description:
+				"Upsert one or more rows; each value must match its column's declared type, and a refusal names every fault.",
+		}),
 		id: stringShape({ min: 1, description: 'The database id.' }),
 		table: stringShape({ min: 1, description: 'The table name.' }),
 		row: rowsShape,
 	}),
 	objectShape({
-		operation: literalShape(['update'], { description: 'Patch one or more existing rows.' }),
+		operation: literalShape(['update'], {
+			description:
+				"Patch one or more existing rows; each changed value must match its column's declared type, and a refusal names every fault.",
+		}),
 		id: stringShape({ min: 1, description: 'The database id.' }),
 		table: stringShape({ min: 1, description: 'The table name.' }),
 		key: keyShape,
 		changes: rowShape,
 	}),
 	objectShape({
-		operation: literalShape(['remove'], { description: 'Delete one or more rows by key.' }),
+		operation: literalShape(['remove'], {
+			description:
+				'Delete one or more rows by key; replies removed: true only when every key held a row.',
+		}),
 		id: stringShape({ min: 1, description: 'The database id.' }),
 		table: stringShape({ min: 1, description: 'The table name.' }),
 		key: keyShape,

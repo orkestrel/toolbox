@@ -1351,10 +1351,9 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
 					case 'remove': {
 						const handle = await resolver.resolve(call.id)
 						const table = handle.table(call.table)
-						const many = isArray(call.key)
 						const keys = isArray(call.key) ? call.key : [call.key]
 						const removed = await table.remove(keys, read)
-						return many ? { removed } : { removed: removed[0] }
+						return { removed }
 					}
 					case 'destroy': {
 						const cached = resolver.get(call.id)
@@ -1421,10 +1420,10 @@ export function createDatabaseTool(options: DatabaseToolOptions = {}): ToolInter
  * {@link import('./helpers.js').resolveLimit} — `'find'` probes one row past the effective limit to
  * report `truncated`; `'links'` (which has no upstream pagination) fetches the full linked-key
  * list and slices/truncates it the same way. `'link'` writes a `through` junction row.
- * `'unlink'` removes every matching junction row, one row at a time, through the manager's
- * bound storage. Outside a transaction, a failed removal leaves the pair linked; repeat the
- * call to complete removal. The tool opens no transaction. For all-or-nothing removal, build
- * the manager over a transaction's storage and use the tool within that scope.
+ * `'unlink'` removes the pair's one junction row, the row `'link'` wrote under the pair's
+ * computed key, through the manager's bound storage, so a failed removal leaves the pair linked;
+ * repeat the call to complete removal. The tool opens no transaction. To unlink several pairs as
+ * one unit, build the manager over a transaction's storage and use the tool within that scope.
  *
  * A typed `@orkestrel/relation` failure (`RelationError`) re-surfaces as a typed `RELATION`
  * `ToolboxError` carrying the original {@link import('@orkestrel/relation').RelationErrorCode}

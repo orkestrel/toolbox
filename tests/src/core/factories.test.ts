@@ -15,7 +15,7 @@ import {
 } from '@orkestrel/agent'
 import { createMemoryWorkspaceStore, createWorkspaceManager } from '@orkestrel/workspace'
 import { createTool, createToolManager, isToolError } from '@orkestrel/tool'
-import { isRecord, numberShape, objectShape, stringShape } from '@orkestrel/contract'
+import { isNumber, isRecord, numberShape, objectShape, stringShape } from '@orkestrel/contract'
 import {
 	createMemoryWorkflowStore,
 	createWorkflowRunner,
@@ -3894,7 +3894,7 @@ describe('createDatabaseTool — update', () => {
 })
 
 describe('createDatabaseTool — remove', () => {
-	it('single key resolves { removed }, an array resolves { removed: [] }', async () => {
+	it('a single key and an array key each resolve { removed } as one boolean', async () => {
 		const tool = createDatabaseTool()
 		await tool.execute(
 			{ operation: 'create', id: 'shop', tables: createItemTables() },
@@ -3905,7 +3905,7 @@ describe('createDatabaseTool — remove', () => {
 				operation: 'add',
 				id: 'shop',
 				table: 'items',
-				row: [createItemRow('a'), createItemRow('b')],
+				row: [createItemRow('a'), createItemRow('b'), createItemRow('c'), createItemRow('d')],
 			},
 			createTestToolContext(),
 		)
@@ -3924,7 +3924,17 @@ describe('createDatabaseTool — remove', () => {
 			},
 			createTestToolContext(),
 		)
-		expect(many).toEqual({ removed: [true, false] })
+		expect(many).toEqual({ removed: false })
+		const held = await tool.execute(
+			{ operation: 'remove', id: 'shop', table: 'items', key: ['c', 'd'] },
+			createTestToolContext(),
+		)
+		expect(held).toEqual({ removed: true })
+		const left = await tool.execute(
+			{ operation: 'count', id: 'shop', table: 'items' },
+			createTestToolContext(),
+		)
+		expect(left).toEqual({ count: 0 })
 	})
 })
 
@@ -4076,6 +4086,92 @@ describe('createDatabaseTool — error paths', () => {
 		)
 		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
 		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('VALIDATION')
+	})
+
+	it('a write repairs no row value and names every fault', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
+			createTestToolContext(),
+		)
+		const error = await readToolboxRejection(
+			tool.execute(
+				{
+					operation: 'add',
+					id: 'shop',
+					table: 'items',
+					row: { id: 'a', name: 'x', price: '36', active: 'true' },
+				},
+				createTestToolContext(),
+			),
+		)
+		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('VALIDATION')
+		const message = error instanceof Error ? error.message : ''
+		expect(message).toContain('price')
+		expect(message).toContain('active')
+		const count = await tool.execute(
+			{ operation: 'count', id: 'shop', table: 'items' },
+			createTestToolContext(),
+		)
+		expect(count).toEqual({ count: 0 })
+	})
+
+	it('a query operand that does not match its column refuses as DATABASE with context.code VALIDATION', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
+			createTestToolContext(),
+		)
+		const error = await readToolboxRejection(
+			tool.execute(
+				{
+					operation: 'records',
+					id: 'shop',
+					table: 'items',
+					query: { conditions: [{ column: 'price', operator: 'equals', values: ['36'] }] },
+				},
+				createTestToolContext(),
+			),
+		)
+		expect(isToolboxError(error) ? error.code : undefined).toBe('DATABASE')
+		expect(isToolboxError(error) ? error.context?.code : undefined).toBe('VALIDATION')
+		expect(error instanceof Error ? error.message : '').toContain('price')
+	})
+
+	it('like folds ASCII case over % and _, and glob preserves case over * and ?', async () => {
+		const tool = createDatabaseTool()
+		await tool.execute(
+			{ operation: 'create', id: 'shop', tables: createItemTables() },
+			createTestToolContext(),
+		)
+		await tool.execute(
+			{
+				operation: 'add',
+				id: 'shop',
+				table: 'items',
+				row: [createItemRow('a'), createItemRow('bc')],
+			},
+			createTestToolContext(),
+		)
+		const counts: number[] = []
+		for (const [operator, pattern] of [
+			['like', 'ITEM-%'],
+			['like', 'item-_'],
+			['glob', 'ITEM-*'],
+			['glob', 'item-?'],
+		]) {
+			const result = await tool.execute(
+				{
+					operation: 'count',
+					id: 'shop',
+					table: 'items',
+					query: { conditions: [{ column: 'name', operator, values: [pattern] }] },
+				},
+				createTestToolContext(),
+			)
+			counts.push(isRecord(result) && isNumber(result.count) ? result.count : -1)
+		}
+		expect(counts).toEqual([2, 1, 0, 1])
 	})
 })
 
@@ -4647,7 +4743,7 @@ describe('createRelationTool — find (sort / direction / offset, truncation & p
 })
 
 describe('createRelationTool — link / unlink / links round trip on a through relation', () => {
-	it('a partial unlink failure keeps the pair linked and a retry completes removal', async () => {
+	it('a failed unlink keeps the pair linked and a retry completes removal', async () => {
 		const fault = new RelationError('INVALID', 'junction removal refused')
 		const database = buildRelationDatabase(undefined, new JunctionFaultDriver(fault))
 		const manager = buildRelationManager(database)
@@ -4656,10 +4752,9 @@ describe('createRelationTool — link / unlink / links round trip on a through r
 		const pair = { model: 'accounts', key: 'acc1', relation: 'reps' }
 		await seedAccount(manager, 'acc1')
 		await seedRep(manager, 'rep1')
-		await database.table('accountReps').set([
-			{ id: 'junction1', accountId: 'acc1', repId: 'rep1' },
-			{ id: 'junction2', accountId: 'acc1', repId: 'rep1' },
-		])
+		await expect(
+			tool.execute({ ...pair, target: 'rep1', operation: 'link' }, context),
+		).resolves.toEqual({ linked: true })
 		try {
 			await expect(
 				tool.execute({ ...pair, target: 'rep1', operation: 'unlink' }, context),
