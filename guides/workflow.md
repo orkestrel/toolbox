@@ -890,7 +890,7 @@ result.workflow.results() // every settled task's TaskResult, lineage-navigable
 
 A run refuses what it cannot do before any task starts, and the promise rejects with a `SCHEDULE` `WorkflowError`. The definition door refuses a key the contract does not declare, so a misspelt `behaviour` reports an `extra` fault at `phases.0.tasks.0.behaviour` in `context.faults` instead of running a no-op. A tree with no task refuses too: `createWorkflow({ id: 'w', name: 'W', phases: [] })` still builds so a caller can `add` to it, and a refused live workflow stays unclaimed, so a corrected call can drive the same object. The same door guards `createWorkflow` and `WorkflowManager.add`, which throw, and a live `add`, which returns a `MUTATION` failure. One refusal lists every fault and every undeclared key, and a definition whose reads change refuses as unreadable.
 
-The door repairs a leaf the way `parse` does, so a definition's `timeout: '5'` enters as `5`. A run option is not a definition and gets no repair, so `execute(definition, { timeout: '5' })` refuses the same value.
+The definition door admits through the `repairValue` function, which repairs a lossless leaf the way `parse` does, so a definition's `timeout: '5'` enters as `5`. A run option is not a definition and gets no repair, so `execute(definition, { timeout: '5' })` refuses the same value.
 
 ### The `bail` policy — graceful vs halt
 
@@ -1086,7 +1086,7 @@ phase.patch({ concurrency: 2 }) // throws MUTATION unless this phase is `pending
 
 Every one of these is refused gracefully (a `MUTATION` `Result` failure, never a throw) when a definition or a patch fails its contract or a patch is empty, each with `context.faults` listing every fault, when the container is terminal / `destroyed`, the target does not exist or is not `pending`, or the position falls outside the pending suffix; a `running` phase accepts an `add` only as a pure append — a live runner subscribed to that phase's own `add` event picks the new task up for same-run execution.
 
-A patch admits through the same door as a definition, so a lossless type repair enters repaired: `workflow.update(phase.id, { concurrency: '4' })` applies `concurrency: 4`, so the phase's `concurrency` reads `4` afterwards. An undeclared key, a lossy repair such as `'4.5'` for an integer, and a value that cannot be read refuse with their faults.
+The patch door admits through the `repairValue` function, as the definition door does, so a lossless type repair enters repaired: `workflow.update(phase.id, { concurrency: '4' })` applies `concurrency: 4`, so the phase's `concurrency` reads `4` afterwards. An undeclared key, a lossy repair such as `'4.5'` for an integer, and a value that cannot be read refuse with their faults.
 
 ### Building the live tree by hand — `append`
 
