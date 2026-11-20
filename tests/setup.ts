@@ -383,6 +383,7 @@ export interface ScriptedProviderInterface extends ProviderInterface {
  */
 export class ScriptedProvider implements ScriptedProviderInterface {
 	readonly id = 'scripted'
+	readonly model = 'scripted'
 	readonly name = 'scripted'
 	readonly #turns: readonly ProviderResult[]
 	readonly #delay: number
